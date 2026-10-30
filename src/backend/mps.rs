@@ -923,7 +923,7 @@ impl Backend for MpsBackend {
         self.run(
             &fk("matmul_int8", dt),
             &[Arg::Buf(st(x)), Arg::Buf(st(q)), Arg::Buf(st(scales)), Arg::Buf(&out), Arg::Bytes(bytes_of(&p))],
-            Grid::Threads(m * n),
+            Grid::Rows { rows: m * n.div_ceil(32), tg: 256 },
         );
         wrap(out)
     }
@@ -952,7 +952,7 @@ impl Backend for MpsBackend {
         self.run(
             &fk("matmul_int4", dt),
             &[Arg::Buf(st(x)), Arg::Buf(st(q)), Arg::Buf(st(scales)), Arg::Buf(&out), Arg::Bytes(bytes_of(&p))],
-            Grid::Threads(m * n),
+            Grid::Rows { rows: m * n.div_ceil(32), tg: 256 },
         );
         wrap(out)
     }

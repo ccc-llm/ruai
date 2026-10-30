@@ -256,7 +256,29 @@ pub fn padding_mask(tokens: &Tensor, pad_id: usize) -> Tensor {
 
 /// Scaled dot-product attention. `q`: `[.., Tq, D]`, `k`, `v`: `[.., Tk, D]`,
 /// optional additive `mask` broadcastable to `[.., Tq, Tk]`.
+///
+/// For `[B, H, T, D]` inputs without active dropout this runs the backend's
+/// fused kernel ([`crate::backend::Backend::attention`]: online softmax, the
+/// `[Tq, Tk]` scores are never stored); its backward pass recomputes with
+/// [`attention_composed`]. Other cases use [`attention_composed`] directly.
 pub fn scaled_dot_product_attention(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    mask: Option<&Tensor>,
+    dropout_p: f32,
+    training: bool,
+) -> Tensor {
+    let dropout_active = training && dropout_p > 0.0;
+    match fused_attention_spec(q, k, v, mask) {
+        Some(spec) if !dropout_active => fused_attention(q, k, v, mask, spec),
+        _ => attention_composed(q, k, v, mask, dropout_p, training),
+    }
+}
+
+/// Reference attention from differentiable ops:
+/// `dropout(softmax(q kᵀ / sqrt(D) + mask)) v`.
+pub fn attention_composed(
     q: &Tensor,
     k: &Tensor,
     v: &Tensor,
@@ -271,6 +293,70 @@ pub fn scaled_dot_product_attention(
     }
     let attn = dropout(&softmax(&scores, -1), dropout_p, training);
     attn.matmul(v)
+}
+
+/// The fused-kernel geometry, if these inputs qualify: rank-4 `[B, H, T, D]`
+/// tensors on one device with matching batch / head dims and a constant mask
+/// whose last dim is `Tk`.
+fn fused_attention_spec(q: &Tensor, k: &Tensor, v: &Tensor, mask: Option<&Tensor>) -> Option<crate::backend::AttentionSpec> {
+    if q.rank() != 4 || k.rank() != 4 || v.rank() != 4 {
+        return None;
+    }
+    let (qs, ks, vs) = (q.shape(), k.shape(), v.shape());
+    let (b, h, tq, d) = (qs[0], qs[1], qs[2], qs[3]);
+    let (tk, dv) = (ks[2], vs[3]);
+    if ks != [b, h, tk, d] || vs[..3] != [b, h, tk] || q.device() != k.device() || q.device() != v.device() {
+        return None;
+    }
+    if !(q.dtype().is_float() && k.dtype() == q.dtype() && v.dtype() == q.dtype()) {
+        return None;
+    }
+    let mask_shape = match mask {
+        None => None,
+        Some(m) => {
+            if m.requires_grad() || m.rank() > 4 || m.dim(-1) != tk || m.device() != q.device() {
+                return None;
+            }
+            let mut ms = [1usize; 4];
+            ms[4 - m.rank()..].copy_from_slice(m.shape());
+            let full = [b, h, tq, tk];
+            if ms.iter().zip(&full).any(|(&a, &f)| a != 1 && a != f) {
+                return None;
+            }
+            Some(ms)
+        }
+    };
+    Some(crate::backend::AttentionSpec { b, h, tq, tk, d, dv, scale: 1.0 / (d as f32).sqrt(), mask_shape })
+}
+
+fn fused_attention(q: &Tensor, k: &Tensor, v: &Tensor, mask: Option<&Tensor>, spec: crate::backend::AttentionSpec) -> Tensor {
+    // like the composed path: half precision under autocast
+    let (q, k, v) = match crate::tensor::autocast_dtype() {
+        Some(dt) => (q.to_dtype(dt), k.to_dtype(dt), v.to_dtype(dt)),
+        None => (q.clone(), k.clone(), v.clone()),
+    };
+    let mask = mask.map(|m| m.to_dtype(crate::DType::F32).detach());
+    let out = q.backend().attention(&q.storage(), &k.storage(), &v.storage(), mask.as_ref().map(|m| m.storage()).as_ref(), spec);
+    let shape = vec![spec.b, spec.h, spec.tq, spec.dv];
+    let autocast = crate::tensor::autocast_dtype();
+    let inputs = [q.clone(), k.clone(), v.clone()];
+    let needs: Vec<bool> = inputs.iter().map(Tensor::requires_grad).collect();
+    Tensor::from_op(out, shape, inputs.to_vec(), "attention", move |g| {
+        // recompute with differentiable ops and backpropagate through them
+        let xs: Vec<Tensor> = inputs
+            .iter()
+            .zip(&needs)
+            .map(|(t, &r)| if r { t.detach().requires_grad_() } else { t.detach() })
+            .collect();
+        let y = crate::enable_grad(|| {
+            let _ac = crate::tensor::AutocastGuard::new(autocast);
+            attention_composed(&xs[0], &xs[1], &xs[2], mask.as_ref(), 0.0, false)
+        });
+        if y.requires_grad() {
+            y.backward_with(g.to_dtype(y.dtype()));
+        }
+        xs.iter().zip(&needs).map(|(x, &r)| if r { x.grad() } else { None }).collect()
+    })
 }
 
 /// Fixed sinusoidal positional encoding `[T, D]` (Vaswani et al.).

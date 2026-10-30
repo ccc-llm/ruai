@@ -8,7 +8,7 @@
 //! storage format; the speedups are on GPUs.
 
 use super::{
-    reference::Unfused, AdamParams, Backend, BinaryOp, Conv2dGeom, CpuStorage, DType, MatmulSpec, ReduceOp, Storage, UnaryOp,
+    reference::Unfused, AdamParams, AttentionSpec, Backend, BinaryOp, Conv2dGeom, CpuStorage, DType, MatmulSpec, ReduceOp, Storage, UnaryOp,
 };
 use crate::device::Device;
 use crate::shape::{broadcast_strides, numel, split_axis, strides};
@@ -896,6 +896,100 @@ impl Backend for CpuCore {
         wrap(out)
     }
 
+    fn attention(&self, q: &Storage, k: &Storage, v: &Storage, mask: Option<&Storage>, spec: AttentionSpec) -> Storage {
+        // FlashAttention-style tiling: a block of queries against a block of
+        // keys at a time (both products are small GEMMs), with an online
+        // softmax across key blocks. Only a BQ x BK score tile per task exists.
+        const BQ: usize = 64;
+        const BK: usize = 128;
+        let AttentionSpec { h, tq, tk, d, dv, scale, .. } = spec;
+        let (q, k, v) = (f32s(q), f32s(k), f32s(v));
+        let mask = mask.map(f32s);
+        let [sb, sh, si] = spec.mask_strides();
+        let mut out = vec![0f32; spec.b * h * tq * dv];
+        if out.is_empty() {
+            return wrap(out);
+        }
+        out.par_chunks_mut(tq * dv).enumerate().for_each(|(bh, ob)| {
+            ob.par_chunks_mut(BQ * dv).enumerate().for_each(|(qb, o)| {
+                let (rows, i0) = (o.len() / dv, qb * BQ);
+                let qblk = &q[(bh * tq + i0) * d..];
+                let mut s = vec![0f32; rows * BK];
+                let (mut mx, mut l) = (vec![f32::NEG_INFINITY; rows], vec![0f32; rows]);
+                for kb in (0..tk).step_by(BK) {
+                    let cols = BK.min(tk - kb);
+                    let s = &mut s[..rows * cols];
+                    // S = scale * Q_blk @ K_blkᵀ
+                    // Safety: the strided extents lie inside q, k and s.
+                    unsafe {
+                        matrixmultiply::sgemm(
+                            rows,
+                            d,
+                            cols,
+                            scale,
+                            qblk.as_ptr(),
+                            d as isize,
+                            1,
+                            k[(bh * tk + kb) * d..].as_ptr(),
+                            1,
+                            d as isize,
+                            0.0,
+                            s.as_mut_ptr(),
+                            cols as isize,
+                            1,
+                        );
+                    }
+                    for (r, srow) in s.chunks_exact_mut(cols).enumerate() {
+                        if let Some(m) = mask {
+                            let mrow = &m[(bh / h) * sb + (bh % h) * sh + (i0 + r) * si + kb..];
+                            srow.iter_mut().zip(mrow).for_each(|(x, &mv)| *x += mv);
+                        }
+                        let new = srow.iter().fold(mx[r], |a, &b| a.max(b));
+                        if new == f32::NEG_INFINITY {
+                            srow.iter_mut().for_each(|x| *x = 0.0);
+                            continue;
+                        }
+                        let c = (mx[r] - new).exp();
+                        l[r] *= c;
+                        o[r * dv..(r + 1) * dv].iter_mut().for_each(|x| *x *= c);
+                        let mut sum = 0.0;
+                        for x in srow.iter_mut() {
+                            *x = (*x - new).exp();
+                            sum += *x;
+                        }
+                        l[r] += sum;
+                        mx[r] = new;
+                    }
+                    // O += P @ V_blk
+                    // Safety: as above.
+                    unsafe {
+                        matrixmultiply::sgemm(
+                            rows,
+                            cols,
+                            dv,
+                            1.0,
+                            s.as_ptr(),
+                            cols as isize,
+                            1,
+                            v[(bh * tk + kb) * dv..].as_ptr(),
+                            dv as isize,
+                            1,
+                            1.0,
+                            o.as_mut_ptr(),
+                            dv as isize,
+                            1,
+                        );
+                    }
+                }
+                for (r, orow) in o.chunks_exact_mut(dv).enumerate() {
+                    let inv = 1.0 / l[r];
+                    orow.iter_mut().for_each(|x| *x *= inv);
+                }
+            });
+        });
+        wrap(out)
+    }
+
     fn dequant_int4(&self, q: &Storage, scales: &Storage, k: usize, n: usize, group: usize) -> Storage {
         let (q, sc) = (i8s(q), f32s(scales));
         let mut w = vec![0f32; k * n];
@@ -1116,6 +1210,10 @@ impl Backend for CpuBackend {
     }
     fn dequant_int4(&self, q: &Storage, scales: &Storage, k: usize, n: usize, group: usize) -> Storage {
         CORE.dequant_int4(q, scales, k, n, group)
+    }
+    fn attention(&self, q: &Storage, k: &Storage, v: &Storage, mask: Option<&Storage>, spec: AttentionSpec) -> Storage {
+        let ((q, d), (k, _), (v, _)) = (up(q), up(k), up(v));
+        down(CORE.attention(&q, &k, &v, mask, spec), d)
     }
     fn matmul_int4(&self, x: &Storage, q: &Storage, scales: &Storage, m: usize, k: usize, n: usize, group: usize) -> Storage {
         let (x, d) = up(x);

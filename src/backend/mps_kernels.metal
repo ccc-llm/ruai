@@ -503,19 +503,31 @@ struct Int8Params {
     uint m, k, n;
 };
 
-// out[i, j] = scale[j] * sum_l x[i, l] * q[l, j]; one thread per output.
-// Neighbouring threads read neighbouring weight bytes (coalesced), which
-// suits small m (token-by-token decoding).
+// out[i, j] = scale[j] * sum_l x[i, l] * q[l, j], for small m (decoding).
+// Split-k: a threadgroup of 256 threads covers 32 columns of one row; its 8
+// simdgroups each sum every 8th l (lanes read neighbouring weight bytes) and
+// the partial sums are added through threadgroup memory.
 template <typename T>
 kernel void matmul_int8_t(device const T* x [[buffer(0)]], device const char* q [[buffer(1)]],
                           device const float* sc [[buffer(2)]], device T* out [[buffer(3)]],
-                          constant Int8Params& p [[buffer(4)]], uint t [[thread_position_in_grid]]) {
-    if (t >= p.m * p.n) return;
-    uint i = t / p.n, j = t % p.n;
-    device const T* xr = x + i * p.k;
+                          constant Int8Params& p [[buffer(4)]], uint tgid [[threadgroup_position_in_grid]],
+                          uint tid [[thread_position_in_threadgroup]]) {
+    threadgroup float part[8][32];
+    uint tiles = (p.n + 31) / 32;
+    uint i = tgid / tiles, lane = tid % 32, s = tid / 32;
+    uint j = (tgid % tiles) * 32 + lane;
     float acc = 0.0f;
-    for (uint l = 0; l < p.k; ++l) acc += ld(xr[l]) * float(q[l * p.n + j]);
-    out[t] = st<T>(acc * sc[j]);
+    if (j < p.n) {
+        device const T* xr = x + i * p.k;
+        for (uint l = s; l < p.k; l += 8) acc += ld(xr[l]) * float(q[l * p.n + j]);
+    }
+    part[s][lane] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (s == 0 && j < p.n) {
+        float t = 0.0f;
+        for (uint r = 0; r < 8; ++r) t += part[r][lane];
+        out[i * p.n + j] = st<T>(t * sc[j]);
+    }
 }
 instantiate_floats("matmul_int8", matmul_int8_t)
 
@@ -533,21 +545,36 @@ inline float int4_at(device const uchar* q, uint l, uint j, uint n) {
     return float(v >= 8 ? v - 16 : v);
 }
 
-// out[i, j] = sum_g scale[g, j] * sum_{l in group g} x[i, l] * w[l, j]; one thread per output.
+// out[i, j] = sum_l x[i, l] * w[l, j] * scale[l / group, j], for small m.
+// Split-k like matmul_int8_t: each of the 8 simdgroups takes every 8th
+// pair of rows (one packed byte) for 32 columns.
 template <typename T>
 kernel void matmul_int4_t(device const T* x [[buffer(0)]], device const uchar* q [[buffer(1)]],
                           device const float* sc [[buffer(2)]], device T* out [[buffer(3)]],
-                          constant Int4Params& p [[buffer(4)]], uint t [[thread_position_in_grid]]) {
-    if (t >= p.m * p.n) return;
-    uint i = t / p.n, j = t % p.n;
-    device const T* xr = x + i * p.k;
+                          constant Int4Params& p [[buffer(4)]], uint tgid [[threadgroup_position_in_grid]],
+                          uint tid [[thread_position_in_threadgroup]]) {
+    threadgroup float part[8][32];
+    uint tiles = (p.n + 31) / 32;
+    uint i = tgid / tiles, lane = tid % 32, s = tid / 32;
+    uint j = (tgid % tiles) * 32 + lane;
     float acc = 0.0f;
-    for (uint g0 = 0; g0 < p.k; g0 += p.group) {
-        float part = 0.0f;
-        for (uint l = g0; l < g0 + p.group; ++l) part += ld(xr[l]) * int4_at(q, l, j, p.n);
-        acc += part * sc[(g0 / p.group) * p.n + j];
+    if (j < p.n) {
+        device const T* xr = x + i * p.k;
+        for (uint r = s; r < p.k / 2; r += 8) {
+            uchar b = q[r * p.n + j];
+            int lo = int(b & 15), hi = int(b >> 4);
+            uint l = 2 * r;
+            float s0 = sc[(l / p.group) * p.n + j];
+            acc += (ld(xr[l]) * float(lo >= 8 ? lo - 16 : lo) + ld(xr[l + 1]) * float(hi >= 8 ? hi - 16 : hi)) * s0;
+        }
     }
-    out[t] = st<T>(acc);
+    part[s][lane] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (s == 0 && j < p.n) {
+        float t = 0.0f;
+        for (uint r = 0; r < 8; ++r) t += part[r][lane];
+        out[i * p.n + j] = st<T>(t);
+    }
 }
 instantiate_floats("matmul_int4", matmul_int4_t)
 

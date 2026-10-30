@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.5.0
+
+- `Backend::attention` primitive, used by `F::scaled_dot_product_attention` for `[B, H, T, D]`
+  inputs without active dropout (any mask broadcastable to `[B, H, Tq, Tk]`); the backward pass
+  recomputes with `F::attention_composed` (new public reference path).
+  - CPU: FlashAttention-style tiling (64 x 128 score tiles, two small GEMMs per tile, online
+    softmax); the `[Tq, Tk]` scores are never stored. 1.3-1.6x faster than the composed path
+    on an M3 (up to 3.8x when the composed scores no longer fit in cache).
+  - Other backends: `backend::attention_chunked`, query blocks of at most 16M scores with
+    GEMM + softmax, so long sequences use bounded memory at GEMM speed.
+- MPS int8 / int4 matvec kernels split `k` across 8 simdgroups: int8 is now about 4x and int4
+  about 2x faster than the f32 GEMM for decoding (were slower).
+
 ## 1.4.0
 
 - Group-wise int4 weight-only quantization: `Linear::quantize_int4(group)`,

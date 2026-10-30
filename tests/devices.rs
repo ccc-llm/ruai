@@ -3,7 +3,7 @@
 //!
 //!     cargo test --features mps --test devices
 
-use ruai::backend::{backend_for, AdamParams, Backend, BinaryOp, Conv2dGeom, MatmulSpec, ReduceOp, Storage, UnaryOp};
+use ruai::backend::{backend_for, AdamParams, AttentionSpec, Backend, BinaryOp, Conv2dGeom, MatmulSpec, ReduceOp, Storage, UnaryOp};
 use ruai::{rand, DType, Device};
 
 fn gpu_devices() -> Vec<Device> {
@@ -483,6 +483,34 @@ fn int4_matmul() {
                     &format!("{d} matmul_int4 m={m}"),
                     &p.cpu.matmul_int4(&xc, &qc, &sc, m, k, n, group),
                     &p.gpu.matmul_int4(&xg, &qg, &sg, m, k, n, group),
+                    tol,
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn fused_attention() {
+    rand::manual_seed(11);
+    for_each_gpu(|p, _| {
+        for d in [DType::F32, DType::F16, DType::BF16] {
+            for &(b, h, tq, tk, dk, dv, mask) in &[
+                (2, 3, 5, 5, 16, 16, Some([1, 1, 5, 5])),
+                (1, 2, 1, 9, 64, 32, None),
+                (2, 2, 4, 6, 40, 40, Some([2, 1, 1, 6])),
+                (1, 1, 3, 70, 256, 256, Some([1, 1, 3, 70])),
+            ] {
+                let (qc, qg) = randn_as(p, b * h * tq * dk, d);
+                let (kc, kg) = randn_as(p, b * h * tk * dk, d);
+                let (vc, vg) = randn_as(p, b * h * tk * dv, d);
+                let spec = AttentionSpec { b, h, tq, tk, d: dk, dv, scale: 1.0 / (dk as f32).sqrt(), mask_shape: mask };
+                let m = mask.map(|ms: [usize; 4]| p.randn(ms.iter().product()));
+                let tol = if d == DType::F32 { 1e-4 } else { half_tol(d) * 3.0 };
+                same(
+                    &format!("{d} attention b={b} h={h} tq={tq} tk={tk} d={dk} dv={dv}"),
+                    &p.cpu.attention(&qc, &kc, &vc, m.as_ref().map(|m| &m.0), spec),
+                    &p.gpu.attention(&qg, &kg, &vg, m.as_ref().map(|m| &m.1), spec),
                     tol,
                 );
             }

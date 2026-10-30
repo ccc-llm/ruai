@@ -331,9 +331,19 @@ Autograd、所有 nn 層、優化器都只透過 `Tensor` 運算操作資料，�
 | | f32 | int8 | int4 |
 |---|---|---|---|
 | CPU | 0.86 ms | 0.30 ms | 0.29 ms |
-| MPS | 0.25 ms | 0.46 ms | 0.32 ms |
+| MPS | 0.22–0.33 ms | 0.08 ms | 0.17 ms |
 
-CPU 上量化約快 3 倍（記憶體頻寬受限）；MPS 上目前的融合 kernel（每個輸出一個 thread）還比 MPS 的 f32 GEMM 慢，優化排在 v1.5。
+解碼時是記憶體頻寬受限，權重越小越快（MPS 的融合 kernel 把 k 分給 8 個 simdgroup 再歸約）。
+
+Attention 前向（`[B=4, H=8, T, D=64]`、causal，`bench` 最後一項）：
+
+| T | CPU 融合 | CPU 組合 | MPS 融合 | MPS 組合 | 組合式的 scores 大小 |
+|---|---|---|---|---|---|
+| 128 | 0.84 ms | 1.26 ms | 0.86 ms | 0.60 ms | 2 MB |
+| 512 | 13.4 ms | 22.4 ms | 6.3 ms | 7.3 ms | 34 MB |
+| 1024 | 66.8 ms | 255.9 ms | 36.6 ms | 49.7 ms | 134 MB |
+
+CPU 的融合 kernel 以 64×128 分塊（每塊兩個小 GEMM + online softmax），完全不存 `[Tq, Tk]` scores；MPS / CUDA 用分塊 GEMM（每塊最多 16M 個 scores），長序列記憶體有上限。
 
 GPU 計時採 throughput 方式（連續執行 N 次後同步一次，同 `torch.cuda.synchronize()` 慣例）。很小的運算（如 256×256 matmul、小 CNN）在 GPU 上受每個 op 的派送開銷限制，不一定比 CPU 快；模型越大 GPU 優勢越明顯。
 
@@ -359,6 +369,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - `tests/seq2seq.rs`：解碼端 KV cache 與 teacher forcing 一致、有 padding mask 時來源 padding 完全不影響輸出（沒 mask 時會影響）、`cross_entropy_ignore`、學會反轉序列
 - `tests/finetune.rs`：LoRA 初始為恆等、只訓練 adapter、凍結參數不變、合併前後輸出相同、只存 adapter 再載入、int8 底模上可訓練；gradient checkpointing 在 Llama / Llama+LoRA / 含 dropout 的 GPT / GPT-2 上梯度與不重算時相同
 - `tests/quant.rs`：int4 打包與獨立計算的反量化逐元素相同、融合 kernel 與預設（主機反量化 + GEMM）一致、Llama / GPT-2 的 int4 誤差、int4 底模上的 LoRA 可訓練；`tests/devices.rs` 另含 `matmul_int4` / `dequant_int4` 在 GPU 與 CPU 的對照
+- `tests/attention.rs`：融合 attention 與組合式在各種 mask（無、causal、padding、每個 head、完整、單列）、`dv ≠ d`、半精度、autocast 下一致，梯度一致，任意分塊大小結果相同，長序列大 logits 數值穩定；`tests/devices.rs` 另含 GPU 與 CPU 的 attention 對照
 - `tests/training.rs`：MLP 學會 XOR、CNN（含 BatchNorm）收斂、GPT 記住序列、存檔/載入 round-trip
 
 ## 版本規劃
@@ -379,7 +390,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v1.2 | Hugging Face `tokenizer.json` 分詞器（`HfTokenizer`）、`llama --model` 載入預訓練模型 | ✅（尚未以真實檔案驗證） |
 | v1.3 | LoRA（含 int8 底模）、gradient checkpointing、`freeze` / `trainable_parameters` | ✅ |
 | v1.4 | 分組 int4 權重量化（CPU / MPS / CUDA 融合 kernel，可在其上訓練 LoRA） | ✅ |
-| v1.5 | 融合 attention kernel | |
+| v1.5 | 融合 attention（CPU：FlashAttention 式分塊；其他後端：分塊 GEMM，記憶體有上限）、MPS 量化 matvec 加速 | ✅ |
 | v2.0 | 不複製的 strided view、預先配置的 KV cache、二階導數 | |
 
 ## 目前限制
@@ -387,7 +398,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - 半精度在 CPU 上是儲存格式（內部轉 f32 計算），不會更快
 - `index_add` / `scatter_add` / 融合 kernel 在 GPU 上只有 f32 版本，半精度輸入會先轉 f32（autocast 下本來就以 f32 執行）
 - 反向傳播不建立計算圖（不支援二階導數）
-- attention 尚未融合成單一 kernel（flash-attention 式的融合排在之後的版本）
+- GPU 上的 attention 是分塊 GEMM，不是單一融合 kernel（真正的 GPU FlashAttention 需要 simdgroup 矩陣分塊）；backward 會重算並暫時建立 scores
 - MPS：小運算受派送開銷限制
 - CUDA 後端尚未在 NVIDIA 實機上執行過（見上方說明與 `scripts/verify_cuda.sh`）
 - GPT-2 尚未以真實權重驗證（見上方說明與 `scripts/download_gpt2.sh`）

@@ -99,6 +99,49 @@ pub fn int4_value<T: Copy + Into<i32>>(q: &[T], l: usize, j: usize, n: usize) ->
     (if v >= 8 { v - 16 } else { v }) as f32
 }
 
+/// Attention by blocks of query rows (`matmul` + `softmax` per block), with
+/// at most `max_scores` score elements per block; the default of
+/// [`Backend::attention`] (with 16M). Exact for any block size.
+pub fn attention_chunked<B: Backend + ?Sized>(
+    be: &B,
+    q: &Storage,
+    k: &Storage,
+    v: &Storage,
+    mask: Option<&Storage>,
+    spec: AttentionSpec,
+    max_scores: usize,
+) -> Storage {
+    let AttentionSpec { b, h, tq, tk, d, dv, scale, mask_shape } = spec;
+    let bh = b * h;
+    let block = |i0: usize, n: usize| -> Storage {
+        let qb = if n == tq { q.clone() } else { be.narrow(q, &[b, h, tq, d], 2, i0, n) };
+        let qk = MatmulSpec { batch: bh, m: n, k: d, n: tk, trans_a: false, trans_b: true, a_batch_stride: n * d, b_batch_stride: tk * d };
+        let shape = [b, h, n, tk];
+        let mut s = be.cast(&be.matmul(&qb, k, qk), DType::F32);
+        s = be.binary(BinaryOp::Mul, &s, &shape, &be.from_f32(vec![scale]), &[], &shape);
+        if let (Some(m), Some(ms)) = (mask, mask_shape) {
+            let (m, ms) = if ms[2] == 1 || n == tq {
+                (m.clone(), ms)
+            } else {
+                (be.narrow(m, &ms, 2, i0, n), [ms[0], ms[1], n, ms[3]])
+            };
+            s = be.binary(BinaryOp::Add, &s, &shape, &m, &ms, &shape);
+        }
+        let p = be.cast(&be.softmax(&s, &shape, 3), q.dtype());
+        let pv = MatmulSpec { batch: bh, m: n, k: tk, n: dv, trans_a: false, trans_b: false, a_batch_stride: n * tk, b_batch_stride: tk * dv };
+        be.matmul(&p, v, pv)
+    };
+    let rows = (max_scores / (bh * tk).max(1)).clamp(1, tq.max(1));
+    if rows >= tq {
+        return block(0, tq);
+    }
+    let parts: Vec<(Storage, [usize; 4])> =
+        (0..tq).step_by(rows).map(|i0| (block(i0, rows.min(tq - i0)), [b, h, rows.min(tq - i0), dv])).collect();
+    let refs: Vec<&Storage> = parts.iter().map(|p| &p.0).collect();
+    let shapes: Vec<&[usize]> = parts.iter().map(|p| &p.1[..]).collect();
+    be.cat(&refs, &shapes, 2)
+}
+
 /// Host-memory buffer of one dtype.
 #[derive(Clone)]
 pub enum CpuStorage {
@@ -302,6 +345,40 @@ impl Conv2dGeom {
         let oh = (self.h + 2 * self.padding - self.kh) / self.stride + 1;
         let ow = (self.w + 2 * self.padding - self.kw) / self.stride + 1;
         (oh, ow)
+    }
+}
+
+/// Geometry of a fused attention call ([`Backend::attention`]).
+#[derive(Clone, Copy, Debug)]
+pub struct AttentionSpec {
+    /// Batch size.
+    pub b: usize,
+    /// Heads.
+    pub h: usize,
+    /// Query positions.
+    pub tq: usize,
+    /// Key / value positions.
+    pub tk: usize,
+    /// Query / key size.
+    pub d: usize,
+    /// Value size.
+    pub dv: usize,
+    /// Multiplier of `q · k` (usually `1 / sqrt(d)`).
+    pub scale: f32,
+    /// Shape of the additive `F32` mask, broadcastable to `[b, h, tq, tk]`
+    /// (each dim 1 or full, the last always `tk`); `None` = no mask.
+    pub mask_shape: Option<[usize; 4]>,
+}
+
+impl AttentionSpec {
+    /// Element strides of the mask for (batch, head, query); 0 where broadcast.
+    pub fn mask_strides(&self) -> [usize; 3] {
+        let Some(ms) = self.mask_shape else { return [0; 3] };
+        [
+            if ms[0] == 1 { 0 } else { ms[1] * ms[2] * self.tk },
+            if ms[1] == 1 { 0 } else { ms[2] * self.tk },
+            if ms[2] == 1 { 0 } else { self.tk },
+        ]
     }
 }
 
@@ -548,6 +625,20 @@ pub trait Backend: Send + Sync {
         let w = self.cast(&self.dequant_int4(q, scales, k, n, group), x.dtype());
         let spec = MatmulSpec { batch: 1, m, k, n, trans_a: false, trans_b: false, a_batch_stride: 0, b_batch_stride: 0 };
         self.matmul(x, &w, spec)
+    }
+
+    /// Scaled dot-product attention `softmax(q kᵀ * scale + mask) v` for
+    /// contiguous `q` `[b, h, tq, d]`, `k` `[b, h, tk, d]`, `v` `[b, h, tk, dv]`
+    /// (all one float dtype) and an optional `F32` `mask` of shape
+    /// `spec.mask_shape`; returns `[b, h, tq, dv]` in `q`'s dtype.
+    ///
+    /// The default processes blocks of query rows with `matmul` + `softmax`,
+    /// sized so a block's scores stay under 16M elements (64 MB in f32):
+    /// exact, GEMM speed, and bounded memory for long sequences. Backends may
+    /// override it with a fused kernel (the CPU uses FlashAttention-style
+    /// tiling with an online softmax).
+    fn attention(&self, q: &Storage, k: &Storage, v: &Storage, mask: Option<&Storage>, spec: AttentionSpec) -> Storage {
+        attention_chunked(self, q, k, v, mask, spec, 1 << 24)
     }
 
     /// One Adam/AdamW step on a flat parameter: returns `(new_param, new_m, new_v)`.

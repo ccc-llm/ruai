@@ -163,4 +163,16 @@ fn main() {
         let ms = no_grad(|| time_ms(dev, 50, || drop(lin.forward(&x))));
         println!("  {q:5} {ms:8.3} ms");
     }
+
+    // attention forward, fused kernel vs composed matmul + softmax
+    println!("== attention forward [B=4, H=8, T, D=64], causal: fused vs composed ==");
+    for t in [128usize, 512, 1024] {
+        rand::manual_seed(0);
+        let shape = [4, 8, t, 64];
+        let (q, k, v) = (Tensor::randn(&shape, dev), Tensor::randn(&shape, dev), Tensor::randn(&shape, dev));
+        let m = F::causal_mask(t, dev);
+        let fused = no_grad(|| time_ms(dev, 5, || drop(F::scaled_dot_product_attention(&q, &k, &v, Some(&m), 0.0, false))));
+        let composed = no_grad(|| time_ms(dev, 5, || drop(F::attention_composed(&q, &k, &v, Some(&m), 0.0, false))));
+        println!("  T={t:5}  fused {fused:8.3} ms   composed {composed:8.3} ms   (scores: {:.0} MB)", (4 * 8 * t * t * 4) as f64 / 1e6);
+    }
 }
