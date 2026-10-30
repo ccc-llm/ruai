@@ -2,7 +2,7 @@
 //! no state of their own and resume correctly from a checkpointed step.
 //!
 //! ```
-//! use rustnn::optim::lr::{CosineLr, LrScheduler};
+//! use ruai::optim::lr::{CosineLr, LrScheduler};
 //! let s = CosineLr { base_lr: 1e-3, min_lr: 1e-4, warmup: 10, total: 100 };
 //! assert!((s.lr_at(9) - 1e-3).abs() < 1e-9);
 //! assert!((s.lr_at(100) - 1e-4).abs() < 1e-9);

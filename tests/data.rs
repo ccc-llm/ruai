@@ -1,9 +1,9 @@
 //! DataLoader, datasets, LR schedules and metrics.
 
-use rustnn::data::{random_split, ClassificationData, DataLoader, Dataset, VecDataset};
-use rustnn::metrics::{Accuracy, Ema, RunningMean};
-use rustnn::optim::lr::{ConstantLr, CosineLr, ExponentialLr, LinearLr, LrScheduler, StepLr};
-use rustnn::{Device, Tensor};
+use ruai::data::{random_split, ClassificationData, DataLoader, Dataset, VecDataset};
+use ruai::metrics::{Accuracy, Ema, RunningMean};
+use ruai::optim::lr::{ConstantLr, CosineLr, ExponentialLr, LinearLr, LrScheduler, StepLr};
+use ruai::{Device, Tensor};
 use std::collections::HashSet;
 
 fn ids(n: usize) -> VecDataset<usize> {
@@ -127,9 +127,9 @@ fn lr_schedules() {
     close(l.lr_at(10), 0.1);
     // apply() drives an optimizer
     let p = Tensor::zeros(&[1], Device::Cpu).requires_grad_();
-    let mut opt = rustnn::optim::SGD::new(vec![p], 0.0);
+    let mut opt = ruai::optim::SGD::new(vec![p], 0.0);
     assert_eq!(s.apply(&mut opt, 20), 0.25);
-    use rustnn::optim::Optimizer;
+    use ruai::optim::Optimizer;
     close(opt.lr(), 0.25);
 }
 

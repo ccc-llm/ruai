@@ -5,11 +5,11 @@
 //! `data/gpt2/{model.safetensors,vocab.json,merges.txt}` exist
 //! (see `scripts/download_gpt2.sh`).
 
-use rustnn::generation::{argmax, Sampler};
-use rustnn::nn::gpt2::{GPT2Config, GPT2};
-use rustnn::nn::{self, KvCache, Linear, Module};
-use rustnn::tokenizer::{pre_tokenize, Gpt2Tokenizer};
-use rustnn::{no_grad, rand, serialize, Device, Tensor};
+use ruai::generation::{argmax, Sampler};
+use ruai::nn::gpt2::{GPT2Config, GPT2};
+use ruai::nn::{self, KvCache, Linear, Module};
+use ruai::tokenizer::{pre_tokenize, Gpt2Tokenizer};
+use ruai::{no_grad, rand, serialize, Device, Tensor};
 use std::path::Path;
 
 fn dev() -> Device {
@@ -88,7 +88,7 @@ fn gpt2_uses_hugging_face_names_and_loads_checkpoints() {
     tensors.push(("transformer.h.0.attn.bias".into(), Tensor::ones(&[1, 1, 12, 12], Device::Cpu)));
     tensors.push(("transformer.h.1.attn.masked_bias".into(), Tensor::scalar(-1e4, Device::Cpu)));
     tensors.push(("lm_head.weight".into(), a.wte.weight.clone()));
-    let dir = std::env::temp_dir().join(format!("rustnn_gpt2_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("ruai_gpt2_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     serialize::save_safetensors(dir.join("model.safetensors"), &tensors, None).unwrap();
     let b = GPT2::from_pretrained(&dir, dev()).unwrap();

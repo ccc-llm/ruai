@@ -9,8 +9,8 @@
 //!   of the number of workers.
 //!
 //! ```
-//! use rustnn::data::{ClassificationData, DataLoader};
-//! use rustnn::Device;
+//! use ruai::data::{ClassificationData, DataLoader};
+//! use ruai::Device;
 //! let data = ClassificationData::new(vec![0.0; 10 * 4], vec![0, 1, 0, 1, 0, 1, 0, 1, 0, 1], &[4]);
 //! let loader = DataLoader::new(data, 3, ClassificationData::collate(Device::Cpu))
 //!     .shuffle(true)

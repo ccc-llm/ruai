@@ -1,11 +1,11 @@
 //! Encoder-decoder Transformer: cached decoding, padding masks, training.
 //! Set `RUSTNN_DEVICE=mps` to run on the GPU.
 
-use rustnn::functional as F;
-use rustnn::nn::seq2seq::{Seq2Seq, Seq2SeqConfig};
-use rustnn::nn::{KvCache, Module};
-use rustnn::optim::{Adam, Optimizer};
-use rustnn::{no_grad, rand, Device, Tensor};
+use ruai::functional as F;
+use ruai::nn::seq2seq::{Seq2Seq, Seq2SeqConfig};
+use ruai::nn::{KvCache, Module};
+use ruai::optim::{Adam, Optimizer};
+use ruai::{no_grad, rand, Device, Tensor};
 
 fn dev() -> Device {
     Device::from_env()

@@ -4,13 +4,13 @@
 //!     cargo run --release --example llama [path/to/text.txt]
 //!     cargo run --release --features mps --example llama -- --device mps
 
-use rustnn::generation::Sampler;
-use rustnn::nn::llama::{Llama, LlamaConfig};
-use rustnn::nn::Module;
-use rustnn::optim::lr::{CosineLr, LrScheduler};
-use rustnn::optim::{clip_grad_norm, Adam, Optimizer};
-use rustnn::prelude::*;
-use rustnn::rand;
+use ruai::generation::Sampler;
+use ruai::nn::llama::{Llama, LlamaConfig};
+use ruai::nn::Module;
+use ruai::optim::lr::{CosineLr, LrScheduler};
+use ruai::optim::{clip_grad_norm, Adam, Optimizer};
+use ruai::prelude::*;
+use ruai::rand;
 use std::time::Instant;
 
 const DEFAULT_TEXT: &str = "\

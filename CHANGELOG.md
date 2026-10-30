@@ -4,6 +4,9 @@
 
 API stabilization and documentation.
 
+- **Breaking:** the crate is now `ruai` (package and library; was package `rust-nn`, library
+  `rustnn`): replace `use rustnn::...` with `use ruai::...`. The `RUSTNN_DEVICE` environment
+  variable keeps its name.
 - **Breaking:** `GPT::generate(prompt, n, &mut Sampler)` now takes a `Sampler` (was a bare
   `temperature`), like `GPT2::generate` and `Llama::generate`. Use `Sampler::greedy()` for
   the old `temperature = 0.0`, `Sampler::new(t, 0, 1.0, seed)` for plain temperature sampling.

@@ -432,7 +432,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust-nn"
+name = "ruai"
 version = "1.0.0"
 dependencies = [
  "cudarc",

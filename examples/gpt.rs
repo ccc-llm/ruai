@@ -6,12 +6,12 @@
 //!     cargo run --release --example gpt -- --resume      # continue from runs/gpt/last.safetensors
 //!     cargo run --release --features mps --example gpt -- --device mps --amp f16   # mixed precision
 
-use rustnn::nn::{GPTConfig, Module, GPT};
-use rustnn::checkpoint::{self, TrainState};
-use rustnn::optim::lr::{CosineLr, LrScheduler};
-use rustnn::optim::{clip_grad_norm, Adam, Optimizer};
-use rustnn::prelude::*;
-use rustnn::{rand, serialize};
+use ruai::nn::{GPTConfig, Module, GPT};
+use ruai::checkpoint::{self, TrainState};
+use ruai::optim::lr::{CosineLr, LrScheduler};
+use ruai::optim::{clip_grad_norm, Adam, Optimizer};
+use ruai::prelude::*;
+use ruai::{rand, serialize};
 use std::time::Instant;
 
 const DEFAULT_TEXT: &str = "\
@@ -76,7 +76,7 @@ fn main() {
         println!("resumed from {ckpt} at step {}", state.step);
     }
     // f16 needs loss scaling; bf16 has the f32 exponent range
-    let mut scaler = rustnn::amp::GradScaler::with_scale(if amp == Some(DType::F16) { 65536.0 } else { 1.0 });
+    let mut scaler = ruai::amp::GradScaler::with_scale(if amp == Some(DType::F16) { 65536.0 } else { 1.0 });
     if let Some(d) = amp {
         println!("mixed precision: autocast {d}, f32 master weights");
     }
@@ -103,7 +103,7 @@ fn main() {
                 F::cross_entropy(&logits, &ys, 0.0)
             };
             let loss = match amp {
-                Some(d) => rustnn::autocast(d, forward),
+                Some(d) => ruai::autocast(d, forward),
                 None => forward(),
             };
             // gradients add up in .grad across backward() calls; scale so the

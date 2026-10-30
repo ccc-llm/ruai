@@ -1,12 +1,12 @@
 //! safetensors interop, legacy format, state-dict loading, and checkpoints
 //! that resume training exactly.
 
-use rustnn::checkpoint::{self, TrainState};
-use rustnn::functional as F;
-use rustnn::nn::{self, Module, Sequential};
-use rustnn::optim::{Adam, Optimizer, SGD};
-use rustnn::serialize::{self, Metadata};
-use rustnn::{rand, DType, Device, Tensor};
+use ruai::checkpoint::{self, TrainState};
+use ruai::functional as F;
+use ruai::nn::{self, Module, Sequential};
+use ruai::optim::{Adam, Optimizer, SGD};
+use ruai::serialize::{self, Metadata};
+use ruai::{rand, DType, Device, Tensor};
 
 /// Device under test: set `RUSTNN_DEVICE=mps` to run this file on the GPU.
 fn dev() -> Device {
@@ -14,7 +14,7 @@ fn dev() -> Device {
 }
 
 fn tmp(name: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("rustnn_{}_{name}", std::process::id()))
+    std::env::temp_dir().join(format!("ruai_{}_{name}", std::process::id()))
 }
 
 /// Build a safetensors file by hand, straight from the format spec:

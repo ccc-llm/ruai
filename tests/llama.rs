@@ -2,12 +2,12 @@
 //! `Llama` model: KV cache, Hugging Face layout, training, int8.
 //! Set `RUSTNN_DEVICE=mps` to run on the GPU.
 
-use rustnn::functional as F;
-use rustnn::generation::{argmax, Sampler};
-use rustnn::nn::llama::{Llama, LlamaConfig, RopeScaling};
-use rustnn::nn::{KvCache, Module};
-use rustnn::optim::{Adam, Optimizer};
-use rustnn::{no_grad, rand, serialize, Device, Tensor};
+use ruai::functional as F;
+use ruai::generation::{argmax, Sampler};
+use ruai::nn::llama::{Llama, LlamaConfig, RopeScaling};
+use ruai::nn::{KvCache, Module};
+use ruai::optim::{Adam, Optimizer};
+use ruai::{no_grad, rand, serialize, Device, Tensor};
 
 fn dev() -> Device {
     Device::from_env()
@@ -225,7 +225,7 @@ fn generate_with_cache_equals_without() {
 fn hugging_face_layout_roundtrip() {
     let _l = lock();
     rand::manual_seed(5);
-    let dir = std::env::temp_dir().join(format!("rustnn_llama_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("ruai_llama_{}", std::process::id()));
     for tied in [false, true] {
         let m = tiny(tied);
         m.save_pretrained(&dir).unwrap();
@@ -299,18 +299,18 @@ fn autocast_gradients_match_f32() {
     let m = tiny(false);
     let ids = Tensor::from_indices(&[1, 5, 9, 2, 7, 3], &[1, 6], dev());
     let tgt = [5usize, 9, 2, 7, 3, 1];
-    let grads = |amp: Option<rustnn::DType>| {
+    let grads = |amp: Option<ruai::DType>| {
         m.zero_grad();
         let f = || F::cross_entropy(&m.forward_tokens(&ids).reshape(&[6, 41]), &tgt, 0.0);
         let loss = match amp {
-            Some(d) => rustnn::autocast(d, f),
+            Some(d) => ruai::autocast(d, f),
             None => f(),
         };
         loss.backward();
         m.parameters().iter().flat_map(|p| p.grad().unwrap().to_vec()).collect::<Vec<f32>>()
     };
     let g32 = grads(None);
-    let g16 = grads(Some(rustnn::DType::F16));
+    let g16 = grads(Some(ruai::DType::F16));
     let norm = g32.iter().map(|x| x * x).sum::<f32>().sqrt();
     let err = g32.iter().zip(&g16).map(|(a, b)| (a - b) * (a - b)).sum::<f32>().sqrt();
     assert!(err < 0.02 * norm, "relative gradient error {}", err / norm);

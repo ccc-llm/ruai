@@ -1,9 +1,9 @@
 //! Backend-level checks: fused kernels agree with the composed reference
 //! implementations, dtypes behave, new ops give the right values.
 
-use rustnn::backend::{backend_for, reference::Unfused, AdamParams, Backend};
-use rustnn::functional as F;
-use rustnn::{rand, DType, Device, Tensor};
+use ruai::backend::{backend_for, reference::Unfused, AdamParams, Backend};
+use ruai::functional as F;
+use ruai::{rand, DType, Device, Tensor};
 
 const CPU: Device = Device::Cpu;
 

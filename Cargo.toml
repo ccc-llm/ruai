@@ -1,5 +1,5 @@
 [package]
-name = "rust-nn"
+name = "ruai"
 version = "1.0.0"
 edition = "2021"
 description = "A small PyTorch-like neural network engine in Rust (autograd, CNN/ResNet/ViT, Transformer/GPT/Llama, seq2seq)"
@@ -9,9 +9,6 @@ readme = "README.md"
 keywords = ["neural-network", "deep-learning", "autograd", "transformer", "gpu"]
 categories = ["science", "algorithms"]
 exclude = ["/scripts", "/runs", "/data", "*.safetensors"]
-
-[lib]
-name = "rustnn"
 
 [dependencies]
 rayon = "1.10"

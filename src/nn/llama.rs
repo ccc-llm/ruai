@@ -10,9 +10,9 @@
 //! keep this crate's own layout.
 //!
 //! ```no_run
-//! use rustnn::nn::llama::Llama;
-//! use rustnn::generation::Sampler;
-//! use rustnn::Device;
+//! use ruai::nn::llama::Llama;
+//! use ruai::generation::Sampler;
+//! use ruai::Device;
 //! let model = Llama::from_pretrained("data/tinyllama", Device::Cpu).unwrap();
 //! let ids = model.generate(&[1, 450, 6593], 20, &mut Sampler::greedy());
 //! ```

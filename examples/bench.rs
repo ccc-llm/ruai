@@ -3,10 +3,10 @@
 //!     cargo run --release --example bench [cpu|mps]
 //!     cargo run --release --features mps --example bench mps
 
-use rustnn::nn::{self, GPTConfig, Module, Sequential, GPT};
-use rustnn::optim::{Adam, Optimizer};
-use rustnn::prelude::*;
-use rustnn::rand;
+use ruai::nn::{self, GPTConfig, Module, Sequential, GPT};
+use ruai::optim::{Adam, Optimizer};
+use ruai::prelude::*;
+use ruai::rand;
 use std::time::Instant;
 
 /// Mean wall time (ms) per call of `f` over `iters` back-to-back runs, after a
@@ -123,7 +123,7 @@ fn main() {
         rand::manual_seed(0);
         let gpt = GPT::new(cfg, dev);
         let mut opt = Adam::new(gpt.parameters(), 1e-3);
-        let mut scaler = rustnn::amp::GradScaler::new();
+        let mut scaler = ruai::amp::GradScaler::new();
         let label = amp.map_or("f32".to_string(), |d| format!("autocast {d}"));
         println!("== GPT train step (B=8, T=128, d=256, L=4, V=256), {label} ==");
         let ms = time_ms(dev, 10, || {
@@ -132,11 +132,11 @@ fn main() {
             match amp {
                 // f16 needs loss scaling; bf16 has the f32 exponent range
                 Some(DType::F16) => {
-                    scaler.scale(&rustnn::autocast(DType::F16, step)).backward();
+                    scaler.scale(&ruai::autocast(DType::F16, step)).backward();
                     scaler.step(&mut opt);
                 }
                 Some(d) => {
-                    rustnn::autocast(d, step).backward();
+                    ruai::autocast(d, step).backward();
                     opt.step();
                 }
                 None => {

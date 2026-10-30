@@ -6,7 +6,7 @@
 //! `epoch`, `rng_state` plus any user entries.
 //!
 //! ```no_run
-//! # use rustnn::{nn::{Linear, Module}, optim::{Adam, Optimizer}, checkpoint, Device};
+//! # use ruai::{nn::{Linear, Module}, optim::{Adam, Optimizer}, checkpoint, Device};
 //! # let model = Linear::new(2, 2, Device::Cpu);
 //! # let mut opt = Adam::new(model.parameters(), 1e-3);
 //! let state = checkpoint::TrainState { step: 1000, epoch: 3, ..Default::default() };
@@ -23,7 +23,7 @@ use crate::tensor::Tensor;
 use std::io;
 use std::path::Path;
 
-const FORMAT: &str = "rustnn-checkpoint-v1";
+const FORMAT: &str = "ruai-checkpoint-v1";
 
 /// Training progress stored alongside the tensors.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -67,7 +67,7 @@ pub fn save(path: impl AsRef<Path>, model: &dyn Module, opt: &dyn Optimizer, sta
 pub fn load(path: impl AsRef<Path>, model: &dyn Module, opt: &mut dyn Optimizer) -> io::Result<TrainState> {
     let (tensors, mut meta) = serialize::load_safetensors(path)?;
     if meta.get("format").map(String::as_str) != Some(FORMAT) {
-        return Err(invalid("not a rustnn checkpoint (missing format metadata)".into()));
+        return Err(invalid("not a ruai checkpoint (missing format metadata)".into()));
     }
     let saved_opt = meta.remove("optimizer").unwrap_or_default();
     if saved_opt != opt.name() {

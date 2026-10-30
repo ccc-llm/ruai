@@ -1,4 +1,4 @@
-//! # rust-nn
+//! # ruai
 //!
 //! A small PyTorch-like deep learning engine:
 //!
@@ -21,7 +21,7 @@
 //!   primitives of [`backend::Backend`] (CPU, MPS and CUDA implement them)
 //!
 //! ```
-//! use rustnn::{Tensor, Device};
+//! use ruai::{Tensor, Device};
 //! let x = Tensor::from_slice(&[1.0, 2.0, 3.0], &[3]).requires_grad_();
 //! let y = (&x * &x).sum_all();
 //! y.backward();
@@ -31,8 +31,8 @@
 //! A training step looks like PyTorch:
 //!
 //! ```
-//! use rustnn::prelude::*;
-//! use rustnn::optim::Adam;
+//! use ruai::prelude::*;
+//! use ruai::optim::Adam;
 //!
 //! let model = nn::Sequential::new()
 //!     .add(nn::Linear::new(4, 16, Device::Cpu))
@@ -73,7 +73,7 @@ pub use device::Device;
 pub use ops::IntoIndices;
 pub use tensor::{autocast, autocast_dtype, is_grad_enabled, no_grad, NoGradGuard, Tensor};
 
-/// Commonly used items: `use rustnn::prelude::*;`
+/// Commonly used items: `use ruai::prelude::*;`
 pub mod prelude {
     pub use crate::functional as F;
     pub use crate::nn::{self, Module};

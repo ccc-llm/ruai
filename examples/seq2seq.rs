@@ -5,12 +5,12 @@
 //!     cargo run --release --example seq2seq
 //!     cargo run --release --features mps --example seq2seq -- --device mps
 
-use rustnn::nn::seq2seq::{Seq2Seq, Seq2SeqConfig};
-use rustnn::nn::Module;
-use rustnn::optim::lr::{CosineLr, LrScheduler};
-use rustnn::optim::{Adam, Optimizer};
-use rustnn::prelude::*;
-use rustnn::rand;
+use ruai::nn::seq2seq::{Seq2Seq, Seq2SeqConfig};
+use ruai::nn::Module;
+use ruai::optim::lr::{CosineLr, LrScheduler};
+use ruai::optim::{Adam, Optimizer};
+use ruai::prelude::*;
+use ruai::rand;
 use std::time::Instant;
 
 const PAD: usize = 0;

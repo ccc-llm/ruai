@@ -1,12 +1,12 @@
 //! Half precision and automatic mixed precision. Set `RUSTNN_DEVICE=mps`
 //! (or `cuda`) to run on a GPU.
 
-use rustnn::amp::{autocast, GradScaler};
-use rustnn::functional as F;
-use rustnn::nn::{self, Module, Sequential};
-use rustnn::generation::Sampler;
-use rustnn::optim::{Adam, Optimizer, SGD};
-use rustnn::{rand, serialize, DType, Device, Tensor};
+use ruai::amp::{autocast, GradScaler};
+use ruai::functional as F;
+use ruai::nn::{self, Module, Sequential};
+use ruai::generation::Sampler;
+use ruai::optim::{Adam, Optimizer, SGD};
+use ruai::{rand, serialize, DType, Device, Tensor};
 
 fn dev() -> Device {
     Device::from_env()

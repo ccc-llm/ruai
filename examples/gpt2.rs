@@ -11,10 +11,10 @@
 //! --temperature T (0 = greedy, default 0.8), --top-k K (40), --top-p P (0.95),
 //! --seed S, --device cpu|mps|cuda|auto, --int8, --no-cache.
 
-use rustnn::generation::Sampler;
-use rustnn::nn::gpt2::GPT2;
-use rustnn::tokenizer::{Gpt2Tokenizer, EOT};
-use rustnn::{no_grad, Device, Tensor};
+use ruai::generation::Sampler;
+use ruai::nn::gpt2::GPT2;
+use ruai::tokenizer::{Gpt2Tokenizer, EOT};
+use ruai::{no_grad, Device, Tensor};
 use std::io::Write;
 use std::time::Instant;
 
@@ -59,7 +59,7 @@ fn main() {
         "loaded GPT-2 ({} layers, d={}, {:.0}M params) on {device}{} in {:.1}s",
         c.n_layer,
         c.n_embd,
-        rustnn::nn::Module::num_parameters(&model) as f64 / 1e6,
+        ruai::nn::Module::num_parameters(&model) as f64 / 1e6,
         if args.has("--int8") { ", int8 weights" } else { "" },
         t0.elapsed().as_secs_f32()
     );

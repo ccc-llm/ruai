@@ -1,8 +1,8 @@
 //! Finite-difference gradient checks for every differentiable op.
 
-use rustnn::functional as F;
-use rustnn::nn::{self, Module};
-use rustnn::{no_grad, rand, Device, Tensor};
+use ruai::functional as F;
+use ruai::nn::{self, Module};
+use ruai::{no_grad, rand, Device, Tensor};
 
 /// Device under test: set `RUSTNN_DEVICE=mps` to run this file on the GPU.
 fn dev() -> Device {

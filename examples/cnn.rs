@@ -11,16 +11,16 @@
 //!     cargo run --release --example cnn -- --model resnet  # small ResNet (cnn | resnet | vit)
 //!     cargo run --release --example cnn -- --model vit     # Vision Transformer (4x4 patches)
 
-use rustnn::checkpoint::{self, TrainState};
-use rustnn::data::{Batch, ClassificationData, DataLoader};
-use rustnn::metrics::{Accuracy, RunningMean, Throughput};
-use rustnn::nn::resnet::{ResNet, ResNetConfig};
-use rustnn::nn::vit::{ViT, ViTConfig};
-use rustnn::nn::{self, Module, Sequential};
-use rustnn::optim::lr::{CosineLr, LrScheduler};
-use rustnn::optim::{Adam, Optimizer};
-use rustnn::prelude::*;
-use rustnn::{rand, serialize};
+use ruai::checkpoint::{self, TrainState};
+use ruai::data::{Batch, ClassificationData, DataLoader};
+use ruai::metrics::{Accuracy, RunningMean, Throughput};
+use ruai::nn::resnet::{ResNet, ResNetConfig};
+use ruai::nn::vit::{ViT, ViTConfig};
+use ruai::nn::{self, Module, Sequential};
+use ruai::optim::lr::{CosineLr, LrScheduler};
+use ruai::optim::{Adam, Optimizer};
+use ruai::prelude::*;
+use ruai::{rand, serialize};
 use std::path::Path;
 
 /// `--model cnn|resnet|vit` (default cnn).

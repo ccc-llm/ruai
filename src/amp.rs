@@ -3,8 +3,8 @@
 //! trains without scaling).
 //!
 //! ```no_run
-//! use rustnn::amp::{autocast, GradScaler};
-//! # use rustnn::{nn::{Linear, Module}, optim::{Adam, Optimizer}, functional as F, DType, Device, Tensor};
+//! use ruai::amp::{autocast, GradScaler};
+//! # use ruai::{nn::{Linear, Module}, optim::{Adam, Optimizer}, functional as F, DType, Device, Tensor};
 //! # let model = Linear::new(4, 2, Device::Mps);
 //! # let mut opt = Adam::new(model.parameters(), 1e-3);
 //! # let (x, y) = (Tensor::randn(&[8, 4], Device::Mps), vec![0usize; 8]);

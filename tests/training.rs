@@ -1,10 +1,10 @@
 //! End-to-end checks: models actually learn, save/load round-trips.
 
-use rustnn::functional as F;
-use rustnn::nn::{self, Module, Sequential};
-use rustnn::generation::Sampler;
-use rustnn::optim::{Adam, Optimizer, SGD};
-use rustnn::{rand, serialize, Device, Tensor};
+use ruai::functional as F;
+use ruai::nn::{self, Module, Sequential};
+use ruai::generation::Sampler;
+use ruai::optim::{Adam, Optimizer, SGD};
+use ruai::{rand, serialize, Device, Tensor};
 
 /// Device under test: set `RUSTNN_DEVICE=mps` to run this file on the GPU.
 fn dev() -> Device {
@@ -57,7 +57,7 @@ fn save_and_load_roundtrip() {
     let make = || Sequential::new().add(nn::Linear::new(3, 4, dev())).add(nn::BatchNorm2d::new(2, dev()));
     let a = make();
     let b = make();
-    let path = std::env::temp_dir().join(format!("rustnn_test_{}.bin", std::process::id()));
+    let path = std::env::temp_dir().join(format!("ruai_test_{}.bin", std::process::id()));
     serialize::save(&path, &a).unwrap();
     serialize::load(&path, &b).unwrap();
     std::fs::remove_file(&path).ok();

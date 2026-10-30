@@ -1,4 +1,4 @@
-# rust-nn
+# ruai（rust-nn）
 
 一個用 Rust 寫的、類似 PyTorch 的神經網路引擎：動態計算圖 + 反向自動微分，支援訓練與推理，內建 CNN、ResNet、ViT、Transformer（GPT / GPT-2 / Llama）與 encoder-decoder。支援 CPU（rayon 多執行緒，macOS 可選用 Accelerate）、Apple GPU（Metal / MPS）與 NVIDIA GPU（CUDA）。
 
@@ -6,11 +6,11 @@
 
 ```toml
 [dependencies]
-rust-nn = { git = "https://github.com/ccc-llm/rust-nn" }   # 程式中以 rustnn 引用
+ruai = "1.0"   # 或 git 版本：ruai = { git = "https://github.com/ccc-llm/rust-nn" }
 # GPU：features = ["mps"]（Apple）或 ["cuda"]（NVIDIA）；macOS CPU 加速：["accelerate"]
 ```
 
-> 尚未發布到 crates.io（名稱 `rust-nn` 與既有的 `rust_nn` 衝突，見「版本規劃」）。各版變更見 [CHANGELOG.md](CHANGELOG.md)。
+> crate 名稱為 [`ruai`](https://crates.io/crates/ruai)（原 `rust-nn` / `rustnn` 在 crates.io 上已被使用），程式中以 `use ruai::...` 引用。各版變更見 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 快速開始
 
@@ -53,9 +53,9 @@ MNIST：把解壓後的 `train-images-idx3-ubyte`、`train-labels-idx1-ubyte`、
 ## 使用範例
 
 ```rust
-use rustnn::prelude::*;
-use rustnn::nn::{Sequential, Conv2d, BatchNorm2d, ReLU, MaxPool2d, Flatten, Linear};
-use rustnn::optim::Adam;
+use ruai::prelude::*;
+use ruai::nn::{Sequential, Conv2d, BatchNorm2d, ReLU, MaxPool2d, Flatten, Linear};
+use ruai::optim::Adam;
 
 let dev = Device::Cpu;
 let model = Sequential::new()
@@ -78,16 +78,16 @@ model.eval();
 let pred = no_grad(|| model.forward(&x).argmax(-1, false));
 
 // 存檔 / 載入（safetensors，可與 PyTorch / Hugging Face 互通）
-rustnn::serialize::save("model.safetensors", &model)?;
-rustnn::serialize::load("model.safetensors", &model)?;
+ruai::serialize::save("model.safetensors", &model)?;
+ruai::serialize::load("model.safetensors", &model)?;
 ```
 
 ### 資料載入、排程與 checkpoint
 
 ```rust
-use rustnn::data::{ClassificationData, DataLoader};
-use rustnn::optim::lr::{CosineLr, LrScheduler};
-use rustnn::checkpoint::{self, TrainState};
+use ruai::data::{ClassificationData, DataLoader};
+use ruai::optim::lr::{CosineLr, LrScheduler};
+use ruai::checkpoint::{self, TrainState};
 
 let loader = DataLoader::new(train_data, 64, ClassificationData::collate(dev))
     .shuffle(true).drop_last(true).num_workers(2);    // 背景執行緒預先組 batch
@@ -110,9 +110,9 @@ for epoch in state.epoch..epochs {
 ### 預訓練 GPT-2
 
 ```rust
-use rustnn::nn::gpt2::GPT2;
-use rustnn::tokenizer::Gpt2Tokenizer;
-use rustnn::generation::Sampler;
+use ruai::nn::gpt2::GPT2;
+use ruai::tokenizer::Gpt2Tokenizer;
+use ruai::generation::Sampler;
 
 let tok = Gpt2Tokenizer::from_dir("data/gpt2")?;
 let mut model = GPT2::from_pretrained("data/gpt2", Device::Cpu)?;  // 直接讀 HF 的 model.safetensors
@@ -127,7 +127,7 @@ println!("{}", tok.decode(&ids));
 ### Llama（RMSNorm / RoPE / SwiGLU / GQA）
 
 ```rust
-use rustnn::nn::llama::{Llama, LlamaConfig};
+use ruai::nn::llama::{Llama, LlamaConfig};
 
 let cfg = LlamaConfig::new(vocab, 256, 4, 8, 2, 512);   // vocab, hidden, layers, heads, kv_heads, max_len
 let model = Llama::new(cfg, Device::Cpu);               // 8 個 query head 共用 2 組 K/V（GQA）
@@ -144,9 +144,9 @@ let ids = model.generate(&prompt_ids, 50, &mut Sampler::greedy());   // KV cache
 ### ResNet / ViT / encoder-decoder
 
 ```rust
-use rustnn::nn::resnet::{ResNet, ResNetConfig};
-use rustnn::nn::vit::{ViT, ViTConfig};
-use rustnn::nn::seq2seq::{Seq2Seq, Seq2SeqConfig};
+use ruai::nn::resnet::{ResNet, ResNetConfig};
+use ruai::nn::vit::{ViT, ViTConfig};
+use ruai::nn::seq2seq::{Seq2Seq, Seq2SeqConfig};
 
 let resnet = ResNet::new(ResNetConfig::resnet50(1000), dev);         // 參數數量與 torchvision 完全相同
 resnet.load_torchvision("resnet50.safetensors")?;                    // torchvision state_dict（存成 safetensors）
@@ -163,7 +163,7 @@ let out = s2s.greedy(&src_ids, BOS, Some(EOS), 50);                  // 解碼�
 ### 混合精度（AMP）
 
 ```rust
-use rustnn::amp::{autocast, GradScaler};
+use ruai::amp::{autocast, GradScaler};
 
 let mut scaler = GradScaler::new();                   // f16 需要；bf16 可省略
 opt.zero_grad();
@@ -329,7 +329,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v0.7 | KV cache、載入 GPT-2 官方權重、BPE tokenizer、取樣、int8 量化 | ✅（GPT-2 尚未以真實權重驗證） |
 | v0.8 | RMSNorm、RoPE、SwiGLU、GQA、Llama 模型（HF 版面載入／匯出） | ✅（Llama 尚未以真實權重驗證） |
 | v0.9 | ResNet、ViT、encoder-decoder Transformer（cross-attention、seq2seq） | ✅ |
-| v1.0 | API 整理（`GPT::generate` 改用 `Sampler`）、所有公開項目都有 rustdoc、clippy 乾淨、`cargo package` 可打包 | ✅（crates.io 名稱待定） |
+| v1.0 | API 整理（`GPT::generate` 改用 `Sampler`）、所有公開項目都有 rustdoc、clippy 乾淨、`cargo package` 可打包 | ✅（crates.io 名稱：`ruai`） |
 
 ## 目前限制
 

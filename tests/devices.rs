@@ -3,8 +3,8 @@
 //!
 //!     cargo test --features mps --test devices
 
-use rustnn::backend::{backend_for, AdamParams, Backend, BinaryOp, Conv2dGeom, MatmulSpec, ReduceOp, Storage, UnaryOp};
-use rustnn::{rand, DType, Device};
+use ruai::backend::{backend_for, AdamParams, Backend, BinaryOp, Conv2dGeom, MatmulSpec, ReduceOp, Storage, UnaryOp};
+use ruai::{rand, DType, Device};
 
 fn gpu_devices() -> Vec<Device> {
     [Device::Mps, Device::Cuda(0)].into_iter().filter(|d| d.is_available()).collect()
@@ -98,7 +98,7 @@ fn elementwise() {
         let cases: [(&[usize], &[usize]); 5] =
             [(&[7, 9], &[7, 9]), (&[7, 9], &[9]), (&[2, 1, 5], &[3, 1]), (&[4, 6], &[]), (&[2, 3, 4, 5], &[1, 3, 1, 5])];
         for (sa, sb) in cases {
-            let out = rustnn::shape::broadcast_shape(sa, sb);
+            let out = ruai::shape::broadcast_shape(sa, sb);
             let (ac, ag) = p.randn(sa.iter().product());
             let (bc, bg) = p.randn(sb.iter().product());
             let ops = [
@@ -318,7 +318,7 @@ fn device_from_env_and_parse() {
     // tensors created via from_env really live there
     let d = Device::from_env();
     if d.is_available() {
-        assert_eq!(rustnn::Tensor::zeros(&[2], d).device(), d);
+        assert_eq!(ruai::Tensor::zeros(&[2], d).device(), d);
     }
 }
 

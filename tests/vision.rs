@@ -1,11 +1,11 @@
 //! ResNet, ViT and padded max pooling. Set `RUSTNN_DEVICE=mps` to run on the GPU.
 
-use rustnn::functional as F;
-use rustnn::nn::resnet::{ResNet, ResNetConfig};
-use rustnn::nn::vit::{ViT, ViTConfig};
-use rustnn::nn::{self, Module};
-use rustnn::optim::{Adam, Optimizer};
-use rustnn::{no_grad, rand, Device, Tensor};
+use ruai::functional as F;
+use ruai::nn::resnet::{ResNet, ResNetConfig};
+use ruai::nn::vit::{ViT, ViTConfig};
+use ruai::nn::{self, Module};
+use ruai::optim::{Adam, Optimizer};
+use ruai::{no_grad, rand, Device, Tensor};
 
 fn dev() -> Device {
     Device::from_env()

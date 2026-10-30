@@ -7,12 +7,12 @@
 //! loads without any conversion. The output head is tied to `wte`.
 //!
 //! ```no_run
-//! use rustnn::nn::gpt2::GPT2;
-//! use rustnn::tokenizer::Gpt2Tokenizer;
-//! use rustnn::Device;
+//! use ruai::nn::gpt2::GPT2;
+//! use ruai::tokenizer::Gpt2Tokenizer;
+//! use ruai::Device;
 //! let model = GPT2::from_pretrained("data/gpt2", Device::Cpu).unwrap();
 //! let tok = Gpt2Tokenizer::from_dir("data/gpt2").unwrap();
-//! let ids = model.generate(&tok.encode("The dog"), 20, &mut rustnn::generation::Sampler::greedy());
+//! let ids = model.generate(&tok.encode("The dog"), 20, &mut ruai::generation::Sampler::greedy());
 //! println!("{}", tok.decode(&ids));
 //! ```
 
