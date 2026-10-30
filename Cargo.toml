@@ -1,6 +1,6 @@
 [package]
 name = "ruai"
-version = "3.1.0"
+version = "3.2.0"
 edition = "2021"
 description = "A Swiss-army AI toolkit in Rust: a PyTorch-like engine (autograd, GPU, GPT-2/Llama), and a git-style `ruai` command"
 license = "MIT"
@@ -22,6 +22,14 @@ serde_json = { version = "1", optional = true }
 # tokenizer.json: pre-tokenizer regexes (with lookahead) and Unicode normalizers
 fancy-regex = { version = "0.20", optional = true }
 unicode-normalization = { version = "0.1", optional = true }
+# --- pyrt: runtime of translated py0 programs
+indexmap = { version = "2", optional = true }
+regex = { version = "1", optional = true }
+# --- py: the py0 → Rust translator (merged from py2rs)
+ruff_python_parser = { version = "0.0.20", optional = true }
+ruff_python_ast = { version = "0.0.20", optional = true }
+ruff_text_size = { version = "0.0.20", optional = true }
+ruff_source_file = { version = "0.0.20", optional = true }
 
 # CUDA: loaded at runtime (dynamic-loading), so it builds without the CUDA toolkit
 cudarc = { version = "0.19", optional = true, default-features = false, features = ["std", "driver", "nvrtc", "cublas", "f16", "dynamic-loading", "cuda-12080"] }
@@ -33,9 +41,14 @@ objc2-metal = { version = "0.3", optional = true }
 objc2-metal-performance-shaders = { version = "0.3", optional = true }
 
 [features]
-default = ["nn", "world"]
+default = ["nn", "world", "py"]
 # The deep learning engine (ruai::nn, also re-exported at the crate root)
 nn = ["dep:rayon", "dep:matrixmultiply", "dep:half", "dep:safetensors", "dep:serde_json", "dep:fancy-regex", "dep:unicode-normalization"]
+# py0: the typed-Python translator (`ruai py`), and the runtime its programs use
+py = ["pyrt", "pyrt-re", "dep:serde_json", "dep:regex", "dep:ruff_python_parser", "dep:ruff_python_ast", "dep:ruff_text_size", "dep:ruff_source_file"]
+pyrt = ["dep:indexmap"]
+# Python's `re` module for py0 programs
+pyrt-re = ["pyrt", "dep:regex"]
 # Reinforcement-learning environments with the Gymnasium API (no dependencies)
 world = []
 # GPU backends for nn: Apple Metal (mps) and NVIDIA (cuda)

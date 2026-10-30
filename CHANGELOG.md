@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.2.0
+
+- py2rs is merged into ruai with its full git history (`git subtree`) and becomes **py0**:
+  the translator is `ruai::py` (feature `py`, on by default), the runtime `ruai::pyrt`
+  (feature `pyrt`, plus `pyrt-re` for `re`). `ruai py run / emit / check / explain / build /
+  pyo3 / stub / test / fuzz` replace the `py2rs` commands.
+- Translated programs depend on `ruai` with `default-features = false, features = ["pyrt"]`
+  (a path dependency in a checkout, the published version otherwise) and start with
+  `use ruai::pyrt;`; the runtime's macros are `pyrt::print!`, `pyrt::println!`,
+  `pyrt::check!` (hidden at the crate root).
+- The py2rs corpus moved to `tests/py0/` and runs in `cargo test` (`tests/py0.rs`): all
+  238 programs print what CPython 3.14 prints and the 44 rejections are reported as expected;
+  the PyO3 module test passes. Docs moved to `py0/`.
+
 ## 3.1.0
 
 - `ruai::world` (feature `world`, no dependencies): reinforcement-learning environments with

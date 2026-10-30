@@ -28,3 +28,6 @@ rustc-ice-*.txt
 data/
 runs/
 *.safetensors
+
+# `ruai py build` output directories
+*_rs/

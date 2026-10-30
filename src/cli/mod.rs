@@ -3,6 +3,8 @@
 mod args;
 #[cfg(feature = "nn")]
 mod nn;
+#[cfg(feature = "py")]
+mod py;
 #[cfg(feature = "world")]
 mod world;
 
@@ -12,6 +14,8 @@ pub use args::Args;
 const COMMANDS: &[(&str, &str)] = &[
     #[cfg(feature = "nn")]
     ("nn", "deep learning engine: generate text, inspect models, list devices"),
+    #[cfg(feature = "py")]
+    ("py", "py0, typed Python compiled to Rust: run, check, emit, build, test"),
     #[cfg(feature = "world")]
     ("world", "reinforcement-learning environments (Gymnasium API): list, run"),
     ("help", "show help for ruai or one of its commands"),
@@ -44,6 +48,8 @@ pub fn run(argv: &[String]) -> i32 {
         "nn" => nn::run(rest),
         #[cfg(feature = "world")]
         "world" => world::run(rest),
+        #[cfg(feature = "py")]
+        "py" => return py::main(rest),
         other => return external(other, rest),
     };
     match result {
@@ -62,6 +68,8 @@ fn help(rest: &[String]) -> Result<(), String> {
         Some("nn") => print!("{}", nn::USAGE),
         #[cfg(feature = "world")]
         Some("world") => print!("{}", world::USAGE),
+        #[cfg(feature = "py")]
+        Some("py") => print!("{}", py::USAGE),
         Some(other) => return Err(format!("no help for unknown command '{other}'")),
     }
     Ok(())

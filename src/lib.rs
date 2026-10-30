@@ -10,6 +10,9 @@
 //! * [`world`] (feature `world`) — reinforcement-learning environments with
 //!   the Gymnasium API (CartPole, MountainCar, Pendulum, Acrobot,
 //!   FrozenLake), matching Gymnasium bit for bit for the same seed.
+//! * [`py`] (feature `py`) — py0, a typed subset of Python translated to
+//!   readable Rust (merged from py2rs): `ruai py run prog.py`. Translated
+//!   programs depend on `ruai` with only the [`pyrt`] runtime feature.
 //! * [`rng`] — NumPy-compatible random numbers (`SeedSequence`, `PCG64`).
 //!
 //! The `ruai` command line tool dispatches to the parts like `git`:
@@ -27,6 +30,12 @@
 
 #[cfg(feature = "nn")]
 pub mod nn;
+#[cfg(feature = "py")]
+#[allow(missing_docs)]
+pub mod py;
+#[cfg(feature = "pyrt")]
+#[allow(missing_docs)]
+pub mod pyrt;
 pub mod rng;
 #[cfg(feature = "world")]
 pub mod world;

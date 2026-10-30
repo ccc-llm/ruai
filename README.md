@@ -8,7 +8,7 @@
 |---|---|---|---|
 | `ruai::nn`（feature `nn`） | `ruai nn ...` | 類似 PyTorch 的神經網路引擎：動態計算圖 + 自動微分（含二階）、CPU / Apple GPU（MPS）/ NVIDIA GPU（CUDA）、CNN、ResNet、ViT、GPT / GPT-2 / Llama、量化、safetensors | ✅ |
 | `ruai::world`（feature `world`） | `ruai world ...` | gymnasium 1.x 的 API 與環境（CartPole、MountainCar、Pendulum、Acrobot、FrozenLake），相同 seed 下與 gymnasium 逐位元相同 | ✅ |
-| `ruai::py` | `ruai py ...` | py0：受限、強型別的 Python，翻成 Rust 執行（由 py2rs 併入），附 Python 標準函式庫與 numpy / ml / world / nn 套件 | v3.2–v3.7 |
+| `ruai::py`（feature `py`） | `ruai py ...` | py0：受限、強型別的 Python，翻成可讀的 Rust 再編譯執行（由 py2rs 併入，見 [py0/](py0/README.tw.md)）；之後加上 Python 標準函式庫與 numpy / ml / world / nn 套件 | ✅（套件 v3.3–v3.7） |
 | agent | `ruai agent ...` | 以 py0 改寫的 agge：LLM agent 團隊與 graph 工作流程 | v3.4 |
 
 ```bash
@@ -17,6 +17,8 @@ ruai nn devices                       # 可用的運算裝置
 ruai nn info data/smollm2-135m        # 模型摘要（只讀 safetensors 標頭）
 ruai nn generate --model data/gpt2 --prompt "The dog" -n 18
 ruai nn generate --model data/smollm2-135m --device mps --int8 --prompt "Gravity is"
+ruai py run prog.py                   # py0：翻成 Rust、編譯（有快取）並執行
+ruai py emit prog.py                  # 印出翻譯的 Rust 程式
 ruai world list                       # 內建環境與其空間
 ruai world run CartPole-v1 --episodes 3 --seed 1
 ruai NAME ...                         # 其他名稱會執行 PATH 上的 ruai-NAME（像 git）
@@ -180,6 +182,24 @@ println!("{}", tok.decode(&ids, true));                         // true：略過
 
 > ✅ 已以 SmolLM2-135M 的官方權重驗證（`./scripts/download_smollm.sh` 後 `cargo test --release --test llama --test tokenizer`）：`tokenizer.json` 分詞結果正確，logits 與另外以純 PyTorch 依 Hugging Face `LlamaForCausalLM` 寫成的獨立實作相差不到 3e-4（每個位置的 argmax 都相同，CPU 與 MPS）；GPT-2 的 `tokenizer.json` 與 `vocab.json` + `merges.txt` 逐 token 相同。實測（Apple M3，40 個 token）：CPU f32 / int8 / int4 = 36 / 53 / 61 tokens/s，MPS = 29 / 92 / 99 tokens/s（30 層的小模型在 MPS 上受每個 op 的派送開銷限制）。尚未驗證：Llama 3 的 `rope_scaling`、Llama 2 的 SentencePiece 式 `tokenizer.json`。
 
+### py0：強型別的 Python 子集（py）
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class Item:
+    name: str
+    price: float
+
+def total(items: list[Item], tax: float = 0.05) -> float:
+    return sum(i.price for i in items) * (1 + tax)
+
+print(f"{total([Item('apple', 1.5), Item('pear', 2.25)]):.2f}")
+```
+
+`ruai py run prog.py` 把它翻成可讀的 Rust（`ruai py emit` 可看），以 Cargo 編譯（第一次需要幾秒，之後有快取）後執行，輸出與 CPython 相同；做不到時在翻譯階段就以行號與提示拒絕。py0 由 [py2rs](py0/README.tw.md) 併入（保留完整 git 歷史），規格見 [py0/SPEC.md](py0/SPEC.md)。翻譯出的程式依賴 `ruai`，但只開執行期 feature（`default-features = false, features = ["pyrt"]`），不會編譯神經網路引擎。執行 py0 程式需要 Rust 工具鏈（cargo）。
+
 ### 強化學習環境（world）
 
 ```rust
@@ -299,8 +319,12 @@ autocast 規則（同 PyTorch）：matmul / Linear / Conv 以半精度執行；s
 
 ```
 src/
-├── main.rs, cli/    `ruai` 指令（子指令派送、ruai nn）
-└── nn/              神經網路引擎（feature nn）
+├── main.rs, cli/    `ruai` 指令（子指令派送、ruai nn / world / py）
+├── nn/              神經網路引擎（feature nn）
+├── world/           Gymnasium 環境（feature world）
+├── rng.rs           NumPy 相容亂數
+├── py/              py0 翻譯器（feature py，原 py2rs）
+└── pyrt/            py0 程式的執行期（feature pyrt）
 nn/
 ├── backend/
 │   ├── mod.rs     Backend trait：約 15 個「原語」，所有裝置只需實作這些
@@ -432,6 +456,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - `tests/views.rs` / `tests/kvcache.rs`：view 不複製且與主機計算一致、view 是快照、matmul 直接讀轉置與 strided view、各 dtype；KV cache 容量加倍、回傳 view、先前的 view 與 clone 不受之後寫入影響、梯度可經 cache 回傳、100 步解碼與完整前向一致
 - `tests/second_order.rs`：逐元素、各種 matmul、softmax / log_softmax / cross-entropy、layer / RMS norm、embedding + gather、conv2d、融合 attention、gradient checkpointing 的 Hessian-向量積與有限差分一致；`backward_create_graph` 與 `autograd::grad` 的語意；gradient penalty 傳到參數的梯度與數值微分一致
 - `tests/world.rs`：6 個環境 × 4 個 seed × 400 步（含 autoreset）與 gymnasium 逐步、逐位元比對，向量環境、FrozenLake 文字算繪、NumPy 亂數（含 2⁶³ 以上的 seed、各種 `integers` 範圍）
+- `tests/py0.rs` + `tests/py0/`：py2rs 的語料——238 支程式逐一翻譯、編譯、執行，輸出、exit code 與例外類型都要與 CPython 3.12+ 相同；44 支應被拒絕的程式要以預期訊息拒絕；`tests/py0/pyo3/run.sh` 檢查 PyO3 擴充模組
 - `tests/training.rs`：MLP 學會 XOR、CNN（含 BatchNorm）收斂、GPT 記住序列、存檔/載入 round-trip
 
 ## 版本規劃
@@ -456,7 +481,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v2.0 | 不複製的 strided view、預先配置的 KV cache（解碼 CPU 約 1.4 倍、MPS 約 6 倍）、二階導數（`create_graph`、`autograd::grad`） | ✅ |
 | v3.0 | 單一 crate + features、引擎移到 `src/nn/`、git 式 `ruai` 指令（`ruai nn devices / info / generate`、外部 `ruai-NAME`） | ✅ |
 | v3.1 | `world`：gymnasium 1.x 的 API 與環境（逐位元相同）、NumPy 相容亂數 `ruai::rng`、`ruai world list / run`、REINFORCE 範例 | ✅ |
-| v3.2 | `py`：併入 py2rs，`ruai py run / check / emit / build / test` 執行 py0 | |
+| v3.2 | `py`：以 git subtree 併入 py2rs（翻譯器 `ruai::py`、執行期 `ruai::pyrt`），`ruai py run / emit / check / explain / build / pyo3 / stub / test / fuzz` | ✅ |
 | v3.3 | py0 套件機制、以 Rust 實作的 Python 標準函式庫 | |
 | v3.4 | `ruai agent`：以 py0 改寫 agge | |
 | v3.5–3.7 | py0 的 numpy、ml（sklearn 子集）、gymnasium 與 nn 套件 | |

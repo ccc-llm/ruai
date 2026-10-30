@@ -30,10 +30,16 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install gymnasium numpy
       - run: cargo test --release
+      # py0 → a Python extension module (PyO3), compared with CPython
+      - run: sh tests/py0/pyo3/run.sh
+        env:
+          PY2RS_PYTHON: python
       - run: cargo clippy --all-targets
       # every part is a feature: the crate must also build with none of them
       - run: cargo check --lib --no-default-features
       - run: cargo check --no-default-features --features world
+      - run: cargo check --no-default-features --features pyrt
+      - run: cargo check --no-default-features --features py
       # CUDA libraries are loaded at runtime, so the backend builds without a GPU
       - run: cargo check --all-targets --features cuda
       - run: cargo clippy --all-targets --features cuda

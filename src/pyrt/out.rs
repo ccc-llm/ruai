@@ -1,0 +1,59 @@
+//! Buffered standard output. Generated code imports `pyrt::{print, println}`;
+//! the buffer is flushed when the program ends, before input is read, and
+//! before a traceback is written.
+
+use std::io::Write;
+use std::sync::Mutex;
+
+static OUT: Mutex<Option<std::io::BufWriter<std::io::Stdout>>> = Mutex::new(None);
+
+/// Where output goes instead (an extension module writes to Python's `sys.stdout`).
+type Sink = Box<dyn Fn(&str) + Send>;
+static SINK: Mutex<Option<Sink>> = Mutex::new(None);
+
+pub fn set_sink(f: impl Fn(&str) + Send + 'static) {
+    *SINK.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(f));
+}
+
+pub fn write_out(args: std::fmt::Arguments) {
+    if let Some(f) = SINK.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        f(&args.to_string());
+        return;
+    }
+    let mut g = OUT.lock().unwrap_or_else(|e| e.into_inner());
+    let w = g.get_or_insert_with(|| std::io::BufWriter::with_capacity(1 << 16, std::io::stdout()));
+    if w.write_fmt(args).is_err() {
+        // a closed pipe: stop like CPython would (BrokenPipeError)
+        std::process::exit(1);
+    }
+}
+
+/// Writes out what is buffered.
+pub fn flush() {
+    let mut g = OUT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(w) = g.as_mut() {
+        let _ = w.flush();
+    }
+    let _ = std::io::stdout().flush();
+}
+
+/// `print(..)` without a newline
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __pyrt_print {
+    ($($t:tt)*) => {
+        $crate::pyrt::out::write_out(format_args!($($t)*))
+    };
+}
+
+/// `print(..)`
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __pyrt_println {
+    () => {
+        $crate::pyrt::out::write_out(format_args!("\n"))
+    };
+    ($($t:tt)*) => {
+        $crate::pyrt::out::write_out(format_args!("{}\n", format_args!($($t)*)))
+    };
+}
