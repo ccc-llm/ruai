@@ -1,6 +1,6 @@
 [package]
 name = "rust-nn"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "A small PyTorch-like neural network engine in Rust (autograd + CNN + Transformer)"
 license = "MIT"
@@ -12,11 +12,17 @@ name = "rustnn"
 rayon = "1.10"
 matrixmultiply = "0.3"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", optional = true }
+objc2-metal = { version = "0.3", optional = true }
+objc2-metal-performance-shaders = { version = "0.3", optional = true }
+
 [features]
 default = []
-# GPU backends (skeletons for now; see src/backend/cuda.rs and src/backend/mps.rs)
+# GPU backends: Apple Metal (mps) and NVIDIA (cuda, skeleton for now)
 cuda = []
-mps = []
+mps = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-metal", "dep:objc2-metal-performance-shaders"]
 # Use Apple Accelerate (AMX) for CPU matmul on macOS
 accelerate = []
 

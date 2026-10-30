@@ -1,6 +1,7 @@
 //! Character-level GPT (decoder-only Transformer): train, save, reload, generate.
 //!
 //!     cargo run --release --example gpt [path/to/text.txt]
+//!     cargo run --release --features mps --example gpt -- --device mps
 
 use rustnn::nn::{GPTConfig, Module, GPT};
 use rustnn::optim::{clip_grad_norm, cosine_lr, Adam, Optimizer};
@@ -18,10 +19,23 @@ attention lets every token look at the tokens before it. \
 convolution slides a small filter over an image. \
 rust is fast and safe, and now it can learn too. ";
 
+/// `--device cpu|mps|auto` (or the `RUSTNN_DEVICE` env var); defaults to CPU.
+fn device_arg() -> Device {
+    let args: Vec<String> = std::env::args().collect();
+    match args.iter().position(|a| a == "--device") {
+        Some(i) => args.get(i + 1).expect("--device needs a value").parse().unwrap(),
+        None => Device::from_env(),
+    }
+}
+
 fn main() {
     rand::manual_seed(0);
-    let device = Device::Cpu;
-    let text = match std::env::args().nth(1) {
+    let device = device_arg();
+    println!("device: {device}");
+    // first positional argument (not a flag or a flag's value) is the text file
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let path = args.iter().enumerate().find(|(i, a)| !a.starts_with("--") && (*i == 0 || args[i - 1] != "--device"));
+    let text = match path.map(|(_, p)| p.clone()) {
         Some(p) => std::fs::read_to_string(p).expect("read text file"),
         None => DEFAULT_TEXT.repeat(4),
     };

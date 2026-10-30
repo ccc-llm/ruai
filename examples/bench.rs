@@ -1,6 +1,7 @@
 //! Micro / macro benchmarks.
 //!
-//!     cargo run --release --example bench
+//!     cargo run --release --example bench [cpu|mps]
+//!     cargo run --release --features mps --example bench mps
 
 use rustnn::nn::{self, GPTConfig, Module, Sequential, GPT};
 use rustnn::optim::{Adam, Optimizer};
@@ -8,36 +9,40 @@ use rustnn::prelude::*;
 use rustnn::rand;
 use std::time::Instant;
 
-/// Median wall time (ms) of `f` over `iters` runs after one warmup.
-fn time_ms(iters: usize, mut f: impl FnMut()) -> f64 {
-    f();
-    let mut ts: Vec<f64> = (0..iters)
-        .map(|_| {
-            let t = Instant::now();
-            f();
-            t.elapsed().as_secs_f64() * 1e3
-        })
-        .collect();
-    ts.sort_by(|a, b| a.total_cmp(b));
-    ts[ts.len() / 2]
+/// Mean wall time (ms) per call of `f` over `iters` back-to-back runs, after a
+/// warmup. The device is synchronized once at the end (as with
+/// `torch.cuda.synchronize()`), so GPU numbers measure throughput, not latency.
+fn time_ms(dev: Device, iters: usize, mut f: impl FnMut()) -> f64 {
+    // warm up (lets GPU clocks ramp up and fills buffer pools)
+    for _ in 0..iters.div_ceil(2) {
+        f();
+    }
+    dev.synchronize();
+    let t = Instant::now();
+    for _ in 0..iters {
+        f();
+    }
+    dev.synchronize();
+    t.elapsed().as_secs_f64() * 1e3 / iters as f64
 }
 
 fn main() {
     rand::manual_seed(0);
-    let dev = Device::Cpu;
+    let dev: Device = std::env::args().nth(1).map(|s| s.parse().unwrap()).unwrap_or_else(Device::from_env);
+    println!("device: {dev}");
 
     println!("== matmul ==");
     for &n in &[128usize, 256, 512, 1024] {
         let a = Tensor::randn(&[n, n], dev);
         let b = Tensor::randn(&[n, n], dev);
-        let ms = time_ms(5, || {
+        let ms = time_ms(dev, 20, || {
             a.matmul(&b);
         });
         println!("  {n:4}x{n:<4}  {ms:8.3} ms  {:7.1} GFLOP/s", 2.0 * (n as f64).powi(3) / ms / 1e6);
     }
     let a = Tensor::randn(&[32, 8, 64, 64], dev);
     let b = Tensor::randn(&[32, 8, 64, 64], dev);
-    let ms = time_ms(5, || {
+    let ms = time_ms(dev, 20, || {
         a.matmul(&b.t());
     });
     println!("  batched [32,8,64,64]@T  {ms:8.3} ms");
@@ -45,19 +50,19 @@ fn main() {
     println!("== elementwise / reductions (1M elements) ==");
     let x = Tensor::randn(&[1024, 1024], dev);
     let bias = Tensor::randn(&[1024], dev);
-    println!("  add bcast   {:8.3} ms", time_ms(10, || drop(&x + &bias)));
-    println!("  gelu        {:8.3} ms", time_ms(10, || drop(x.gelu())));
-    println!("  sum(-1)     {:8.3} ms", time_ms(10, || drop(x.sum(-1, false))));
-    println!("  softmax     {:8.3} ms", time_ms(10, || drop(F::softmax(&x, -1))));
-    println!("  layer_norm  {:8.3} ms", time_ms(10, || drop(F::layer_norm(&x, None, None, 1e-5))));
-    println!("  transpose   {:8.3} ms", time_ms(10, || drop(x.t())));
+    println!("  add bcast   {:8.3} ms", time_ms(dev, 20, || drop(&x + &bias)));
+    println!("  gelu        {:8.3} ms", time_ms(dev, 20, || drop(x.gelu())));
+    println!("  sum(-1)     {:8.3} ms", time_ms(dev, 20, || drop(x.sum(-1, false))));
+    println!("  softmax     {:8.3} ms", time_ms(dev, 20, || drop(F::softmax(&x, -1))));
+    println!("  layer_norm  {:8.3} ms", time_ms(dev, 20, || drop(F::layer_norm(&x, None, None, 1e-5))));
+    println!("  transpose   {:8.3} ms", time_ms(dev, 20, || drop(x.t())));
 
     println!("== conv2d fwd+bwd [32,16,32,32] * [32,16,3,3] ==");
     let conv = nn::Conv2d::new(16, 32, 3, 1, 1, dev);
     let xi = Tensor::randn(&[32, 16, 32, 32], dev).requires_grad_();
     println!(
         "  {:8.3} ms",
-        time_ms(5, || {
+        time_ms(dev, 20, || {
             conv.zero_grad();
             conv.forward(&xi).sum_all().backward();
         })
@@ -82,7 +87,7 @@ fn main() {
     let yb: Vec<usize> = (0..64).map(|i| i % 10).collect();
     println!(
         "  {:8.3} ms/step",
-        time_ms(10, || {
+        time_ms(dev, 20, || {
             opt.zero_grad();
             F::cross_entropy(&cnn.forward(&xb), &yb, 0.0).backward();
             opt.step();
@@ -96,7 +101,7 @@ fn main() {
     let ids: Vec<usize> = (0..16 * 64).map(|i| (i * 7) % 64).collect();
     println!(
         "  {:8.3} ms/step",
-        time_ms(10, || {
+        time_ms(dev, 20, || {
             opt.zero_grad();
             let logits = gpt.forward_ids(&ids, 16, 64).reshape(&[16 * 64, 64]);
             F::cross_entropy(&logits, &ids, 0.0).backward();
@@ -111,7 +116,7 @@ fn main() {
     let ids: Vec<usize> = (0..8 * 128).map(|i| (i * 7) % 256).collect();
     println!(
         "  {:8.3} ms/step",
-        time_ms(5, || {
+        time_ms(dev, 20, || {
             opt.zero_grad();
             let logits = gpt.forward_ids(&ids, 8, 128).reshape(&[8 * 128, 256]);
             F::cross_entropy(&logits, &ids, 0.0).backward();

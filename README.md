@@ -1,6 +1,6 @@
 # rust-nn
 
-一個用 Rust 寫的、類似 PyTorch 的神經網路引擎：動態計算圖 + 反向自動微分，支援訓練與推理，內建 CNN 與 Transformer（GPT）。目前是 CPU 後端（rayon 多執行緒），架構上已為 CUDA / MPS 預留好擴充點。
+一個用 Rust 寫的、類似 PyTorch 的神經網路引擎：動態計算圖 + 反向自動微分，支援訓練與推理，內建 CNN 與 Transformer（GPT）。支援 CPU（rayon 多執行緒，macOS 可選用 Accelerate）與 Apple GPU（Metal / MPS）；CUDA 後端已預留好介面。
 
 ## 快速開始
 
@@ -12,7 +12,13 @@ cargo run --release --example bench     # 效能基準測試
 
 # macOS：用 Apple Accelerate (AMX) 做矩陣乘法，大型模型約快 2 倍
 cargo run --release --features accelerate --example gpt
+
+# Apple GPU（Metal）：加上 --features mps，用 --device 選裝置（cpu / mps / auto）
+cargo run --release --features mps --example gpt -- --device mps
+cargo run --release --features mps --example bench mps
 ```
+
+程式裡選裝置：`Tensor::randn(&[2, 3], Device::Mps)`、`model.to_device(Device::Mps)`、`Device::best_available()`，或用環境變數 `RUSTNN_DEVICE=mps`。
 
 MNIST：把解壓後的 `train-images-idx3-ubyte`、`train-labels-idx1-ubyte`、`t10k-images-idx3-ubyte`、`t10k-labels-idx1-ubyte` 放到 `data/mnist/`；找不到時 `cnn` 範例會改用自動產生的幾何圖形資料集。
 
@@ -68,8 +74,9 @@ src/
 ├── backend/
 │   ├── mod.rs     Backend trait：約 15 個「原語」，所有裝置只需實作這些
 │   ├── cpu.rs     CPU 實作（rayon 平行化）
-│   ├── cuda.rs    CUDA 骨架 (--features cuda)
-│   └── mps.rs     Apple Metal 骨架 (--features mps)
+│   ├── mps.rs     Apple Metal 後端 (--features mps)
+│   ├── mps_kernels.metal  Metal compute kernels（執行時編譯）
+│   └── cuda.rs    CUDA 骨架 (--features cuda)
 ├── tensor.rs      Tensor 結構、計算圖節點、backward()
 ├── ops.rs         可微分運算：forward 呼叫 backend，backward 由其他運算組成
 ├── functional.rs  組合運算（softmax、conv2d、attention …）
@@ -92,34 +99,46 @@ Autograd、所有 nn 層、優化器都只透過 `Tensor` 運算操作資料，�
 
 所有 storage 都是連續 (contiguous) 的 row-major buffer，這讓 GPU kernel 的實作保持簡單。
 
-## 加入 GPU 後端
+## GPU 後端
 
-以 CUDA 為例，只需修改 `src/backend/cuda.rs`：
+### MPS（Apple Metal，已完成）
 
-1. 讓 `CudaStorage` 持有真正的裝置記憶體（例如 `cudarc` 的 `CudaSlice<f32>`）
-2. 實作 `Backend` 的每個方法，對應關係已寫在檔案註解中：
-   `matmul` → `cublasSgemmStridedBatched`（`MatmulSpec` 的轉置旗標與 stride 是一對一對應）、
-   elementwise / reduce / im2col → NVRTC 編譯的 kernel
-3. 使用：`Tensor::randn(&[2, 3], Device::Cuda(0))`、`model.to_device(Device::Cuda(0))`
+- **記憶體**：`MTLBuffer` 放在 unified memory（`StorageModeShared`），CPU↔GPU 傳輸只是 memcpy；kernel 的輸出緩衝區來自依大小分類的 buffer pool，避免每次配置
+- **kernel**：`mps_kernels.metal` 在執行時以 safe math 編譯（不需要安裝 Xcode），數值與 CPU 版一致
+- **matmul**：`MPSMatrixMultiplication`（batched + 轉置），kernel 物件依形狀快取
+- **非同步**：運算累積在同一個 command buffer，每 48 個 op 或在需要讀回資料（`to_vec`、`item`）時才送出；不會每個運算都等 GPU
+- **融合原語**：softmax / log_softmax / layer_norm（含 backward）、Adam 都是單一 kernel（一個 threadgroup 處理一列，用 simdgroup 歸約）
+- 需求：Apple Silicon、macOS 15+（使用 `atomic_float`、`MTLMathMode`）
 
-MPS 同理（`MPSMatrixMultiplication` + Metal compute kernel，unified memory 讓 `to_vec` 只是 memcpy）。上層程式碼完全不用改，`tests/` 的梯度檢查可以直接拿來驗證新後端。
+### CUDA（v0.4）
 
-## 效能（Apple Silicon 8 核，`cargo run --release --example bench`）
+只需實作 `src/backend/cuda.rs`：讓 `CudaStorage` 持有裝置記憶體（如 `cudarc` 的 `CudaSlice`），`matmul` 對應 `cublasSgemmStridedBatched`，其餘用 NVRTC kernel——可以直接移植 `mps_kernels.metal` 的邏輯。上層程式碼完全不用改，`tests/devices.rs` 會自動拿 CUDA 結果對照 CPU。
 
-| 項目 | v0.1 | v0.2 | v0.2 + `accelerate` |
-|---|---|---|---|
-| matmul 1024×1024 | 127 GFLOP/s | 382 GFLOP/s | 1192 GFLOP/s |
-| softmax（1M 元素） | 1.52 ms | 0.40 ms | 0.43 ms |
-| layer_norm（1M 元素） | 1.07 ms | 0.44 ms | 0.36 ms |
-| conv2d fwd+bwd | 13.3 ms | 6.7 ms | 6.6 ms |
-| CNN 訓練一步 | 10.1 ms | 6.2 ms | 5.8 ms |
-| GPT 訓練一步（d=64, L=2） | 29.1 ms | 9.1 ms | 6.5 ms |
-| GPT 訓練一步（d=256, L=4） | 296 ms | 93 ms | 50 ms |
+## 效能（Apple M3，8 核 CPU / 8 核 GPU，`cargo run --release --example bench <device>`）
+
+| 項目 | v0.1 CPU | v0.3 CPU | CPU + `accelerate` | MPS (GPU) |
+|---|---|---|---|---|
+| matmul 1024×1024 | 127 GFLOP/s | 283–380 GFLOP/s | 983 GFLOP/s | 1178 GFLOP/s（長時間滿載約 2000） |
+| softmax（1M 元素） | 1.52 ms | 0.43 ms | 0.43 ms | 0.11 ms |
+| layer_norm（1M 元素） | 1.07 ms | 0.41 ms | 0.44 ms | 0.095 ms |
+| conv2d fwd+bwd | 13.3 ms | 6.2 ms | 6.3 ms | 4.4 ms |
+| CNN 訓練一步（小模型） | 10.1 ms | 5.9 ms | 5.1 ms | 5.5 ms |
+| GPT 訓練一步（d=64, L=2） | 29.1 ms | 9.2 ms | 6.2 ms | 3.4 ms |
+| GPT 訓練一步（d=256, L=4） | 296 ms | 105 ms | 58 ms | 29 ms |
+
+GPU 計時採 throughput 方式（連續執行 N 次後同步一次，同 `torch.cuda.synchronize()` 慣例）。很小的運算（如 256×256 matmul、小 CNN）在 GPU 上受每個 op 的派送開銷限制，不一定比 CPU 快；模型越大 GPU 優勢越明顯。
 
 ## 測試
 
+```bash
+cargo test                                         # CPU
+RUSTNN_DEVICE=mps cargo test --features mps        # 同一組測試全部在 GPU 上跑
+cargo test --features mps --test devices           # 每個 backend 原語：GPU 對照 CPU
+```
+
 - `tests/gradcheck.rs`：對每個可微分運算（廣播、matmul 各種 batch 形式、conv、pool、softmax、layer norm、attention …）做中央差分的數值梯度檢查，並驗證 causal mask 不會偷看未來
 - `tests/backend.rs`：融合 kernel 與預設組合實作一致、matmul（含轉置、平行切塊）對照樸素實作、dtype 行為、新運算的數值
+- `tests/devices.rs`：跨裝置一致性——每個原語（含邊界尺寸、廣播、各種轉置/batch stride 的 matmul、各種 stride/padding 的 conv、重複索引的 scatter）在每個可用 GPU 後端上的結果都要與 CPU 相符
 - `tests/training.rs`：MLP 學會 XOR、CNN（含 BatchNorm）收斂、GPT 記住序列、存檔/載入 round-trip
 
 ## 版本規劃
@@ -128,7 +147,7 @@ MPS 同理（`MPSMatrixMultiplication` + Metal compute kernel，unified memory �
 |---|---|---|
 | v0.1 | CPU 後端、autograd、CNN、Transformer/GPT、優化器、存檔 | ✅ |
 | v0.2 | DType（I32 索引）、cat/gather/where 等新運算、融合原語、快速 GEMM、Accelerate | ✅ |
-| v0.3 | MPS（Apple Metal）後端、跨裝置測試框架 | |
+| v0.3 | MPS（Apple Metal）後端、跨裝置測試框架、`--device` 選擇 | ✅ |
 | v0.4 | CUDA 後端（cuBLAS + NVRTC） | |
 | v0.5 | DataLoader、完整 checkpoint（含優化器狀態）、safetensors | |
 | v0.6 | f16 / bf16、混合精度訓練 | |
@@ -140,5 +159,6 @@ MPS 同理（`MPSMatrixMultiplication` + Metal compute kernel，unified memory �
 
 - 浮點運算只有 `f32`（f16/bf16 在 v0.6）
 - 反向傳播不建立計算圖（不支援二階導數）
-- attention 尚未融合成單一 kernel（CPU 上已是 GEMM 為主；融合版留到 GPU 後端，屆時收益最大）
-- CUDA / MPS 後端目前只有骨架（`unimplemented!`）
+- attention 尚未融合成單一 kernel（flash-attention 式的融合排在之後的版本）
+- MPS：小運算受派送開銷限制；張量維度上限 8；索引必須能放進 u32
+- CUDA 後端目前只有骨架（`unimplemented!`），v0.4 實作

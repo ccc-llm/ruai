@@ -4,7 +4,10 @@ use rustnn::functional as F;
 use rustnn::nn::{self, Module};
 use rustnn::{no_grad, rand, Device, Tensor};
 
-const CPU: Device = Device::Cpu;
+/// Device under test: set `RUSTNN_DEVICE=mps` to run this file on the GPU.
+fn dev() -> Device {
+    Device::from_env()
+}
 
 /// Compares autograd gradients of `sum(f(inputs) * R)` (R random, fixed)
 /// against central finite differences.
@@ -15,7 +18,7 @@ fn gradcheck(name: &str, shapes: &[&[usize]], f: impl Fn(&[Tensor]) -> Tensor) {
         d.iter()
             .zip(shapes)
             .map(|(v, s)| {
-                let t = Tensor::from_vec(v.clone(), s, CPU);
+                let t = Tensor::from_vec(v.clone(), s, dev());
                 if grad {
                     t.requires_grad_()
                 } else {
@@ -26,7 +29,7 @@ fn gradcheck(name: &str, shapes: &[&[usize]], f: impl Fn(&[Tensor]) -> Tensor) {
     };
     let inputs = make(&data, true);
     let out = f(&inputs);
-    let r = Tensor::from_vec(rand::normal_vec(out.numel(), 0.0, 1.0), out.shape(), CPU);
+    let r = Tensor::from_vec(rand::normal_vec(out.numel(), 0.0, 1.0), out.shape(), dev());
     let loss_of = |ts: &[Tensor]| (&f(ts) * &r).sum_all().item() as f64;
     (&out * &r).sum_all().backward();
 
@@ -93,7 +96,7 @@ fn nn_functions() {
     gradcheck("cross_entropy", &[&[4, 3]], |x| F::cross_entropy(&x[0], &[0usize, 2, 1, 2], 0.1));
     gradcheck("mse", &[&[4], &[4]], |x| F::mse_loss(&x[0], &x[1]));
     gradcheck("bce_logits", &[&[5]], |x| {
-        F::binary_cross_entropy_with_logits(&x[0], &Tensor::from_slice(&[0., 1., 1., 0., 1.], &[5]))
+        F::binary_cross_entropy_with_logits(&x[0], &Tensor::from_slice(&[0., 1., 1., 0., 1.], &[5]).to(dev()))
     });
     gradcheck("layer_norm", &[&[3, 6], &[6], &[6]], |x| F::layer_norm(&x[0], Some(&x[1]), Some(&x[2]), 1e-5));
     gradcheck("embedding", &[&[5, 3]], |x| x[0].index_select(&[1usize, 4, 1, 0]));
@@ -105,9 +108,9 @@ fn indexing_and_concat() {
     gradcheck("select", &[&[3, 4, 2]], |x| x[0].select(1, 2));
     gradcheck("cat", &[&[2, 3], &[2, 1], &[2, 2]], |x| Tensor::cat(&[&x[0], &x[1], &x[2]], -1));
     gradcheck("stack", &[&[2, 3], &[2, 3]], |x| Tensor::stack(&[&x[0], &x[1]], 0));
-    let idx = Tensor::from_indices(&[2, 0, 1, 1, 3, 0], &[3, 2], CPU);
+    let idx = Tensor::from_indices(&[2, 0, 1, 1, 3, 0], &[3, 2], dev());
     gradcheck("gather", &[&[3, 4]], move |x| x[0].gather(1, &idx));
-    let cond = Tensor::from_slice(&[1., 0., 1., 0.], &[4]);
+    let cond = Tensor::from_slice(&[1., 0., 1., 0.], &[4]).to(dev());
     gradcheck("where", &[&[3, 4], &[4]], move |x| Tensor::where_cond(&cond, &x[0], &x[1]));
     gradcheck("minimum", &[&[8], &[8]], |x| x[0].minimum(&x[1]));
     gradcheck("clamp", &[&[10]], |x| (&x[0] * 2.0).clamp(-0.5, 0.7));
@@ -124,7 +127,7 @@ fn convolution_and_pooling() {
 #[test]
 fn attention() {
     gradcheck("sdpa_causal", &[&[2, 4, 3], &[2, 4, 3], &[2, 4, 3]], |x| {
-        let m = F::causal_mask(4, CPU);
+        let m = F::causal_mask(4, dev());
         F::scaled_dot_product_attention(&x[0], &x[1], &x[2], Some(&m), 0.0, false)
     });
 }
@@ -132,8 +135,8 @@ fn attention() {
 #[test]
 fn transformer_block_params_get_grads() {
     rand::manual_seed(0);
-    let blk = nn::TransformerBlock::new(8, 2, 16, 0.0, true, CPU);
-    let x = Tensor::randn(&[2, 5, 8], CPU).requires_grad_();
+    let blk = nn::TransformerBlock::new(8, 2, 16, 0.0, true, dev());
+    let x = Tensor::randn(&[2, 5, 8], dev()).requires_grad_();
     blk.forward(&x).sum_all().backward();
     assert!(x.grad().is_some());
     for (name, p) in blk.named_parameters() {
@@ -145,16 +148,16 @@ fn transformer_block_params_get_grads() {
 #[test]
 fn causal_attention_does_not_look_ahead() {
     rand::manual_seed(1);
-    let blk = nn::TransformerBlock::new(8, 2, 16, 0.0, true, CPU);
+    let blk = nn::TransformerBlock::new(8, 2, 16, 0.0, true, dev());
     blk.eval();
-    let x = Tensor::randn(&[1, 6, 8], CPU);
+    let x = Tensor::randn(&[1, 6, 8], dev());
     let y1 = blk.forward(&x).to_vec();
     // change only the last time step
     let mut xv = x.to_vec();
     for v in xv[5 * 8..].iter_mut() {
         *v += 1.0;
     }
-    let y2 = blk.forward(&Tensor::from_vec(xv, &[1, 6, 8], CPU)).to_vec();
+    let y2 = blk.forward(&Tensor::from_vec(xv, &[1, 6, 8], dev())).to_vec();
     for i in 0..5 * 8 {
         assert!((y1[i] - y2[i]).abs() < 1e-5, "position {} changed", i / 8);
     }

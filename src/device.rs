@@ -22,7 +22,49 @@ impl Device {
         match self {
             Device::Cpu => true,
             Device::Cuda(_) => cfg!(feature = "cuda"),
-            Device::Mps => cfg!(feature = "mps"),
+            #[cfg(feature = "mps")]
+            Device::Mps => crate::backend::mps::is_available(),
+            #[cfg(not(feature = "mps"))]
+            Device::Mps => false,
+        }
+    }
+}
+
+impl Device {
+    /// Wait for all queued work on this device (useful for timing GPU code).
+    pub fn synchronize(&self) {
+        crate::backend::backend_for(*self).synchronize();
+    }
+
+    /// The fastest available device: MPS, then CUDA, then CPU.
+    pub fn best_available() -> Device {
+        [Device::Mps, Device::Cuda(0)].into_iter().find(|d| d.is_available()).unwrap_or(Device::Cpu)
+    }
+
+    /// Device named by the `RUSTNN_DEVICE` environment variable (default: CPU).
+    pub fn from_env() -> Device {
+        match std::env::var("RUSTNN_DEVICE") {
+            Ok(s) => s.parse().unwrap_or_else(|e| panic!("RUSTNN_DEVICE: {e}")),
+            Err(_) => Device::Cpu,
+        }
+    }
+}
+
+impl std::str::FromStr for Device {
+    type Err = String;
+
+    /// Parses `cpu`, `mps`, `cuda`, `cuda:N`, or `auto` (best available).
+    fn from_str(s: &str) -> Result<Device, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "cpu" => Ok(Device::Cpu),
+            "mps" | "metal" => Ok(Device::Mps),
+            "cuda" | "gpu" => Ok(Device::Cuda(0)),
+            "auto" => Ok(Device::best_available()),
+            other => other
+                .strip_prefix("cuda:")
+                .and_then(|i| i.parse().ok())
+                .map(Device::Cuda)
+                .ok_or_else(|| format!("unknown device '{s}' (expected cpu, mps, cuda[:N] or auto)")),
         }
     }
 }

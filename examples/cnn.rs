@@ -5,6 +5,7 @@
 //! t10k-labels-idx1-ubyte); otherwise generates a synthetic shapes dataset.
 //!
 //!     cargo run --release --example cnn
+//!     cargo run --release --features mps --example cnn -- --device mps
 
 use rustnn::nn::{self, Module, Sequential};
 use rustnn::optim::{Adam, Optimizer};
@@ -117,9 +118,19 @@ fn evaluate(model: &Sequential, data: &Dataset, device: Device) -> f32 {
     correct / data.len() as f32
 }
 
+/// `--device cpu|mps|auto` (or the `RUSTNN_DEVICE` env var); defaults to CPU.
+fn device_arg() -> Device {
+    let args: Vec<String> = std::env::args().collect();
+    match args.iter().position(|a| a == "--device") {
+        Some(i) => args.get(i + 1).expect("--device needs a value").parse().unwrap(),
+        None => Device::from_env(),
+    }
+}
+
 fn main() {
     rand::manual_seed(0);
-    let device = Device::Cpu;
+    let device = device_arg();
+    println!("device: {device}");
     let dir = Path::new("data/mnist");
     let (train, test, epochs) = match (load_mnist(dir, "train", 60000), load_mnist(dir, "t10k", 10000)) {
         (Some(a), Some(b)) => {

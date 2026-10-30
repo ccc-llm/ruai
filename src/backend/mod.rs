@@ -245,6 +245,10 @@ fn keep_axis(shape: &[usize], axis: usize) -> Vec<usize> {
 pub trait Backend: Send + Sync {
     fn device(&self) -> Device;
 
+    /// Block until all queued work on this device has finished
+    /// (no-op for synchronous backends such as the CPU).
+    fn synchronize(&self) {}
+
     // ---- memory ----
     fn from_f32(&self, data: Vec<f32>) -> Storage;
     fn from_i32(&self, data: Vec<i32>) -> Storage;
