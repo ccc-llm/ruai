@@ -175,4 +175,16 @@ fn main() {
         let composed = no_grad(|| time_ms(dev, 5, || drop(F::attention_composed(&q, &k, &v, Some(&m), 0.0, false))));
         println!("  T={t:5}  fused {fused:8.3} ms   composed {composed:8.3} ms   (scores: {:.0} MB)", (4 * 8 * t * t * 4) as f64 / 1e6);
     }
+
+    // greedy decoding with a KV cache, long context
+    println!("== decode 1024 tokens, Llama d=256 L=4 (8 heads / 2 kv heads) ==");
+    {
+        use ruai::nn::llama::{Llama, LlamaConfig};
+        rand::manual_seed(0);
+        let m = Llama::new(LlamaConfig::new(256, 256, 4, 8, 2, 1100), dev);
+        let t0 = Instant::now();
+        let out = m.generate(&[1, 2, 3], 1024, &mut ruai::generation::Sampler::greedy());
+        let s = t0.elapsed().as_secs_f64();
+        println!("  {:.1} tokens/s ({} tokens in {s:.2}s)", (out.len() - 3) as f64 / s, out.len() - 3);
+    }
 }

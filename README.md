@@ -219,7 +219,7 @@ autocast 規則（同 PyTorch）：matmul / Linear / Conv 以半精度執行；s
 | 類別 | 內容 |
 |---|---|
 | DType | `F32`、`F16`、`BF16`（皆可微分；半精度運算內部以 f32 計算後再捨入）、`I32`（索引：token id、類別標籤、argmax 結果，存在裝置上）；可微分的 `to_dtype`、型別提升規則 |
-| 推理 | **KV cache**（逐 token 解碼為 O(n)，支援 prefill + 逐步解碼、超過上下文長度時滑動視窗）、`Sampler`（greedy / temperature / top-k / top-p，可設種子）、`matmul_nt`（不複製的轉置乘法，用於 tied head）|
+| 推理 | **KV cache**（預先配置、容量加倍的 buffer，新 token 原地寫入、attention 直接讀 view，不再每步複製；支援 prefill + 逐步解碼、超過上下文長度時滑動視窗、clone 後寫入時複製）、`Sampler`（greedy / temperature / top-k / top-p，可設種子）、`matmul_nt`（不複製的轉置乘法，用於 tied head）|
 | GPT-2 | `nn::gpt2::GPT2`：參數名稱與 Hugging Face `GPT2LMHeadModel` 相同、HF 的 Conv1D 版面 `[in, out]` 與本專案 `Linear` 一致，`model.safetensors` 不需轉換即可載入；支援 small/medium/large/xl；`tokenizer::Gpt2Tokenizer`（byte-level BPE，手寫實作 GPT-2 的前處理 regex）|
 | Llama | `nn::llama::Llama`：RMSNorm、RoPE（含 Llama 3.1 頻率縮放）、SwiGLU、GQA（KV cache 只存 K/V head）、tied / untied head、int8；參數名稱同 HF `LlamaForCausalLM`，`from_pretrained`（單檔或分片 safetensors）/ `save_pretrained` |
 | 視覺 | `nn::resnet::ResNet`（BasicBlock / Bottleneck、resnet18/34/50/101/152、CIFAR 式小型版；參數名稱與數量同 torchvision，`load_torchvision` 自動轉換 BN 形狀與 fc 轉置）、`nn::vit::ViT`（patch embedding、`[CLS]`、可學習位置編碼；ViT-B/16 參數數量同 timm） |
@@ -370,6 +370,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - `tests/finetune.rs`：LoRA 初始為恆等、只訓練 adapter、凍結參數不變、合併前後輸出相同、只存 adapter 再載入、int8 底模上可訓練；gradient checkpointing 在 Llama / Llama+LoRA / 含 dropout 的 GPT / GPT-2 上梯度與不重算時相同
 - `tests/quant.rs`：int4 打包與獨立計算的反量化逐元素相同、融合 kernel 與預設（主機反量化 + GEMM）一致、Llama / GPT-2 的 int4 誤差、int4 底模上的 LoRA 可訓練；`tests/devices.rs` 另含 `matmul_int4` / `dequant_int4` 在 GPU 與 CPU 的對照
 - `tests/attention.rs`：融合 attention 與組合式在各種 mask（無、causal、padding、每個 head、完整、單列）、`dv ≠ d`、半精度、autocast 下一致，梯度一致，任意分塊大小結果相同，長序列大 logits 數值穩定；`tests/devices.rs` 另含 GPU 與 CPU 的 attention 對照
+- `tests/views.rs` / `tests/kvcache.rs`：view 不複製且與主機計算一致、view 是快照、matmul 直接讀轉置與 strided view、各 dtype；KV cache 容量加倍、回傳 view、先前的 view 與 clone 不受之後寫入影響、梯度可經 cache 回傳、100 步解碼與完整前向一致
 - `tests/training.rs`：MLP 學會 XOR、CNN（含 BatchNorm）收斂、GPT 記住序列、存檔/載入 round-trip
 
 ## 版本規劃
@@ -391,7 +392,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v1.3 | LoRA（含 int8 底模）、gradient checkpointing、`freeze` / `trainable_parameters` | ✅ |
 | v1.4 | 分組 int4 權重量化（CPU / MPS / CUDA 融合 kernel，可在其上訓練 LoRA） | ✅ |
 | v1.5 | 融合 attention（CPU：FlashAttention 式分塊；其他後端：分塊 GEMM，記憶體有上限）、MPS 量化 matvec 加速 | ✅ |
-| v2.0 | 不複製的 strided view、預先配置的 KV cache、二階導數 | |
+| v2.0 | 不複製的 strided view、預先配置的 KV cache（解碼 CPU 約 1.4 倍、MPS 約 6 倍）、二階導數 | 進行中（view、KV cache 完成） |
 
 ## 目前限制
 

@@ -518,7 +518,7 @@ impl Tensor {
     /// batch stride)` when its offset is 0, its last two dims are row-major
     /// (or column-major = `transposed`) and its leading dims collapse to one
     /// stride (0 = broadcast). `None` means it must be materialized.
-    fn gemm_operand(&self) -> Option<(crate::backend::Storage, bool, usize)> {
+    pub(crate) fn gemm_operand(&self) -> Option<(crate::backend::Storage, bool, usize)> {
         let (s, st, off) = self.strided_parts();
         let r = self.rank();
         if off != 0 || r < 2 {

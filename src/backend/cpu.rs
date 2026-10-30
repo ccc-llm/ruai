@@ -932,7 +932,7 @@ impl Backend for CpuCore {
         // softmax across key blocks. Only a BQ x BK score tile per task exists.
         const BQ: usize = 64;
         const BK: usize = 128;
-        let AttentionSpec { h, tq, tk, d, dv, scale, .. } = spec;
+        let AttentionSpec { h, tq, tk, d, dv, scale, k_stride, v_stride, .. } = spec;
         let (q, k, v) = (f32s(q), f32s(k), f32s(v));
         let mask = mask.map(f32s);
         let [sb, sh, si] = spec.mask_strides();
@@ -960,7 +960,7 @@ impl Backend for CpuCore {
                             qblk.as_ptr(),
                             d as isize,
                             1,
-                            k[(bh * tk + kb) * d..].as_ptr(),
+                            k[bh * k_stride + kb * d..].as_ptr(),
                             1,
                             d as isize,
                             0.0,
@@ -1001,7 +1001,7 @@ impl Backend for CpuCore {
                             s.as_ptr(),
                             cols as isize,
                             1,
-                            v[(bh * tk + kb) * dv..].as_ptr(),
+                            v[bh * v_stride + kb * dv..].as_ptr(),
                             dv as isize,
                             1,
                             1.0,
@@ -1172,6 +1172,52 @@ impl Backend for CpuBackend {
     fn permute(&self, x: &Storage, s: &[usize], p: &[usize]) -> Storage {
         let (x, d) = up(x);
         down(CORE.permute(&x, s, p), d)
+    }
+    fn write_slice(&self, dst: Storage, shape: &[usize], axis: usize, start: usize, src: &Storage) -> Storage {
+        let (outer, len, inner) = (shape[..axis].iter().product::<usize>(), shape[axis], shape[axis + 1..].iter().product::<usize>());
+        let t = src.len() / (outer * inner).max(1);
+        assert!(start + t <= len, "write_slice: {start}+{t} out of range for size {len}");
+        // in place when the buffer is not shared (Arc::make_mut copies otherwise)
+        fn put<T: Copy>(d: &mut [T], s: &[T], blk_in: usize, blk_out: usize, off: usize) {
+            for (i, chunk) in s.chunks(blk_in.max(1)).enumerate() {
+                d[i * blk_out + off..i * blk_out + off + chunk.len()].copy_from_slice(chunk);
+            }
+        }
+        let (blk_in, blk_out, off) = (t * inner, len * inner, start * inner);
+        let unwrap = |s: Storage| match s {
+            Storage::Cpu(c) => c,
+            #[allow(unreachable_patterns)]
+            _ => unreachable!("CPU backend got a non-CPU storage"),
+        };
+        let src = match src {
+            Storage::Cpu(c) => c,
+            #[allow(unreachable_patterns)]
+            _ => unreachable!("CPU backend got a non-CPU storage"),
+        };
+        let out = match (unwrap(dst), src) {
+            (CpuStorage::F32(mut d), CpuStorage::F32(s)) => {
+                put(Arc::make_mut(&mut d).as_mut_slice(), s, blk_in, blk_out, off);
+                CpuStorage::F32(d)
+            }
+            (CpuStorage::F16(mut d), CpuStorage::F16(s)) => {
+                put(Arc::make_mut(&mut d).as_mut_slice(), s, blk_in, blk_out, off);
+                CpuStorage::F16(d)
+            }
+            (CpuStorage::BF16(mut d), CpuStorage::BF16(s)) => {
+                put(Arc::make_mut(&mut d).as_mut_slice(), s, blk_in, blk_out, off);
+                CpuStorage::BF16(d)
+            }
+            (CpuStorage::I32(mut d), CpuStorage::I32(s)) => {
+                put(Arc::make_mut(&mut d).as_mut_slice(), s, blk_in, blk_out, off);
+                CpuStorage::I32(d)
+            }
+            (CpuStorage::I8(mut d), CpuStorage::I8(s)) => {
+                put(Arc::make_mut(&mut d).as_mut_slice(), s, blk_in, blk_out, off);
+                CpuStorage::I8(d)
+            }
+            _ => panic!("write_slice: dtype mismatch"),
+        };
+        Storage::Cpu(out)
     }
     fn strided_copy(&self, x: &Storage, shape: &[usize], strides: &[usize], offset: usize) -> Storage {
         let c = match x {

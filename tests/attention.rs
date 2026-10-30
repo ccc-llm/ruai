@@ -123,7 +123,7 @@ fn chunked_default_matches_for_any_block_size() {
             ms[4 - m.rank()..].copy_from_slice(m.shape());
             mask_shape = Some(ms);
         }
-        let spec = AttentionSpec { b, h, tq, tk, d, dv: d, scale: 1.0 / (d as f32).sqrt(), mask_shape };
+        let spec = AttentionSpec { b, h, tq, tk, d, dv: d, scale: 1.0 / (d as f32).sqrt(), mask_shape, k_stride: tk * d, v_stride: tk * d };
         // budgets giving blocks of 1, 2 (uneven: 7 = 2+2+2+1), 3 and all 7 query rows
         for rows in [1, 2, 3, 7] {
             let m_storage = m.as_ref().map(|m| m.storage());

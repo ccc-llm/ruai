@@ -326,7 +326,19 @@ fn fused_attention_spec(q: &Tensor, k: &Tensor, v: &Tensor, mask: Option<&Tensor
             Some(ms)
         }
     };
-    Some(crate::backend::AttentionSpec { b, h, tq, tk, d, dv, scale: 1.0 / (d as f32).sqrt(), mask_shape })
+    Some(crate::backend::AttentionSpec { b, h, tq, tk, d, dv, scale: 1.0 / (d as f32).sqrt(), mask_shape, k_stride: tk * d, v_stride: tk * dv })
+}
+
+/// `t` `[B, H, T, D]` as a buffer whose `(batch, head)` blocks of row-major
+/// `[T, D]` rows are `stride` apart, read in place when possible (e.g. a
+/// view into a KV-cache buffer); otherwise a contiguous copy.
+fn attention_operand(t: &Tensor) -> (crate::backend::Storage, usize) {
+    let block = t.dim(2) * t.dim(3);
+    match t.gemm_operand() {
+        Some((s, false, _)) if t.dim(0) * t.dim(1) == 1 => (s, block),
+        Some((s, false, bs)) => (s, bs),
+        _ => (t.storage(), block),
+    }
 }
 
 fn fused_attention(q: &Tensor, k: &Tensor, v: &Tensor, mask: Option<&Tensor>, spec: crate::backend::AttentionSpec) -> Tensor {
@@ -336,7 +348,9 @@ fn fused_attention(q: &Tensor, k: &Tensor, v: &Tensor, mask: Option<&Tensor>, sp
         None => (q.clone(), k.clone(), v.clone()),
     };
     let mask = mask.map(|m| m.to_dtype(crate::DType::F32).detach());
-    let out = q.backend().attention(&q.storage(), &k.storage(), &v.storage(), mask.as_ref().map(|m| m.storage()).as_ref(), spec);
+    let ((ks, k_stride), (vs, v_stride)) = (attention_operand(&k), attention_operand(&v));
+    let spec = crate::backend::AttentionSpec { k_stride, v_stride, ..spec };
+    let out = q.backend().attention(&q.storage(), &ks, &vs, mask.as_ref().map(|m| m.storage()).as_ref(), spec);
     let shape = vec![spec.b, spec.h, spec.tq, spec.dv];
     let autocast = crate::tensor::autocast_dtype();
     let inputs = [q.clone(), k.clone(), v.clone()];

@@ -727,6 +727,22 @@ impl Backend for MpsBackend {
         wrap(out)
     }
 
+    fn write_slice(&self, dst: Storage, shape: &[usize], axis: usize, start: usize, src: &Storage) -> Storage {
+        let (_, len, inner) = split_axis(shape, axis);
+        let s = st(src);
+        let outer_inner = numel(shape) / len.max(1);
+        let t = s.len / outer_inner.max(1);
+        assert!(start + t <= len, "write_slice: {start}+{t} out of range for size {len}");
+        let d = st(&dst);
+        assert_eq!(d.dtype, s.dtype, "write_slice: dtype mismatch");
+        // in place when nobody else holds the buffer, else into a copy
+        let out = if Arc::strong_count(&d.buf) == 1 { d.clone() } else { self.strided_copy_raw(d, &[d.len], &[1], 0) };
+        drop(dst);
+        let p = CatParams { n: u(s.len), blk_in: u(t * inner), blk_out: u(len * inner), offset: u(start * inner) };
+        self.run(&copy_kernel("cat_copy", s.dtype), &[Arg::Buf(s), Arg::Buf(&out), Arg::Bytes(bytes_of(&p))], Grid::Threads(s.len));
+        wrap(out)
+    }
+
     fn strided_copy(&self, x: &Storage, shape: &[usize], strides: &[usize], offset: usize) -> Storage {
         assert!(shape.len() <= 8, "GPU tensors have at most 8 dims, got {shape:?}");
         wrap(self.strided_copy_raw(st(x), shape, strides, offset))

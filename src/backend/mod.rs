@@ -111,11 +111,11 @@ pub fn attention_chunked<B: Backend + ?Sized>(
     spec: AttentionSpec,
     max_scores: usize,
 ) -> Storage {
-    let AttentionSpec { b, h, tq, tk, d, dv, scale, mask_shape } = spec;
+    let AttentionSpec { b, h, tq, tk, d, dv, scale, mask_shape, k_stride, v_stride } = spec;
     let bh = b * h;
     let block = |i0: usize, n: usize| -> Storage {
         let qb = if n == tq { q.clone() } else { be.narrow(q, &[b, h, tq, d], 2, i0, n) };
-        let qk = MatmulSpec { batch: bh, m: n, k: d, n: tk, trans_a: false, trans_b: true, a_batch_stride: n * d, b_batch_stride: tk * d };
+        let qk = MatmulSpec { batch: bh, m: n, k: d, n: tk, trans_a: false, trans_b: true, a_batch_stride: n * d, b_batch_stride: k_stride };
         let shape = [b, h, n, tk];
         let mut s = be.cast(&be.matmul(&qb, k, qk), DType::F32);
         s = be.binary(BinaryOp::Mul, &s, &shape, &be.from_f32(vec![scale]), &[], &shape);
@@ -128,7 +128,7 @@ pub fn attention_chunked<B: Backend + ?Sized>(
             s = be.binary(BinaryOp::Add, &s, &shape, &m, &ms, &shape);
         }
         let p = be.cast(&be.softmax(&s, &shape, 3), q.dtype());
-        let pv = MatmulSpec { batch: bh, m: n, k: tk, n: dv, trans_a: false, trans_b: false, a_batch_stride: n * tk, b_batch_stride: tk * dv };
+        let pv = MatmulSpec { batch: bh, m: n, k: tk, n: dv, trans_a: false, trans_b: false, a_batch_stride: n * tk, b_batch_stride: v_stride };
         be.matmul(&p, v, pv)
     };
     let rows = (max_scores / (bh * tk).max(1)).clamp(1, tq.max(1));
@@ -390,6 +390,11 @@ pub struct AttentionSpec {
     /// Shape of the additive `F32` mask, broadcastable to `[b, h, tq, tk]`
     /// (each dim 1 or full, the last always `tk`); `None` = no mask.
     pub mask_shape: Option<[usize; 4]>,
+    /// Elements between consecutive `(batch, head)` blocks of `k` (`tk * d`
+    /// when contiguous; larger for a view into a KV-cache buffer).
+    pub k_stride: usize,
+    /// Like `k_stride`, for `v` (`tk * dv` when contiguous).
+    pub v_stride: usize,
 }
 
 impl AttentionSpec {
@@ -540,6 +545,27 @@ pub trait Backend: Send + Sync {
     }
     /// Elements `start..start+len` along `axis` (any dtype).
     fn narrow(&self, x: &Storage, shape: &[usize], axis: usize, start: usize, len: usize) -> Storage;
+    /// Write `src` into `dst` (shape `shape`) at positions `start..` along
+    /// `axis`, returning the result (any dtype; `src` has `shape` except on
+    /// `axis`). Takes `dst` by value so backends can write in place when no
+    /// one else holds the buffer (e.g. appending to a KV cache); the default
+    /// builds a new buffer.
+    fn write_slice(&self, dst: Storage, shape: &[usize], axis: usize, start: usize, src: &Storage) -> Storage {
+        let (outer, len, inner) = (shape[..axis].iter().product::<usize>(), shape[axis], shape[axis + 1..].iter().product::<usize>());
+        let t = src.len() / (outer * inner).max(1);
+        let mut parts: Vec<(Storage, usize)> = Vec::new();
+        if start > 0 {
+            parts.push((self.narrow(&dst, shape, axis, 0, start), start));
+        }
+        parts.push((src.clone(), t));
+        if start + t < len {
+            parts.push((self.narrow(&dst, shape, axis, start + t, len - start - t), len - start - t));
+        }
+        let shapes: Vec<Vec<usize>> = parts.iter().map(|(_, n)| shape.iter().enumerate().map(|(i, &s)| if i == axis { *n } else { s }).collect()).collect();
+        let refs: Vec<&Storage> = parts.iter().map(|p| &p.0).collect();
+        let srefs: Vec<&[usize]> = shapes.iter().map(Vec::as_slice).collect();
+        self.cat(&refs, &srefs, axis)
+    }
     /// Concatenate along `axis`; all shapes agree except on `axis` (any dtype).
     fn cat(&self, xs: &[&Storage], shapes: &[&[usize]], axis: usize) -> Storage;
 
@@ -667,8 +693,9 @@ pub trait Backend: Send + Sync {
     }
 
     /// Scaled dot-product attention `softmax(q kᵀ * scale + mask) v` for
-    /// contiguous `q` `[b, h, tq, d]`, `k` `[b, h, tk, d]`, `v` `[b, h, tk, dv]`
-    /// (all one float dtype) and an optional `F32` `mask` of shape
+    /// contiguous `q` `[b, h, tq, d]` and `k` `[b, h, tk, d]`, `v` `[b, h, tk, dv]`
+    /// whose `(batch, head)` blocks are `spec.k_stride` / `spec.v_stride`
+    /// apart (all one float dtype) and an optional `F32` `mask` of shape
     /// `spec.mask_shape`; returns `[b, h, tq, dv]` in `q`'s dtype.
     ///
     /// The default processes blocks of query rows with `matmul` + `softmax`,

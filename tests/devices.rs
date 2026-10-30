@@ -506,7 +506,7 @@ fn fused_attention() {
                 let (qc, qg) = randn_as(p, b * h * tq * dk, d);
                 let (kc, kg) = randn_as(p, b * h * tk * dk, d);
                 let (vc, vg) = randn_as(p, b * h * tk * dv, d);
-                let spec = AttentionSpec { b, h, tq, tk, d: dk, dv, scale: 1.0 / (dk as f32).sqrt(), mask_shape: mask };
+                let spec = AttentionSpec { b, h, tq, tk, d: dk, dv, scale: 1.0 / (dk as f32).sqrt(), mask_shape: mask, k_stride: tk * dk, v_stride: tk * dv };
                 let m = mask.map(|ms: [usize; 4]| p.randn(ms.iter().product()));
                 let tol = if d == DType::F32 { 1e-4 } else { half_tol(d) * 3.0 };
                 same(

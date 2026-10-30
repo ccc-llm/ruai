@@ -261,10 +261,18 @@ impl Attention {
             }
             None => (k, v, 0),
         };
+        // grouped-query attention without repeating k / v: the `rep` query
+        // heads sharing a key/value head become extra query rows
+        // ([B, H, T, hd] -> [B, H_kv, rep * T, hd], a free reshape)
         let rep = self.n_heads / self.n_kv_heads;
-        let (k, v) = (F::repeat_kv(&k, rep), F::repeat_kv(&v, rep));
-        let mask = (t > 1).then(|| F::causal_mask_offset(t, past, x.device()));
+        let q = q.reshape(&[b, self.n_kv_heads, rep * t, hd]);
+        let mask = (t > 1).then(|| {
+            let m = F::causal_mask_offset(t, past, x.device());
+            let tk = m.dim(1);
+            m.unsqueeze(0).expand(&[rep, t, tk]).reshape(&[rep * t, tk])
+        });
         let o = F::scaled_dot_product_attention(&q, &k, &v, mask.as_ref(), 0.0, false);
+        let o = o.reshape(&[b, self.n_heads, t, hd]);
         self.o_proj.forward(&o.permute(&[0, 2, 1, 3]).reshape(&[b, t, self.n_heads * hd]))
     }
 }

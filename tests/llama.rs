@@ -164,7 +164,7 @@ fn kv_cache_matches_full_forward() {
             // the cache keeps only the 2 key/value heads
             let mut cache = KvCache::default();
             m.forward_cached(&Tensor::from_indices(&ids[..3], &[1, 3], dev()), &mut cache);
-            assert_eq!(cache.layers[0].k.as_ref().unwrap().shape(), &[1, 2, 3, 8]);
+            assert_eq!(cache.layers[0].keys().unwrap().shape(), &[1, 2, 3, 8]);
         }
     });
 }

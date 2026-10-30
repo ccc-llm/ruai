@@ -236,6 +236,24 @@ impl Tensor {
         }))
     }
 
+    /// A leaf tensor viewing `storage` with explicit element `strides` and
+    /// `offset` (no copy; panics if the view does not fit in the buffer).
+    pub fn from_storage_strided(storage: Storage, shape: Vec<usize>, strides: Vec<usize>, offset: usize) -> Tensor {
+        assert_eq!(shape.len(), strides.len(), "from_storage_strided: shape and strides differ in rank");
+        if numel(&shape) > 0 {
+            let last = offset + shape.iter().zip(&strides).map(|(&n, &s)| (n - 1) * s).sum::<usize>();
+            assert!(last < storage.len(), "view out of bounds: shape {shape:?}, strides {strides:?}, offset {offset}");
+        }
+        Tensor(Arc::new(TensorImpl {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            data: RwLock::new(Data { storage, strides, offset, contiguous: None }),
+            shape,
+            requires_grad: AtomicBool::new(false),
+            grad: RwLock::new(None),
+            node: None,
+        }))
+    }
+
     /// An `F32` tensor from row-major data (panics if `data.len()` doesn't match `shape`).
     pub fn from_vec(data: Vec<f32>, shape: &[usize], device: Device) -> Tensor {
         assert_eq!(data.len(), numel(shape), "data length {} != numel of {shape:?}", data.len());

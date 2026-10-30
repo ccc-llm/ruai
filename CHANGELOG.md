@@ -10,6 +10,16 @@
 - `matmul` reads transposed and batch-strided views in place; backends now honor
   `MatmulSpec` batch strides literally (MPS materializes strided batches: its GEMM ignores
   `matrixBytes`).
+- Preallocated KV cache: `LayerKv` keeps `[B, H, capacity, D]` buffers that double when full;
+  appends are written in place (new `Backend::write_slice`, in place when the buffer is not
+  shared, otherwise copy on write) and attention reads a view of the filled part
+  (`AttentionSpec::k_stride` / `v_stride`). Greedy decoding of 1024 tokens with a small Llama:
+  about 1.4x faster on CPU and 6x on MPS. **Breaking:** `LayerKv::k` / `v` fields are replaced by
+  `keys()` / `values()`; new `capacity()`; `clear()` keeps the buffers. When gradients flow
+  through the cache it falls back to concatenation, keeping the graph.
+- Llama grouped-query attention folds the query heads sharing a key/value head into extra query
+  rows instead of repeating the keys and values.
+- `Tensor::from_storage_strided`.
 - Test fixes: GPU reduction tolerance scales with the reduced length; the seq2seq training test
   allows for GPU atomic-add nondeterminism.
 

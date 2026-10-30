@@ -3,38 +3,134 @@ use super::module::{prefixed, Module};
 use crate::device::Device;
 use crate::functional as F;
 use crate::generation::Sampler;
-use crate::tensor::Tensor;
+use crate::backend::Storage;
+use crate::tensor::{contiguous_strides, Tensor};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// A `[B, H, capacity, D]` buffer holding the first `len` positions of a
+/// layer's keys or values.
+#[derive(Clone)]
+struct KvBuf {
+    storage: Storage,
+    shape: [usize; 4],
+}
+
+impl KvBuf {
+    /// Positions `0..len` as a `[B, H, len, D]` view (no copy).
+    fn view(&self, len: usize) -> Tensor {
+        let [b, h, _, d] = self.shape;
+        Tensor::from_storage_strided(self.storage.clone(), vec![b, h, len, d], contiguous_strides(&self.shape), 0)
+    }
+
+    /// Write `x` `[B, H, T, D]` at positions `len..len + T` of `buf`, growing
+    /// (doubling) or creating the buffer when needed.
+    fn append(buf: Option<KvBuf>, x: &Tensor, len: usize) -> KvBuf {
+        let (b, h, t, d) = (x.dim(0), x.dim(1), x.dim(2), x.dim(3));
+        let be = x.backend();
+        let buf = buf.filter(|f| f.shape[0] == b && f.shape[1] == h && f.shape[3] == d && f.storage.device() == x.device());
+        assert!(buf.is_some() || len == 0, "KV cache: new keys/values {:?} do not match the cached ones", x.shape());
+        let x = match &buf {
+            Some(f) => x.to_dtype(f.storage.dtype()),
+            None => x.clone(),
+        };
+        let need = len + t;
+        let mut buf = match buf {
+            Some(f) if f.shape[2] >= need => f,
+            old => {
+                let cap = old.as_ref().map_or(0, |f| f.shape[2]);
+                let cap = need.max(2 * cap).max(16);
+                let shape = [b, h, cap, d];
+                let mut storage = be.full(b * h * cap * d, 0.0, x.dtype());
+                if let (Some(old), true) = (old, len > 0) {
+                    storage = be.write_slice(storage, &shape, 2, 0, &old.view(len).storage());
+                }
+                KvBuf { storage, shape }
+            }
+        };
+        // in place unless someone still holds the buffer (e.g. a cloned cache)
+        buf.storage = be.write_slice(buf.storage, &buf.shape, 2, len, &x.storage());
+        buf
+    }
+}
+
 /// Cached keys and values of one attention layer, `[B, H, T_past, D/H]`.
+///
+/// Keys and values live in preallocated `[B, H, capacity, D/H]` buffers that
+/// double when full: appending writes the new positions in place and
+/// attention reads a view of the filled part, so decoding copies nothing per
+/// token. Cloning a cache shares the buffers until one of the copies is
+/// appended to (copy on write). When gradients flow through the appended
+/// tensors the cache concatenates instead, keeping the autograd graph.
 #[derive(Clone, Default)]
 pub struct LayerKv {
-    /// Keys `[B, H, T_past, D/H]`.
-    pub k: Option<Tensor>,
-    /// Values `[B, H, T_past, D/H]`.
-    pub v: Option<Tensor>,
+    k: Option<KvBuf>,
+    v: Option<KvBuf>,
+    len: usize,
+    /// Keys and values with their autograd graph (when gradients are tracked).
+    graph: Option<(Tensor, Tensor)>,
 }
 
 impl LayerKv {
     /// Number of cached positions.
     pub fn len(&self) -> usize {
-        self.k.as_ref().map_or(0, |k| k.dim(2))
+        self.len
     }
 
     /// Whether nothing is cached.
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.len == 0
+    }
+
+    /// Positions the buffers can hold before growing.
+    pub fn capacity(&self) -> usize {
+        self.k.as_ref().map_or(self.len, |f| f.shape[2])
+    }
+
+    /// Cached keys `[B, H, len, D/H]` (a view of the buffer).
+    pub fn keys(&self) -> Option<Tensor> {
+        match &self.graph {
+            Some((k, _)) => Some(k.clone()),
+            None => self.k.as_ref().filter(|_| self.len > 0).map(|f| f.view(self.len)),
+        }
+    }
+
+    /// Cached values `[B, H, len, D/H]` (a view of the buffer).
+    pub fn values(&self) -> Option<Tensor> {
+        match &self.graph {
+            Some((_, v)) => Some(v.clone()),
+            None => self.v.as_ref().filter(|_| self.len > 0).map(|f| f.view(self.len)),
+        }
     }
 
     /// Append new keys/values `[B, H, T_new, D/H]`; returns all of them.
     pub fn append(&mut self, k: Tensor, v: Tensor) -> (Tensor, Tensor) {
-        let (k, v) = match (self.k.take(), self.v.take()) {
-            (Some(pk), Some(pv)) => (Tensor::cat(&[&pk, &k], 2), Tensor::cat(&[&pv, &v], 2)),
-            _ => (k, v),
-        };
-        self.k = Some(k.clone());
-        self.v = Some(v.clone());
-        (k, v)
+        if crate::is_grad_enabled() && (k.requires_grad() || v.requires_grad()) {
+            let (k, v) = match (self.keys(), self.values()) {
+                (Some(pk), Some(pv)) => (Tensor::cat(&[&pk, &k], 2), Tensor::cat(&[&pv, &v], 2)),
+                _ => (k, v),
+            };
+            *self = LayerKv { len: k.dim(2), graph: Some((k.clone(), v.clone())), ..LayerKv::default() };
+            return (k, v);
+        }
+        if let Some((gk, gv)) = self.graph.take() {
+            // continue without gradients: move the cached tensors into buffers
+            self.len = 0;
+            self.write(&gk.detach(), &gv.detach());
+        }
+        self.write(&k, &v);
+        (self.keys().unwrap(), self.values().unwrap())
+    }
+
+    fn write(&mut self, k: &Tensor, v: &Tensor) {
+        self.k = Some(KvBuf::append(self.k.take(), k, self.len));
+        self.v = Some(KvBuf::append(self.v.take(), v, self.len));
+        self.len += k.dim(2);
+    }
+
+    /// Forget the cached positions (the buffers are kept for reuse).
+    pub fn clear(&mut self) {
+        self.len = 0;
+        self.graph = None;
     }
 }
 
@@ -63,9 +159,9 @@ impl KvCache {
         self.len() == 0
     }
 
-    /// Drop all cached positions.
+    /// Forget all cached positions (the buffers are kept for reuse).
     pub fn clear(&mut self) {
-        self.layers.iter_mut().for_each(|l| *l = LayerKv::default());
+        self.layers.iter_mut().for_each(LayerKv::clear);
     }
 }
 

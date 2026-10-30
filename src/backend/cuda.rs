@@ -34,6 +34,19 @@ enum Buf {
     I8(Arc<CudaSlice<i8>>),
 }
 
+impl Buf {
+    /// No other storage shares this allocation.
+    fn unique(&self) -> bool {
+        match self {
+            Buf::F32(a) => Arc::strong_count(a) == 1,
+            Buf::F16(a) => Arc::strong_count(a) == 1,
+            Buf::BF16(a) => Arc::strong_count(a) == 1,
+            Buf::I32(a) => Arc::strong_count(a) == 1,
+            Buf::I8(a) => Arc::strong_count(a) == 1,
+        }
+    }
+}
+
 /// Device buffer on one GPU.
 #[derive(Clone)]
 pub struct CudaStorage {
@@ -581,6 +594,22 @@ impl Backend for CudaBackend {
             DType::I32 | DType::I8 => panic!("CUDA matmul needs float inputs"),
         };
         wrap(CudaStorage { buf, ordinal: self.ordinal, len: batch * m * n, dtype: dt })
+    }
+
+    fn write_slice(&self, dst: Storage, shape: &[usize], axis: usize, start: usize, src: &Storage) -> Storage {
+        let (_, len, inner) = split_axis(shape, axis);
+        let s = st(src);
+        let t = s.len / (numel(shape) / len.max(1)).max(1);
+        assert!(start + t <= len, "write_slice: {start}+{t} out of range for size {len}");
+        let d = st(&dst);
+        assert_eq!(d.dtype, s.dtype, "write_slice: dtype mismatch");
+        // in place when nobody else holds the buffer, else into a copy
+        let out = if d.buf.unique() { d.clone() } else { self.strided_copy_raw(d, &[d.len], &[1], 0) };
+        drop(dst);
+        let p = CatParams { n: u(s.len), blk_in: u(t * inner), blk_out: u(len * inner), offset: u(start * inner) };
+        let (sp, op) = (self.ptr(s), self.ptr(&out));
+        launch!(self, copy_kernel("cat_copy", s.dtype), threads(s.len); &sp, &op, &p);
+        wrap(out)
     }
 
     fn strided_copy(&self, x: &Storage, shape: &[usize], strides: &[usize], offset: usize) -> Storage {
