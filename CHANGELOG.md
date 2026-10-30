@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.0.0 (in progress)
+
+- Strided views: tensors are a buffer plus `(shape, strides, offset)`; `permute`, `transpose`,
+  `t`, `narrow`, `select`, `expand` (stride 0), `unsqueeze`, `squeeze` and `reshape` of
+  row-major data no longer copy. `Tensor::storage()` still returns contiguous data (a view is
+  materialized once with the new `Backend::strided_copy` primitive and cached); new
+  `is_contiguous`, `contiguous`, `strided_parts`.
+- `matmul` reads transposed and batch-strided views in place; backends now honor
+  `MatmulSpec` batch strides literally (MPS materializes strided batches: its GEMM ignores
+  `matrixBytes`).
+- Test fixes: GPU reduction tolerance scales with the reduced length; the seq2seq training test
+  allows for GPU atomic-add nondeterminism.
+
 ## 1.5.0
 
 - `Backend::attention` primitive, used by `F::scaled_dot_product_attention` for `[B, H, T, D]`

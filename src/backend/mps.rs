@@ -470,7 +470,7 @@ impl MpsBackend {
     }
 
     /// Generic strided gather copy (any 32-bit dtype).
-    fn strided_copy(&self, x: &MpsStorage, out_shape: &[usize], in_strides: &[usize], base: usize) -> MpsStorage {
+    fn strided_copy_raw(&self, x: &MpsStorage, out_shape: &[usize], in_strides: &[usize], base: usize) -> MpsStorage {
         let n = numel(out_shape);
         let out = self.alloc(n, x.dtype);
         let p = CopyParams {
@@ -506,7 +506,8 @@ impl MpsBackend {
     }
 }
 
-fn matrix(s: &MpsStorage, rows: usize, cols: usize, batch: usize) -> Retained<MPSMatrix> {
+/// `batch` matrices of `rows x cols`, `stride` elements apart, in `s`.
+fn matrix(s: &MpsStorage, rows: usize, cols: usize, batch: usize, stride: usize) -> Retained<MPSMatrix> {
     let (es, dt) = match s.dtype {
         DType::F32 => (4, MPSDataType::Float32),
         DType::F16 => (2, MPSDataType::Float16),
@@ -518,7 +519,7 @@ fn matrix(s: &MpsStorage, rows: usize, cols: usize, batch: usize) -> Retained<MP
             cols,
             batch,
             cols * es,
-            rows * cols * es,
+            stride * es,
             dt,
         );
         MPSMatrix::initWithBuffer_descriptor(MPSMatrix::alloc(), s.buf.mtl(), &desc)
@@ -644,7 +645,7 @@ impl Backend for MpsBackend {
     }
 
     fn expand(&self, x: &Storage, shape: &[usize], out_shape: &[usize]) -> Storage {
-        wrap(self.strided_copy(st(x), out_shape, &broadcast_strides(shape, out_shape), 0))
+        wrap(self.strided_copy_raw(st(x), out_shape, &broadcast_strides(shape, out_shape), 0))
     }
 
     fn where_cond(&self, cond: &Storage, a: &Storage, b: &Storage) -> Storage {
@@ -693,21 +694,23 @@ impl Backend for MpsBackend {
             let (a32, b32) = (self.widen(a), self.widen(b));
             return self.via_f32(DType::BF16, || self.matmul(&a32, &b32, spec));
         }
-        // MPS needs a real batch stride: materialize broadcast operands.
-        let bcast = |s: &MpsStorage, stride: usize, sz: usize| {
-            if batch > 1 && stride == 0 {
-                self.strided_copy(s, &[batch, sz], &[0, 1], 0)
+        // MPSMatrixMultiplication reads batch i at i * rows * cols whatever the
+        // descriptor's matrixBytes says: materialize broadcast (stride 0) and
+        // strided batches into contiguous ones
+        let operand = |s: &MpsStorage, stride: usize, sz: usize| -> (MpsStorage, usize) {
+            if batch <= 1 || stride == sz {
+                (s.clone(), sz)
             } else {
-                s.clone()
+                (self.strided_copy_raw(s, &[batch, sz], &[stride, 1], 0), sz)
             }
         };
-        let a = bcast(st(a), a_batch_stride, m * k);
-        let b = bcast(st(b), b_batch_stride, k * n);
+        let (a, a_st) = operand(st(a), a_batch_stride, m * k);
+        let (b, b_st) = operand(st(b), b_batch_stride, k * n);
         let b = self.cast_storage(&b, a.dtype);
         let out = self.alloc(batch * m * n, a.dtype);
         let (ar, ac) = if trans_a { (k, m) } else { (m, k) };
         let (br, bc) = if trans_b { (n, k) } else { (k, n) };
-        let (ma, mb, mc) = (matrix(&a, ar, ac, batch), matrix(&b, br, bc, batch), matrix(&out, m, n, batch));
+        let (ma, mb, mc) = (matrix(&a, ar, ac, batch, a_st), matrix(&b, br, bc, batch, b_st), matrix(&out, m, n, batch, m * n));
         let kernel = self.gemm_kernel(trans_a, trans_b, m, n, k);
         let mut stream = self.stream.lock().unwrap();
         stream.end_encoder();
@@ -724,16 +727,21 @@ impl Backend for MpsBackend {
         wrap(out)
     }
 
+    fn strided_copy(&self, x: &Storage, shape: &[usize], strides: &[usize], offset: usize) -> Storage {
+        assert!(shape.len() <= 8, "GPU tensors have at most 8 dims, got {shape:?}");
+        wrap(self.strided_copy_raw(st(x), shape, strides, offset))
+    }
+
     fn permute(&self, x: &Storage, shape: &[usize], perm: &[usize]) -> Storage {
         let st_in = strides(shape);
         let out_shape: Vec<usize> = perm.iter().map(|&p| shape[p]).collect();
         let in_st: Vec<usize> = perm.iter().map(|&p| st_in[p]).collect();
-        wrap(self.strided_copy(st(x), &out_shape, &in_st, 0))
+        wrap(self.strided_copy_raw(st(x), &out_shape, &in_st, 0))
     }
 
     fn narrow(&self, x: &Storage, shape: &[usize], axis: usize, start: usize, len: usize) -> Storage {
         let (outer, l, inner) = split_axis(shape, axis);
-        wrap(self.strided_copy(st(x), &[outer, len, inner], &[l * inner, inner, 1], start * inner))
+        wrap(self.strided_copy_raw(st(x), &[outer, len, inner], &[l * inner, inner, 1], start * inner))
     }
 
     fn cat(&self, xs: &[&Storage], shapes: &[&[usize]], axis: usize) -> Storage {

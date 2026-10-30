@@ -148,7 +148,9 @@ fn reductions() {
             let (c, g) = p.randn(shape.iter().product());
             for axis in 0..shape.len() {
                 for op in [ReduceOp::Sum, ReduceOp::Max, ReduceOp::Min, ReduceOp::ArgMax] {
-                    let tol = if op == ReduceOp::Sum { 1e-4 } else { 0.0 };
+                    // f32 summation error grows like sqrt(length) times the
+                    // terms' size, independent of how small the (cancelled) sum is
+                    let tol = if op == ReduceOp::Sum { 1e-4 * (shape[axis] as f32).sqrt() } else { 0.0 };
                     same(
                         &format!("{op:?} {shape:?} axis {axis}"),
                         &p.cpu.reduce(op, &c, &shape, axis),
@@ -513,6 +515,32 @@ fn fused_attention() {
                     &p.gpu.attention(&qg, &kg, &vg, m.as_ref().map(|m| &m.1), spec),
                     tol,
                 );
+            }
+        }
+    });
+}
+
+#[test]
+fn strided_copy_all_dtypes() {
+    rand::manual_seed(12);
+    for_each_gpu(|p, _| {
+        let layouts: [(&[usize], &[usize], usize); 4] = [
+            (&[4, 2, 3], &[1, 12, 4], 0),
+            (&[2, 3, 2], &[12, 4, 1], 1),
+            (&[2, 3, 4], &[0, 1, 0], 2),
+            (&[3, 5], &[1, 3], 4),
+        ];
+        let ints: Vec<i32> = (0..40).map(|i| i * 3 - 50).collect();
+        for d in [DType::F32, DType::F16, DType::BF16, DType::I32, DType::I8] {
+            let (c, g) = if d == DType::I32 || d == DType::I8 {
+                let (c, g) = p.ints(ints.clone());
+                (p.cpu.cast(&c, d), p.gpu.cast(&g, d))
+            } else {
+                let (c, g) = p.randn(40);
+                (p.cpu.cast(&c, d), p.gpu.cast(&g, d))
+            };
+            for (shape, strides, off) in layouts {
+                same(&format!("{d} strided_copy {shape:?} {strides:?}+{off}"), &p.cpu.strided_copy(&c, shape, strides, off), &p.gpu.strided_copy(&g, shape, strides, off), 0.0);
             }
         }
     });

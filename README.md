@@ -273,7 +273,7 @@ Autograd、所有 nn 層、優化器都只透過 `Tensor` 運算操作資料，�
 - `max_pool2d` = `im2col` + `max`（反向用遮罩）
 - 優化器在 `no_grad` 下用 Tensor 運算算出新權重，再 `set_storage` 寫回，所以在任何裝置上都能跑
 
-所有 storage 都是連續 (contiguous) 的 row-major buffer，這讓 GPU kernel 的實作保持簡單。
+**Strided view（v2.0）**：`Tensor` 是 buffer 加上 `(shape, strides, offset)`。`permute` / `transpose` / `t`、`narrow` / `select`、`expand`（broadcast 維 stride 為 0）、`unsqueeze` / `squeeze`，以及 row-major 資料的 `reshape` 都不複製資料。backend 原語仍只接受連續 buffer，`Tensor::storage()` 遇到 view 時才用 `strided_copy` 原語複製一次並快取（資料不可變，所以 view 是快照，之後 `set_storage` 不會影響它）；`matmul` 直接讀轉置與 batch-strided 的 view（例如 attention 的 `k.t()`，CPU 與 CUDA 不複製；MPS 的 GEMM 不支援自訂 batch stride，會先複製）。`is_contiguous()`、`contiguous()`、`strided_parts()` 可檢查與控制佈局。
 
 ## GPU 後端
 

@@ -306,15 +306,19 @@ impl Tensor {
     // broadcasting helpers
     // ------------------------------------------------------------------
 
-    /// Broadcast to `shape` (materialized copy).
+    /// Broadcast to `shape` (a view: broadcast dims get stride 0, no copy).
     pub fn expand(&self, shape: &[usize]) -> Tensor {
         if self.shape() == shape {
             return self.clone();
         }
         assert_eq!(broadcast_shape(self.shape(), shape), shape, "cannot expand {:?} to {shape:?}", self.shape());
-        let s = self.backend().expand(&self.storage(), self.shape(), shape);
+        let (_, st, off) = self.strided_parts();
+        let lead = shape.len() - self.rank();
+        let strides: Vec<usize> = (0..shape.len())
+            .map(|d| if d < lead || self.shape()[d - lead] != shape[d] { 0 } else { st[d - lead] })
+            .collect();
         let in_shape = self.shape().to_vec();
-        Tensor::from_op(s, shape.to_vec(), vec![self.clone()], "expand", move |g| vec![Some(g.sum_to(&in_shape))])
+        Tensor::view_op(self, shape.to_vec(), strides, off, "expand", move |g| vec![Some(g.sum_to(&in_shape))])
     }
 
     /// Sum a broadcast result back down to `shape` (inverse of broadcasting).
@@ -412,16 +416,30 @@ impl Tensor {
     // shape manipulation
     // ------------------------------------------------------------------
 
-    /// Reshape (shares storage; all tensors are contiguous).
+    /// Reshape: a view (no copy) when the elements are in row-major order,
+    /// otherwise a contiguous copy.
     pub fn reshape(&self, shape: &[usize]) -> Tensor {
         assert_eq!(numel(shape), self.numel(), "cannot reshape {:?} to {shape:?}", self.shape());
         if shape == self.shape() {
             return self.clone();
         }
         let in_shape = self.shape().to_vec();
-        Tensor::from_op(self.storage(), shape.to_vec(), vec![self.clone()], "reshape", move |g| {
-            vec![Some(g.reshape(&in_shape))]
-        })
+        let back = move |g: &Tensor| vec![Some(g.reshape(&in_shape))];
+        let (_, st, off) = self.strided_parts();
+        if crate::tensor::is_row_major(self.shape(), &st) {
+            Tensor::view_op(self, shape.to_vec(), crate::tensor::contiguous_strides(shape), off, "reshape", back)
+        } else {
+            Tensor::from_op(self.storage(), shape.to_vec(), vec![self.clone()], "reshape", back)
+        }
+    }
+
+    /// A contiguous (row-major, own buffer) version of this tensor; itself if
+    /// already contiguous.
+    pub fn contiguous(&self) -> Tensor {
+        if self.is_contiguous() {
+            return self.clone();
+        }
+        Tensor::from_op(self.storage(), self.shape().to_vec(), vec![self.clone()], "contiguous", |g| vec![Some(g.clone())])
     }
 
     /// Reshape where one dimension may be `-1` (inferred), like `torch.view`.
@@ -441,39 +459,45 @@ impl Tensor {
         self.reshape(&s)
     }
 
-    /// Insert a size-1 dim at `dim`.
+    /// Insert a size-1 dim at `dim` (a view).
     pub fn unsqueeze(&self, dim: isize) -> Tensor {
         let d = norm_dim(dim, self.rank() + 1);
+        let (_, mut st, off) = self.strided_parts();
         let mut s = self.shape().to_vec();
         s.insert(d, 1);
-        self.reshape(&s)
+        st.insert(d, 0);
+        Tensor::view_op(self, s, st, off, "unsqueeze", move |g| vec![Some(g.squeeze(d as isize))])
     }
 
-    /// Remove dim `dim`, which must have size 1 (panics otherwise).
+    /// Remove dim `dim`, which must have size 1 (panics otherwise; a view).
     pub fn squeeze(&self, dim: isize) -> Tensor {
         let d = norm_dim(dim, self.rank());
         assert_eq!(self.shape()[d], 1, "squeeze: dim {d} has size {}", self.shape()[d]);
+        let (_, mut st, off) = self.strided_parts();
         let mut s = self.shape().to_vec();
         s.remove(d);
-        self.reshape(&s)
+        st.remove(d);
+        Tensor::view_op(self, s, st, off, "squeeze", move |g| vec![Some(g.unsqueeze(d as isize))])
     }
 
-    /// Reorder dims: output dim `i` is input dim `perm[i]` (copy).
+    /// Reorder dims: output dim `i` is input dim `perm[i]` (a view: only the
+    /// strides are permuted).
     pub fn permute(&self, perm: &[usize]) -> Tensor {
         assert_eq!(perm.len(), self.rank(), "permute: wrong number of dims");
         if perm.iter().enumerate().all(|(i, &p)| i == p) {
             return self.clone();
         }
-        let s = self.backend().permute(&self.storage(), self.shape(), perm);
+        let (_, st, off) = self.strided_parts();
         let out_shape: Vec<usize> = perm.iter().map(|&p| self.shape()[p]).collect();
+        let strides: Vec<usize> = perm.iter().map(|&p| st[p]).collect();
         let mut inv = vec![0; perm.len()];
         for (i, &p) in perm.iter().enumerate() {
             inv[p] = i;
         }
-        Tensor::from_op(s, out_shape, vec![self.clone()], "permute", move |g| vec![Some(g.permute(&inv))])
+        Tensor::view_op(self, out_shape, strides, off, "permute", move |g| vec![Some(g.permute(&inv))])
     }
 
-    /// Swap dims `d0` and `d1` (copy).
+    /// Swap dims `d0` and `d1` (a view).
     pub fn transpose(&self, d0: isize, d1: isize) -> Tensor {
         let (a, b) = (norm_dim(d0, self.rank()), norm_dim(d1, self.rank()));
         let mut perm: Vec<usize> = (0..self.rank()).collect();
@@ -490,8 +514,45 @@ impl Tensor {
     // matmul
     // ------------------------------------------------------------------
 
+    /// How this tensor can feed a GEMM without copying: `(buffer, transposed,
+    /// batch stride)` when its offset is 0, its last two dims are row-major
+    /// (or column-major = `transposed`) and its leading dims collapse to one
+    /// stride (0 = broadcast). `None` means it must be materialized.
+    fn gemm_operand(&self) -> Option<(crate::backend::Storage, bool, usize)> {
+        let (s, st, off) = self.strided_parts();
+        let r = self.rank();
+        if off != 0 || r < 2 {
+            return None;
+        }
+        let sh = self.shape();
+        let (rows, cols, sr, sc) = (sh[r - 2], sh[r - 1], st[r - 2], st[r - 1]);
+        let transposed = if (cols == 1 || sc == 1) && (rows == 1 || sr == cols) {
+            false
+        } else if (rows == 1 || sr == 1) && (cols == 1 || sc == rows) {
+            true
+        } else {
+            return None;
+        };
+        let mut batch_stride: Option<usize> = None;
+        let mut expect = 0;
+        for d in (0..r - 2).rev() {
+            if sh[d] == 1 {
+                continue;
+            }
+            match batch_stride {
+                None => batch_stride = Some(st[d]),
+                Some(_) if st[d] != expect => return None,
+                Some(_) => {}
+            }
+            expect = st[d] * sh[d];
+        }
+        Some((s, transposed, batch_stride.unwrap_or(0)))
+    }
+
     /// Batched matmul without autograd, with optional transposes of the last two dims.
     /// Supports: 2D @ 2D, ND @ 2D, 2D @ ND, and ND @ ND with equal batch dims.
+    /// Transposed and batch-strided views (e.g. `k.t()`, a narrowed KV cache)
+    /// are read in place.
     pub(crate) fn matmul_raw(&self, other: &Tensor, ta: bool, tb: bool) -> Tensor {
         same_device(self, other);
         let (ash, bsh) = (self.shape(), other.shape());
@@ -503,28 +564,33 @@ impl Tensor {
         assert_eq!(k, k2, "matmul inner dims differ: {ash:?} @ {bsh:?} (ta={ta}, tb={tb})");
         let abatch = &ash[..ash.len() - 2];
         let bbatch = &bsh[..bsh.len() - 2];
+        // operands as stored: (buffer, stored transposed, batch stride)
+        let operand = |t: &Tensor, rows: usize, cols: usize| t.gemm_operand().unwrap_or_else(|| (t.storage(), false, rows * cols));
+        let (sa, a_t, a_bs) = operand(self, ar, ac);
+        let (sb, b_t, b_bs) = operand(other, br, bc);
+        let (ta, tb) = (ta ^ a_t, tb ^ b_t);
 
-        let (spec, batch_shape) = if bbatch.is_empty() && !ta && !abatch.is_empty() {
-            // fold A's batch dims into its rows: one big GEMM
+        let (spec, batch_shape) = if bbatch.is_empty() && !ta && !abatch.is_empty() && a_bs == m * k {
+            // A's batch dims are contiguous rows: one big GEMM
             let rows = numel(abatch) * m;
             let spec = MatmulSpec { batch: 1, m: rows, k, n, trans_a: false, trans_b: tb, a_batch_stride: 0, b_batch_stride: 0 };
             (spec, abatch.to_vec())
         } else if abatch == bbatch {
             let b = numel(abatch);
-            let spec = MatmulSpec { batch: b, m, k, n, trans_a: ta, trans_b: tb, a_batch_stride: m * k, b_batch_stride: k * n };
+            let spec = MatmulSpec { batch: b, m, k, n, trans_a: ta, trans_b: tb, a_batch_stride: a_bs, b_batch_stride: b_bs };
             (spec, abatch.to_vec())
         } else if abatch.is_empty() {
             let b = numel(bbatch);
-            let spec = MatmulSpec { batch: b, m, k, n, trans_a: ta, trans_b: tb, a_batch_stride: 0, b_batch_stride: k * n };
+            let spec = MatmulSpec { batch: b, m, k, n, trans_a: ta, trans_b: tb, a_batch_stride: 0, b_batch_stride: b_bs };
             (spec, bbatch.to_vec())
         } else if bbatch.is_empty() {
             let b = numel(abatch);
-            let spec = MatmulSpec { batch: b, m, k, n, trans_a: ta, trans_b: tb, a_batch_stride: m * k, b_batch_stride: 0 };
+            let spec = MatmulSpec { batch: b, m, k, n, trans_a: ta, trans_b: tb, a_batch_stride: a_bs, b_batch_stride: 0 };
             (spec, abatch.to_vec())
         } else {
             panic!("matmul: unsupported batch broadcast {ash:?} @ {bsh:?}");
         };
-        let s = self.backend().matmul(&self.storage(), &other.storage(), spec);
+        let s = self.backend().matmul(&sa, &sb, spec);
         let mut out_shape = batch_shape;
         out_shape.extend([m, n]);
         Tensor::from_storage(s, out_shape)
@@ -668,7 +734,7 @@ impl Tensor {
         })
     }
 
-    /// Elements `start..start+len` along `dim` (copy).
+    /// Elements `start..start+len` along `dim` (a view: only the offset changes).
     pub fn narrow(&self, dim: isize, start: usize, len: usize) -> Tensor {
         let ax = norm_dim(dim, self.rank());
         let size = self.shape()[ax];
@@ -676,11 +742,12 @@ impl Tensor {
         if start == 0 && len == size {
             return self.clone();
         }
-        let s = self.backend().narrow(&self.storage(), self.shape(), ax, start, len);
+        let (_, st, off) = self.strided_parts();
         let mut out_shape = self.shape().to_vec();
         out_shape[ax] = len;
         let in_shape = self.shape().to_vec();
-        Tensor::from_op(s, out_shape, vec![self.clone()], "narrow", move |g| {
+        let offset = off + start * st[ax];
+        Tensor::view_op(self, out_shape, st, offset, "narrow", move |g| {
             // pad the gradient back with zeros on both sides
             let mut parts = Vec::new();
             let mut zshape = in_shape.clone();

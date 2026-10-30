@@ -329,7 +329,7 @@ impl CudaBackend {
     }
 
     /// Generic strided gather copy (any 32-bit dtype).
-    fn strided_copy(&self, x: &CudaStorage, out_shape: &[usize], in_strides: &[usize], base: usize) -> CudaStorage {
+    fn strided_copy_raw(&self, x: &CudaStorage, out_shape: &[usize], in_strides: &[usize], base: usize) -> CudaStorage {
         let n = numel(out_shape);
         let out = self.alloc(n, x.dtype);
         let p = CopyParams {
@@ -497,7 +497,7 @@ impl Backend for CudaBackend {
     }
 
     fn expand(&self, x: &Storage, shape: &[usize], out_shape: &[usize]) -> Storage {
-        wrap(self.strided_copy(st(x), out_shape, &broadcast_strides(shape, out_shape), 0))
+        wrap(self.strided_copy_raw(st(x), out_shape, &broadcast_strides(shape, out_shape), 0))
     }
 
     fn where_cond(&self, cond: &Storage, a: &Storage, b: &Storage) -> Storage {
@@ -557,8 +557,8 @@ impl Backend for CudaBackend {
                         ldc: n as i32,
                     },
                     batch_size: batch as i32,
-                    stride_a: if b_batch_stride == 0 { 0 } else { (k * n) as i64 },
-                    stride_b: if a_batch_stride == 0 { 0 } else { (m * k) as i64 },
+                    stride_a: b_batch_stride as i64,
+                    stride_b: a_batch_stride as i64,
                     stride_c: (m * n) as i64,
                 };
                 let (Buf::$variant(sa), Buf::$variant(sb)) = (&a.buf, &b.buf) else { unreachable!() };
@@ -583,16 +583,21 @@ impl Backend for CudaBackend {
         wrap(CudaStorage { buf, ordinal: self.ordinal, len: batch * m * n, dtype: dt })
     }
 
+    fn strided_copy(&self, x: &Storage, shape: &[usize], strides: &[usize], offset: usize) -> Storage {
+        assert!(shape.len() <= 8, "GPU tensors have at most 8 dims, got {shape:?}");
+        wrap(self.strided_copy_raw(st(x), shape, strides, offset))
+    }
+
     fn permute(&self, x: &Storage, shape: &[usize], perm: &[usize]) -> Storage {
         let st_in = strides(shape);
         let out_shape: Vec<usize> = perm.iter().map(|&p| shape[p]).collect();
         let in_st: Vec<usize> = perm.iter().map(|&p| st_in[p]).collect();
-        wrap(self.strided_copy(st(x), &out_shape, &in_st, 0))
+        wrap(self.strided_copy_raw(st(x), &out_shape, &in_st, 0))
     }
 
     fn narrow(&self, x: &Storage, shape: &[usize], axis: usize, start: usize, len: usize) -> Storage {
         let (outer, l, inner) = split_axis(shape, axis);
-        wrap(self.strided_copy(st(x), &[outer, len, inner], &[l * inner, inner, 1], start * inner))
+        wrap(self.strided_copy_raw(st(x), &[outer, len, inner], &[l * inner, inner, 1], start * inner))
     }
 
     fn cat(&self, xs: &[&Storage], shapes: &[&[usize]], axis: usize) -> Storage {

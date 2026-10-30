@@ -27,6 +27,37 @@ pub(crate) struct CpuCore;
 
 static CORE: CpuCore = CpuCore;
 
+/// Contiguous copy of a strided view (row-major output order), parallel
+/// over runs of the last dimension.
+fn gather_strided<T: Copy + Send + Sync + Default>(x: &[T], shape: &[usize], strides: &[usize], offset: usize) -> Vec<T> {
+    let n: usize = shape.iter().product();
+    let mut out = vec![T::default(); n];
+    if n == 0 {
+        return out;
+    }
+    let Some((&last, lead)) = shape.split_last() else {
+        out[0] = x[offset];
+        return out;
+    };
+    let ls = strides[shape.len() - 1];
+    out.par_chunks_mut(last).enumerate().for_each(|(row, o)| {
+        // decode the row index into the leading dims
+        let (mut r, mut base) = (row, offset);
+        for d in (0..lead.len()).rev() {
+            base += (r % lead[d]) * strides[d];
+            r /= lead[d];
+        }
+        if ls == 1 {
+            o.copy_from_slice(&x[base..base + last]);
+        } else {
+            for (j, v) in o.iter_mut().enumerate() {
+                *v = x[base + j * ls];
+            }
+        }
+    });
+    out
+}
+
 /// Sign-extended low (`hi = false`) or high nibble of a packed int4 byte.
 #[inline]
 fn nibble(b: i8, hi: bool) -> f32 {
@@ -482,8 +513,7 @@ impl Backend for CpuCore {
         if out.is_empty() || k == 0 {
             return wrap(out);
         }
-        let a_bs = if a_batch_stride == 0 { 0 } else { m * k };
-        let b_bs = if b_batch_stride == 0 { 0 } else { k * n };
+        let (a_bs, b_bs) = (a_batch_stride, b_batch_stride);
 
         #[cfg(feature = "accelerate")]
         {
@@ -1142,6 +1172,20 @@ impl Backend for CpuBackend {
     fn permute(&self, x: &Storage, s: &[usize], p: &[usize]) -> Storage {
         let (x, d) = up(x);
         down(CORE.permute(&x, s, p), d)
+    }
+    fn strided_copy(&self, x: &Storage, shape: &[usize], strides: &[usize], offset: usize) -> Storage {
+        let c = match x {
+            Storage::Cpu(c) => c,
+            #[allow(unreachable_patterns)]
+            _ => unreachable!("CPU backend got a non-CPU storage"),
+        };
+        match c {
+            CpuStorage::F32(v) => wrap(gather_strided(v, shape, strides, offset)),
+            CpuStorage::F16(v) => Storage::Cpu(CpuStorage::F16(Arc::new(gather_strided(v, shape, strides, offset)))),
+            CpuStorage::BF16(v) => Storage::Cpu(CpuStorage::BF16(Arc::new(gather_strided(v, shape, strides, offset)))),
+            CpuStorage::I32(v) => Storage::Cpu(CpuStorage::I32(Arc::new(gather_strided(v, shape, strides, offset)))),
+            CpuStorage::I8(v) => Storage::Cpu(CpuStorage::I8(Arc::new(gather_strided(v, shape, strides, offset)))),
+        }
     }
     fn narrow(&self, x: &Storage, s: &[usize], axis: usize, start: usize, len: usize) -> Storage {
         CORE.narrow(x, s, axis, start, len)

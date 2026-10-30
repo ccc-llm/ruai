@@ -142,6 +142,28 @@ pub fn attention_chunked<B: Backend + ?Sized>(
     be.cat(&refs, &shapes, 2)
 }
 
+/// Source element index of every output element of a strided view, in
+/// row-major output order (see [`Backend::strided_copy`]).
+pub fn strided_indices(shape: &[usize], strides: &[usize], offset: usize) -> Vec<usize> {
+    let n: usize = shape.iter().product();
+    let mut out = Vec::with_capacity(n);
+    let mut idx = vec![0usize; shape.len()];
+    let mut pos = offset;
+    for _ in 0..n {
+        out.push(pos);
+        for d in (0..shape.len()).rev() {
+            idx[d] += 1;
+            pos += strides[d];
+            if idx[d] < shape[d] {
+                break;
+            }
+            pos -= strides[d] * shape[d];
+            idx[d] = 0;
+        }
+    }
+    out
+}
+
 /// Host-memory buffer of one dtype.
 #[derive(Clone)]
 pub enum CpuStorage {
@@ -499,6 +521,23 @@ pub trait Backend: Send + Sync {
     fn matmul(&self, a: &Storage, b: &Storage, spec: MatmulSpec) -> Storage;
     /// Generic axis permutation (copy).
     fn permute(&self, x: &Storage, shape: &[usize], perm: &[usize]) -> Storage;
+    /// Contiguous copy of a strided view: output element at multi-index `i`
+    /// is `x[offset + Σ i[d] * strides[d]]` (strides in elements, 0 for
+    /// broadcast dims; any dtype). Used to materialize tensor views. The
+    /// default gathers on the host; backends override it.
+    fn strided_copy(&self, x: &Storage, shape: &[usize], strides: &[usize], offset: usize) -> Storage {
+        let idx = strided_indices(shape, strides, offset);
+        match x.dtype() {
+            DType::I32 | DType::I8 => {
+                let v = x.to_vec_i32();
+                self.cast(&self.from_i32(idx.iter().map(|&i| v[i]).collect()), x.dtype())
+            }
+            d => {
+                let v = x.to_vec();
+                self.cast(&self.from_f32(idx.iter().map(|&i| v[i]).collect()), d)
+            }
+        }
+    }
     /// Elements `start..start+len` along `axis` (any dtype).
     fn narrow(&self, x: &Storage, shape: &[usize], axis: usize, start: usize, len: usize) -> Storage;
     /// Concatenate along `axis`; all shapes agree except on `axis` (any dtype).
@@ -728,6 +767,9 @@ pub mod reference {
         }
         fn permute(&self, x: &Storage, s: &[usize], p: &[usize]) -> Storage {
             self.0.permute(x, s, p)
+        }
+        fn strided_copy(&self, x: &Storage, s: &[usize], st: &[usize], o: usize) -> Storage {
+            self.0.strided_copy(x, s, st, o)
         }
         fn narrow(&self, x: &Storage, s: &[usize], axis: usize, start: usize, len: usize) -> Storage {
             self.0.narrow(x, s, axis, start, len)

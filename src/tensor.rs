@@ -19,10 +19,57 @@ pub(crate) struct Node {
     name: &'static str,
 }
 
+/// The data behind a tensor: a buffer plus how the tensor's elements are
+/// laid out in it (a strided view; contiguous tensors have row-major strides
+/// and offset 0).
+struct Data {
+    storage: Storage,
+    /// Element strides per dim (0 for broadcast dims).
+    strides: Vec<usize>,
+    /// Element offset of the first element.
+    offset: usize,
+    /// Cached contiguous copy of a non-contiguous view (data is immutable).
+    contiguous: Option<Storage>,
+}
+
+/// Row-major strides of `shape`.
+pub(crate) fn contiguous_strides(shape: &[usize]) -> Vec<usize> {
+    let mut st = vec![1; shape.len()];
+    for d in (0..shape.len().saturating_sub(1)).rev() {
+        st[d] = st[d + 1] * shape[d + 1];
+    }
+    st
+}
+
+/// Whether `strides` are row-major for `shape` (ignoring size-1 dims).
+pub(crate) fn is_row_major(shape: &[usize], strides: &[usize]) -> bool {
+    let mut expect = 1;
+    for d in (0..shape.len()).rev() {
+        if shape[d] != 1 {
+            if strides[d] != expect {
+                return false;
+            }
+            expect *= shape[d];
+        }
+    }
+    true
+}
+
+impl Data {
+    fn new(storage: Storage, shape: &[usize]) -> Self {
+        Data { storage, strides: contiguous_strides(shape), offset: 0, contiguous: None }
+    }
+
+    /// The storage holds exactly this tensor's elements in row-major order.
+    fn is_plain(&self, shape: &[usize]) -> bool {
+        self.offset == 0 && self.storage.len() == numel(shape) && is_row_major(shape, &self.strides)
+    }
+}
+
 /// Shared state behind a [`Tensor`] (storage, shape, gradient, graph node).
 pub struct TensorImpl {
     id: usize,
-    storage: RwLock<Storage>,
+    data: RwLock<Data>,
     shape: Vec<usize>,
     requires_grad: AtomicBool,
     grad: RwLock<Option<Tensor>>,
@@ -133,7 +180,7 @@ impl Tensor {
         assert_eq!(storage.len(), numel(&shape), "storage length does not match shape {shape:?}");
         Tensor(Arc::new(TensorImpl {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
-            storage: RwLock::new(storage),
+            data: RwLock::new(Data::new(storage, &shape)),
             shape,
             requires_grad: AtomicBool::new(requires_grad),
             grad: RwLock::new(None),
@@ -164,6 +211,29 @@ impl Tensor {
         } else {
             Self::from_storage(storage, shape)
         }
+    }
+
+    /// A view of `base`'s buffer with its own shape / strides / offset (no
+    /// copy). Recorded for autograd like [`Tensor::from_op`] with `base` as parent.
+    pub(crate) fn view_op<F>(base: &Tensor, shape: Vec<usize>, strides: Vec<usize>, offset: usize, name: &'static str, backward: F) -> Tensor
+    where
+        F: Fn(&Tensor) -> Vec<Option<Tensor>> + Send + Sync + 'static,
+    {
+        let storage = base.0.data.read().unwrap().storage.clone();
+        if numel(&shape) > 0 {
+            let last = offset + shape.iter().zip(&strides).map(|(&n, &s)| (n - 1) * s).sum::<usize>();
+            assert!(last < storage.len(), "view out of bounds: shape {shape:?}, strides {strides:?}, offset {offset}");
+        }
+        let record = is_grad_enabled() && base.requires_grad();
+        let node = record.then(|| Node { parents: vec![base.clone()], backward: Box::new(backward), name });
+        Tensor(Arc::new(TensorImpl {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            data: RwLock::new(Data { storage, strides, offset, contiguous: None }),
+            shape,
+            requires_grad: AtomicBool::new(record),
+            grad: RwLock::new(None),
+            node,
+        }))
     }
 
     /// An `F32` tensor from row-major data (panics if `data.len()` doesn't match `shape`).
@@ -288,12 +358,40 @@ impl Tensor {
 
     /// The underlying storage (a cheap reference-counted clone).
     pub fn storage(&self) -> Storage {
-        self.0.storage.read().unwrap().clone()
+        {
+            let d = self.0.data.read().unwrap();
+            if d.is_plain(&self.0.shape) {
+                return d.storage.clone();
+            }
+            if let Some(c) = &d.contiguous {
+                return c.clone();
+            }
+        }
+        // materialize the view once (the data never changes)
+        let mut d = self.0.data.write().unwrap();
+        if let Some(c) = &d.contiguous {
+            return c.clone();
+        }
+        let c = backend_for(d.storage.device()).strided_copy(&d.storage, &self.0.shape, &d.strides, d.offset);
+        d.contiguous = Some(c.clone());
+        c
+    }
+
+    /// Whether the tensor is a plain row-major buffer (not a view needing a copy).
+    pub fn is_contiguous(&self) -> bool {
+        self.0.data.read().unwrap().is_plain(&self.0.shape)
+    }
+
+    /// The underlying buffer with this tensor's element `(strides, offset)`
+    /// in it, without copying (for view-aware kernels).
+    pub fn strided_parts(&self) -> (Storage, Vec<usize>, usize) {
+        let d = self.0.data.read().unwrap();
+        (d.storage.clone(), d.strides.clone(), d.offset)
     }
 
     /// Device the data lives on.
     pub fn device(&self) -> Device {
-        self.0.storage.read().unwrap().device()
+        self.0.data.read().unwrap().storage.device()
     }
 
     pub(crate) fn backend(&self) -> &'static dyn Backend {
@@ -302,7 +400,7 @@ impl Tensor {
 
     /// Element type.
     pub fn dtype(&self) -> DType {
-        self.0.storage.read().unwrap().dtype()
+        self.0.data.read().unwrap().storage.dtype()
     }
 
     /// Convert to another dtype. Float-to-float casts are differentiable
@@ -373,7 +471,7 @@ impl Tensor {
     pub fn set_storage(&self, s: Storage) {
         assert_eq!(s.len(), self.numel(), "set_storage: size mismatch");
         assert_eq!(s.dtype(), self.dtype(), "set_storage: dtype mismatch");
-        *self.0.storage.write().unwrap() = s;
+        *self.0.data.write().unwrap() = Data::new(s, &self.0.shape);
     }
 
     /// Copy the values of `src` into this tensor in place (keeps this tensor's device).
@@ -386,13 +484,21 @@ impl Tensor {
     /// elements); used by [`crate::nn::Module::to_dtype`].
     pub fn set_data(&self, s: Storage) {
         assert_eq!(s.len(), self.numel(), "set_data: size mismatch");
-        *self.0.storage.write().unwrap() = s;
+        *self.0.data.write().unwrap() = Data::new(s, &self.0.shape);
         self.zero_grad();
     }
 
     /// A new leaf tensor sharing the same data, cut from the graph.
     pub fn detach(&self) -> Tensor {
-        Tensor::from_storage(self.storage(), self.shape().to_vec())
+        let d = self.0.data.read().unwrap();
+        Tensor(Arc::new(TensorImpl {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            data: RwLock::new(Data { storage: d.storage.clone(), strides: d.strides.clone(), offset: d.offset, contiguous: d.contiguous.clone() }),
+            shape: self.0.shape.clone(),
+            requires_grad: AtomicBool::new(false),
+            grad: RwLock::new(None),
+            node: None,
+        }))
     }
 
     // ------------------------------------------------------------------
