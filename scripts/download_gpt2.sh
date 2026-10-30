@@ -7,7 +7,7 @@ MODEL="${MODEL:-gpt2}"
 DIR="${DIR:-data/$MODEL}"
 BASE="https://huggingface.co/openai-community/$MODEL/resolve/main"
 mkdir -p "$DIR"
-for f in config.json vocab.json merges.txt model.safetensors; do
+for f in config.json vocab.json merges.txt tokenizer.json model.safetensors; do
     if [ -s "$DIR/$f" ]; then
         echo "have $DIR/$f"
     else

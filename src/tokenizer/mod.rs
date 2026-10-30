@@ -5,6 +5,13 @@
 //! `'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+`
 //! (implemented by hand: it needs a lookahead), every piece is mapped
 //! byte-by-byte to printable characters, and BPE merges are applied by rank.
+//!
+//! [`HfTokenizer`] reads a Hugging Face `tokenizer.json` (BPE models: GPT-2,
+//! Llama 2/3, TinyLlama, SmolLM, Qwen, ...).
+
+mod hf;
+
+pub use hf::HfTokenizer;
 
 use std::collections::HashMap;
 use std::io;

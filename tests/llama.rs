@@ -315,3 +315,20 @@ fn autocast_gradients_match_f32() {
     let err = g32.iter().zip(&g16).map(|(a, b)| (a - b) * (a - b)).sum::<f32>().sqrt();
     assert!(err < 0.02 * norm, "relative gradient error {}", err / norm);
 }
+
+/// Real weights: a small pretrained Llama-family model (scripts/download_smollm.sh).
+#[test]
+fn pretrained_smollm_knows_paris() {
+    let dir = std::path::Path::new("data/smollm2-135m");
+    if !dir.join("model.safetensors").exists() || !dir.join("tokenizer.json").exists() {
+        eprintln!("skipping: data/smollm2-135m not found (run scripts/download_smollm.sh)");
+        return;
+    }
+    let tok = ruai::tokenizer::HfTokenizer::from_dir(dir).unwrap();
+    let model = Llama::from_pretrained(dir, dev()).unwrap();
+    let prompt = tok.encode("The capital of France is", true);
+    let out = model.generate(&prompt, 6, &mut Sampler::greedy());
+    let text = tok.decode(&out[prompt.len()..], true);
+    eprintln!("continuation: {text:?}");
+    assert!(text.contains("Paris"), "greedy continuation {text:?} does not mention Paris");
+}

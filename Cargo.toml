@@ -1,6 +1,6 @@
 [package]
 name = "ruai"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 description = "A small PyTorch-like neural network engine in Rust (autograd, CNN/ResNet/ViT, Transformer/GPT/Llama, seq2seq)"
 license = "MIT"
@@ -18,6 +18,9 @@ half = "2"
 safetensors = "0.8"
 # vocab.json of BPE tokenizers (already a dependency of safetensors)
 serde_json = "1"
+# tokenizer.json: pre-tokenizer regexes (with lookahead) and Unicode normalizers
+fancy-regex = "0.20"
+unicode-normalization = "0.1"
 
 # CUDA: loaded at runtime (dynamic-loading), so it builds without the CUDA toolkit
 cudarc = { version = "0.19", optional = true, default-features = false, features = ["std", "driver", "nvrtc", "cublas", "f16", "dynamic-loading", "cuda-12080"] }

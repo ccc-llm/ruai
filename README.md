@@ -142,7 +142,23 @@ let ids = model.generate(&prompt_ids, 50, &mut Sampler::greedy());   // KV cache
 
 元件也可單獨使用：`F::rms_norm`、`F::rope_inv_freq` / `F::rope_cos_sin` / `F::apply_rope`（HF 的 rotate_half 版面）、`F::repeat_kv`、`Tensor::silu`、`nn::RMSNorm`、`nn::SwiGLU`。`config.json` 支援 `num_key_value_heads`、`head_dim`、`rope_theta`、`tie_word_embeddings`、`attention_bias` 與 Llama 3.1 的 `rope_scaling`（`rope_type: "llama3"`；其他類型會回報錯誤）。HF 的 `nn.Linear` 權重為 `[out, in]`，本專案 `Linear` 為 `[in, out]`，`from_pretrained` / `save_pretrained` 會自動轉置。
 
-> ⚠️ 尚未以真實 Llama 權重驗證：HF 版面（名稱、形狀、轉置）、RoPE 性質、llama3 頻率縮放與 config 解析都以合成資料測試，但還沒有對官方權重比對過 logits。專案目前沒有 SentencePiece / `tokenizer.json` 分詞器，載入預訓練 Llama 後需自行提供 token id。
+預訓練模型（`config.json` + `model.safetensors` + `tokenizer.json`）：
+
+```bash
+./scripts/download_smollm.sh                    # HuggingFaceTB/SmolLM2-135M → data/smollm2-135m
+cargo run --release --example llama -- --model data/smollm2-135m --prompt "The capital of France is"
+```
+
+```rust
+use ruai::tokenizer::HfTokenizer;
+let tok = HfTokenizer::from_dir("data/smollm2-135m")?;          // 讀 tokenizer.json
+let ids = tok.encode("Hello world", true);                      // true：加上 BOS 等特殊 token
+println!("{}", tok.decode(&ids, true));                         // true：略過特殊 token
+```
+
+`HfTokenizer` 支援 BPE 模型（GPT-2、Llama 2/3、TinyLlama、SmolLM、Qwen …）的 normalizer、pre-tokenizer（ByteLevel、含 lookahead 的 Split regex、Metaspace、Digits …）、byte fallback、added / special token、post-processor 範本與 decoder；不支援的元件（WordPiece、Unigram 等）載入時會回報錯誤。
+
+> ⚠️ 尚未以真實權重驗證：HF 版面、RoPE、llama3 頻率縮放、config 與 `tokenizer.json` 解析都以合成資料測試。下載後 `cargo test --release --test llama --test tokenizer` 會自動跑真實權重測試（SmolLM2 要接出 "Paris"、GPT-2 的 `tokenizer.json` 要與 `vocab.json` + `merges.txt` 逐 token 相同），也可在 GitHub Actions 手動觸發 CI 的 pretrained 工作。
 
 ### ResNet / ViT / encoder-decoder
 
@@ -334,7 +350,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v0.9 | ResNet、ViT、encoder-decoder Transformer（cross-attention、seq2seq） | ✅ |
 | v1.0 | API 整理（`GPT::generate` 改用 `Sampler`）、所有公開項目都有 rustdoc、clippy 乾淨、`cargo package` 可打包 | ✅（crates.io 名稱：`ruai`） |
 | v1.1 | GitHub Actions CI（Linux / macOS，可手動觸發 GPT-2 真實權重測試）、`zeros_like` 保留 dtype、`collator` 保留影像形狀 | ✅ |
-| v1.2 | Hugging Face `tokenizer.json` 分詞器 | |
+| v1.2 | Hugging Face `tokenizer.json` 分詞器（`HfTokenizer`）、`llama --model` 載入預訓練模型 | ✅（尚未以真實檔案驗證） |
 | v1.3 | 預先配置的 KV cache（O(n) 解碼）、LoRA、gradient checkpointing | |
 | v1.4 | int4 權重量化 | |
 | v1.5 | 融合 attention kernel | |
@@ -349,5 +365,5 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - MPS：小運算受派送開銷限制
 - CUDA 後端尚未在 NVIDIA 實機上執行過（見上方說明與 `scripts/verify_cuda.sh`）
 - GPT-2 尚未以真實權重驗證（見上方說明與 `scripts/download_gpt2.sh`）
-- Llama 尚未以真實權重驗證，且沒有 SentencePiece / `tokenizer.json` 分詞器
+- Llama 與 `tokenizer.json` 尚未以真實檔案驗證；`HfTokenizer` 只支援 BPE 模型
 - MPS / CUDA：張量維度上限 8；元素數必須能放進 u32

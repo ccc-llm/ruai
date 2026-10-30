@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.0
+
+- `tokenizer::HfTokenizer`: Hugging Face `tokenizer.json` for BPE models (GPT-2, Llama 2/3,
+  TinyLlama, SmolLM, Qwen, ...): normalizers, pre-tokenizers (ByteLevel, Split regex with
+  lookahead, Metaspace, Digits, ...), byte fallback, added / special tokens, post-processor
+  templates (BOS), decoders. Unsupported components are reported when loading.
+- `llama` example: `--model DIR --prompt TEXT` loads a pretrained checkpoint with its
+  tokenizer and streams a greedy continuation; `scripts/download_smollm.sh`.
+- Real-weight tests (skipped unless downloaded): `tokenizer.json` vs `vocab.json`/`merges.txt`
+  for GPT-2, SmolLM2-135M continuing "The capital of France is" with "Paris".
+- New dependencies: `fancy-regex`, `unicode-normalization`.
+
 ## 1.1.0
 
 - GitHub Actions CI: Linux (CPU tests, clippy, rustdoc, CUDA build) and macOS (Accelerate, Metal);

@@ -3,6 +3,13 @@
 //!
 //!     cargo run --release --example llama [path/to/text.txt]
 //!     cargo run --release --features mps --example llama -- --device mps
+//!
+//! With `--model DIR` it instead loads a pretrained Hugging Face Llama-family
+//! checkpoint (`config.json`, `model.safetensors`, `tokenizer.json`) and
+//! continues `--prompt` (see `scripts/download_smollm.sh`):
+//!
+//!     ./scripts/download_smollm.sh
+//!     cargo run --release --example llama -- --model data/smollm2-135m --prompt "The capital of France is"
 
 use ruai::generation::Sampler;
 use ruai::nn::llama::{Llama, LlamaConfig};
@@ -11,6 +18,8 @@ use ruai::optim::lr::{CosineLr, LrScheduler};
 use ruai::optim::{clip_grad_norm, Adam, Optimizer};
 use ruai::prelude::*;
 use ruai::rand;
+use ruai::tokenizer::HfTokenizer;
+use std::io::Write;
 use std::time::Instant;
 
 const DEFAULT_TEXT: &str = "\
@@ -30,7 +39,14 @@ fn main() {
         None => Device::from_env(),
     };
     println!("device: {device}");
-    let path = args.iter().enumerate().find(|(i, a)| !a.starts_with("--") && (*i == 0 || args[i - 1] != "--device"));
+    let value = |flag: &str| args.iter().position(|a| a == flag).map(|i| args[i + 1].clone());
+    if let Some(dir) = value("--model") {
+        let prompt = value("--prompt").unwrap_or_else(|| "Once upon a time".into());
+        let n = value("-n").map_or(60, |n| n.parse().expect("-n N"));
+        return pretrained(&dir, &prompt, n, device);
+    }
+    let takes_value = |a: &str| matches!(a, "--device" | "--model" | "--prompt" | "-n");
+    let path = args.iter().enumerate().find(|(i, a)| !a.starts_with("--") && (*i == 0 || !takes_value(&args[i - 1])));
     let text = match path {
         Some((_, p)) => std::fs::read_to_string(p).expect("read text file"),
         None => DEFAULT_TEXT.repeat(4),
@@ -86,4 +102,41 @@ fn main() {
     let ids: Vec<usize> = "rust ".chars().map(stoi).collect();
     let out = restored.generate(&ids, 120, &mut Sampler::new(0.8, 0, 0.95, 1));
     println!("\n[T=0.8, top-p 0.95] {}", out.iter().map(|&i| vocab[i]).collect::<String>());
+}
+
+/// Load a Hugging Face checkpoint and stream a greedy continuation of `prompt`.
+fn pretrained(dir: &str, prompt: &str, n: usize, device: Device) {
+    let t0 = Instant::now();
+    let tok = HfTokenizer::from_dir(dir).expect("tokenizer.json");
+    let model = Llama::from_pretrained(dir, device).expect("load model");
+    let c = &model.config;
+    println!(
+        "loaded {dir}: {} layers, hidden {}, {} heads / {} kv heads, vocab {} ({:.1}M parameters, {:.1}s)",
+        c.num_hidden_layers,
+        c.hidden_size,
+        c.num_attention_heads,
+        c.num_key_value_heads,
+        c.vocab_size,
+        model.num_parameters() as f32 / 1e6,
+        t0.elapsed().as_secs_f32()
+    );
+    let ids = tok.encode(prompt, true);
+    println!("prompt tokens: {ids:?}\n");
+    print!("{prompt}");
+    let mut shown = tok.decode(&ids, true);
+    let mut all = ids.clone();
+    let t1 = Instant::now();
+    let out = model.generate_with(&ids, n, &mut Sampler::greedy(), |next| {
+        // re-decode the whole text and print the new suffix (handles merged UTF-8 bytes)
+        all.push(next);
+        let text = tok.decode(&all, true);
+        if let Some(new) = text.strip_prefix(&shown) {
+            print!("{new}");
+            std::io::stdout().flush().ok();
+        }
+        shown = text;
+        true
+    });
+    let new = out.len() - ids.len();
+    println!("\n\n{new} tokens in {:.2}s ({:.1} tokens/s)", t1.elapsed().as_secs_f32(), new as f32 / t1.elapsed().as_secs_f32());
 }

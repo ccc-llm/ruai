@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       pretrained:
-        description: "Also download GPT-2 (~550 MB) and run the golden tests against the real weights"
+        description: "Also download GPT-2 (~550 MB) and SmolLM2-135M (~270 MB) and test against the real weights"
         type: boolean
         default: false
 
@@ -50,7 +50,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   pretrained:
-    name: GPT-2 golden tests (real weights)
+    name: Pretrained models (real weights)
     if: github.event_name == 'workflow_dispatch' && inputs.pretrained
     runs-on: ubuntu-latest
     steps:
@@ -58,4 +58,5 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: ./scripts/download_gpt2.sh
-      - run: cargo test --release --test inference -- --nocapture
+      - run: ./scripts/download_smollm.sh
+      - run: cargo test --release --test inference --test tokenizer --test llama -- --nocapture
