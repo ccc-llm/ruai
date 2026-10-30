@@ -1,6 +1,6 @@
 # rust-nn
 
-一個用 Rust 寫的、類似 PyTorch 的神經網路引擎：動態計算圖 + 反向自動微分，支援訓練與推理，內建 CNN 與 Transformer（GPT）。支援 CPU（rayon 多執行緒，macOS 可選用 Accelerate）與 Apple GPU（Metal / MPS）；CUDA 後端已預留好介面。
+一個用 Rust 寫的、類似 PyTorch 的神經網路引擎：動態計算圖 + 反向自動微分，支援訓練與推理，內建 CNN 與 Transformer（GPT）。支援 CPU（rayon 多執行緒，macOS 可選用 Accelerate）、Apple GPU（Metal / MPS）與 NVIDIA GPU（CUDA）。
 
 ## 快速開始
 
@@ -16,6 +16,9 @@ cargo run --release --features accelerate --example gpt
 # Apple GPU（Metal）：加上 --features mps，用 --device 選裝置（cpu / mps / auto）
 cargo run --release --features mps --example gpt -- --device mps
 cargo run --release --features mps --example bench mps
+
+# NVIDIA GPU（CUDA）：加上 --features cuda
+cargo run --release --features cuda --example gpt -- --device cuda
 ```
 
 程式裡選裝置：`Tensor::randn(&[2, 3], Device::Mps)`、`model.to_device(Device::Mps)`、`Device::best_available()`，或用環境變數 `RUSTNN_DEVICE=mps`。
@@ -76,7 +79,8 @@ src/
 │   ├── cpu.rs     CPU 實作（rayon 平行化）
 │   ├── mps.rs     Apple Metal 後端 (--features mps)
 │   ├── mps_kernels.metal  Metal compute kernels（執行時編譯）
-│   └── cuda.rs    CUDA 骨架 (--features cuda)
+│   ├── cuda.rs    NVIDIA CUDA 後端 (--features cuda)
+│   └── cuda_kernels.cu    CUDA kernels（NVRTC 執行時編譯）
 ├── tensor.rs      Tensor 結構、計算圖節點、backward()
 ├── ops.rs         可微分運算：forward 呼叫 backend，backward 由其他運算組成
 ├── functional.rs  組合運算（softmax、conv2d、attention …）
@@ -110,9 +114,21 @@ Autograd、所有 nn 層、優化器都只透過 `Tensor` 運算操作資料，�
 - **融合原語**：softmax / log_softmax / layer_norm（含 backward）、Adam 都是單一 kernel（一個 threadgroup 處理一列，用 simdgroup 歸約）
 - 需求：Apple Silicon、macOS 15+（使用 `atomic_float`、`MTLMathMode`）
 
-### CUDA（v0.4）
+### CUDA（NVIDIA）
 
-只需實作 `src/backend/cuda.rs`：讓 `CudaStorage` 持有裝置記憶體（如 `cudarc` 的 `CudaSlice`），`matmul` 對應 `cublasSgemmStridedBatched`，其餘用 NVRTC kernel——可以直接移植 `mps_kernels.metal` 的邏輯。上層程式碼完全不用改，`tests/devices.rs` 會自動拿 CUDA 結果對照 CPU。
+- **建置**：`cudarc` 以 dynamic loading 在執行時載入 CUDA driver / NVRTC / cuBLAS，所以任何平台都能編譯 `--features cuda`；沒有 GPU 時 `Device::Cuda(0).is_available()` 回傳 `false`
+- **kernel**：`cuda_kernels.cu` 是 `mps_kernels.metal` 的逐一移植（warp shuffle 歸約、`atomicAdd`），第一次使用時以 NVRTC 編譯（不開 fast-math）
+- **matmul**：`cublasSgemmStridedBatched`，用 `C = A·B ⇔ Cᵀ = Bᵀ·Aᵀ` 把 row-major 對應到 cuBLAS 的 column-major；batch stride 0 直接支援廣播
+- **非同步**：每張卡一條 stream，記憶體為 stream-ordered（`cuMemAllocAsync`），只有讀回資料時才同步；支援多卡 `Device::Cuda(i)`
+- **需求**：NVIDIA driver 與 CUDA 12.x 的 NVRTC、cuBLAS 函式庫（`libnvrtc` / `libcublas` 在載入路徑上即可，不需要完整 toolkit）
+
+在 NVIDIA 機器上一鍵驗證（跨裝置對照、GPU 上的完整測試、範例、效能）：
+
+```bash
+./scripts/verify_cuda.sh
+```
+
+> ⚠️ CUDA 後端是在沒有 NVIDIA GPU 的環境下開發的：已驗證可編譯、kernel 語法（以 C++ shim 檢查）、kernel 名稱與參數結構對應、cuBLAS row-major 參數對應（以 Python 模擬 column-major 語意，48 種組合）、無 GPU 時的行為；**尚未在實機上執行**。
 
 ## 效能（Apple M3，8 核 CPU / 8 核 GPU，`cargo run --release --example bench <device>`）
 
@@ -148,7 +164,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v0.1 | CPU 後端、autograd、CNN、Transformer/GPT、優化器、存檔 | ✅ |
 | v0.2 | DType（I32 索引）、cat/gather/where 等新運算、融合原語、快速 GEMM、Accelerate | ✅ |
 | v0.3 | MPS（Apple Metal）後端、跨裝置測試框架、`--device` 選擇 | ✅ |
-| v0.4 | CUDA 後端（cuBLAS + NVRTC） | |
+| v0.4 | CUDA 後端（cuBLAS + NVRTC）、多卡 | ✅（待實機驗證） |
 | v0.5 | DataLoader、完整 checkpoint（含優化器狀態）、safetensors | |
 | v0.6 | f16 / bf16、混合精度訓練 | |
 | v0.7 | KV cache、載入 GPT-2 官方權重、int8 量化 | |
@@ -160,5 +176,6 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - 浮點運算只有 `f32`（f16/bf16 在 v0.6）
 - 反向傳播不建立計算圖（不支援二階導數）
 - attention 尚未融合成單一 kernel（flash-attention 式的融合排在之後的版本）
-- MPS：小運算受派送開銷限制；張量維度上限 8；索引必須能放進 u32
-- CUDA 後端目前只有骨架（`unimplemented!`），v0.4 實作
+- MPS：小運算受派送開銷限制
+- CUDA 後端尚未在 NVIDIA 實機上執行過（見上方說明與 `scripts/verify_cuda.sh`）
+- MPS / CUDA：張量維度上限 8；元素數必須能放進 u32

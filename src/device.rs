@@ -21,7 +21,10 @@ impl Device {
     pub fn is_available(&self) -> bool {
         match self {
             Device::Cpu => true,
-            Device::Cuda(_) => cfg!(feature = "cuda"),
+            #[cfg(feature = "cuda")]
+            Device::Cuda(i) => crate::backend::cuda::is_available(*i),
+            #[cfg(not(feature = "cuda"))]
+            Device::Cuda(_) => false,
             #[cfg(feature = "mps")]
             Device::Mps => crate::backend::mps::is_available(),
             #[cfg(not(feature = "mps"))]
