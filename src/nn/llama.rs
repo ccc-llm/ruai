@@ -396,7 +396,7 @@ impl Llama {
 
     /// Parameters in Hugging Face layout (linear weights `[out, in]`).
     pub fn hf_state_dict(&self) -> Vec<(String, Tensor)> {
-        assert!(self.head_int8.is_none() && !self.layers.iter().any(|l| l.self_attn.q_proj.is_quantized()), "cannot export an int8-quantized model");
+        assert!(self.head_int8.is_none() && !self.layers.iter().any(|l| l.self_attn.q_proj.is_quantized()), "cannot export a quantized model");
         assert!(!self.named_parameters().iter().any(|(n, _)| n.contains(".lora_")), "merge the LoRA adapters (merge_lora) before exporting");
         self.named_parameters()
             .into_iter()
@@ -513,14 +513,27 @@ impl Llama {
     /// head (the embedding table stays in its original precision).
     pub fn quantize_int8(&mut self) {
         for l in &mut self.layers {
-            let a = &mut l.self_attn;
-            for lin in [&mut a.q_proj, &mut a.k_proj, &mut a.v_proj, &mut a.o_proj] {
-                lin.quantize_int8();
-            }
-            for lin in [&mut l.mlp.gate_proj, &mut l.mlp.up_proj, &mut l.mlp.down_proj] {
+            for (_, lin) in l.linears_mut() {
                 lin.quantize_int8();
             }
         }
+        self.quantize_head_int8();
+    }
+
+    /// Group-wise int4 quantization ([`Linear::quantize_int4`]) of every
+    /// projection in the decoder layers; the output head is quantized to
+    /// int8 (it is the most precision-sensitive matrix) and the embedding
+    /// table keeps its precision. `group` must divide the layer widths (e.g. 32).
+    pub fn quantize_int4(&mut self, group: usize) {
+        for l in &mut self.layers {
+            for (_, lin) in l.linears_mut() {
+                lin.quantize_int4(group);
+            }
+        }
+        self.quantize_head_int8();
+    }
+
+    fn quantize_head_int8(&mut self) {
         match &mut self.lm_head {
             Some(h) => h.quantize_int8(),
             None if self.head_int8.is_none() => {

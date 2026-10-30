@@ -516,3 +516,44 @@ template <typename T> __device__ void matmul_int8_impl(const T* x, const signed 
         matmul_int8_impl<T>(x, q, sc, out, p);                                                                  \
     }
 FOR_FLOATS(MAKE_MATMUL_INT8)
+
+// ---------------------------------------------------------------- int4 weights
+
+struct Int4Params {
+    u32 m, k, n, group;
+};
+
+// Row l, column j of packed int4 weights: byte (l / 2) * n + j, low nibble
+// for even l, high for odd l, 4-bit two's complement.
+__device__ __forceinline__ float int4_at(const unsigned char* q, u32 l, u32 j, u32 n) {
+    unsigned char b = q[(u64)(l >> 1) * n + j];
+    int v = (l & 1) ? (int)(b >> 4) : (int)(b & 15);
+    return (float)(v >= 8 ? v - 16 : v);
+}
+
+// out[i, j] = sum_g scale[g, j] * sum_{l in group g} x[i, l] * w[l, j]; one thread per output.
+template <typename T> __device__ void matmul_int4_impl(const T* x, const unsigned char* q, const float* sc, T* out, const Int4Params& p) {
+    u32 t = gid();
+    if (t >= p.m * p.n) return;
+    u32 i = t / p.n, j = t % p.n;
+    const T* xr = x + (u64)i * p.k;
+    float acc = 0.0f;
+    for (u32 g0 = 0; g0 < p.k; g0 += p.group) {
+        float part = 0.0f;
+        for (u32 l = g0; l < g0 + p.group; ++l) part += ld(xr[l]) * int4_at(q, l, j, p.n);
+        acc += part * sc[(u64)(g0 / p.group) * p.n + j];
+    }
+    out[t] = st<T>(acc);
+}
+#define MAKE_MATMUL_INT4(suf, T)                                                                                    \
+    extern "C" __global__ void matmul_int4_##suf(const T* x, const unsigned char* q, const float* sc, T* out, Int4Params p) { \
+        matmul_int4_impl<T>(x, q, sc, out, p);                                                                      \
+    }
+FOR_FLOATS(MAKE_MATMUL_INT4)
+
+extern "C" __global__ void dequant_int4(const unsigned char* q, const float* sc, float* out, Int4Params p) {
+    u32 t = gid();
+    if (t >= p.k * p.n) return;
+    u32 l = t / p.n, j = t % p.n;
+    out[t] = int4_at(q, l, j, p.n) * sc[(u64)(l / p.group) * p.n + j];
+}

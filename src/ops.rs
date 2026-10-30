@@ -607,6 +607,31 @@ impl Tensor {
         })
     }
 
+    /// Group-wise int4 weight-only matmul `self @ dequant(q, scales)`:
+    /// `self` `[..., k]` (float), `q` `[k / 2, n]` (`I8`, two 4-bit values
+    /// per byte, see [`crate::backend::Backend::dequant_int4`]), `scales`
+    /// `[k / group, n]` (`F32`). Differentiable with respect to `self` only.
+    pub fn matmul_int4(&self, q: &Tensor, scales: &Tensor) -> Tensor {
+        assert_float(self, "matmul_int4");
+        assert_eq!(q.dtype(), DType::I8, "matmul_int4: packed weights must be I8");
+        assert!(q.rank() == 2 && scales.rank() == 2, "matmul_int4: q must be [k/2, n] and scales [k/group, n]");
+        let (k, n) = (2 * q.shape()[0], q.shape()[1]);
+        assert_eq!(self.dim(-1), k, "matmul_int4: inner dims differ ({:?} @ int4 [{k}, {n}])", self.shape());
+        assert_eq!(scales.dim(1), n, "matmul_int4: scales must have {n} columns");
+        let group = k / scales.dim(0);
+        assert_eq!(group * scales.dim(0), k, "matmul_int4: {} scale rows do not divide k = {k}", scales.dim(0));
+        let m = self.numel() / k.max(1);
+        let sc = scales.to_dtype(DType::F32);
+        let s = self.backend().matmul_int4(&self.storage(), &q.storage(), &sc.storage(), m, k, n, group);
+        let mut shape = self.shape().to_vec();
+        *shape.last_mut().unwrap() = n;
+        let q = q.clone();
+        Tensor::from_op(s, shape, vec![self.clone()], "matmul_int4", move |g| {
+            let w = Tensor::from_storage(g.backend().dequant_int4(&q.storage(), &sc.storage(), k, n, group), vec![k, n]);
+            vec![Some(g.matmul_nt(&w))]
+        })
+    }
+
     // ------------------------------------------------------------------
     // indexing
     // ------------------------------------------------------------------

@@ -10,6 +10,7 @@
 //!
 //!     ./scripts/download_smollm.sh
 //!     cargo run --release --example llama -- --model data/smollm2-135m --prompt "The capital of France is"
+//!     cargo run --release --example llama -- --model data/smollm2-135m --int4   # or --int8
 
 use ruai::generation::Sampler;
 use ruai::nn::llama::{Llama, LlamaConfig};
@@ -43,7 +44,8 @@ fn main() {
     if let Some(dir) = value("--model") {
         let prompt = value("--prompt").unwrap_or_else(|| "Once upon a time".into());
         let n = value("-n").map_or(60, |n| n.parse().expect("-n N"));
-        return pretrained(&dir, &prompt, n, device);
+        let quant = args.iter().find(|a| *a == "--int8" || *a == "--int4").cloned();
+        return pretrained(&dir, &prompt, n, quant.as_deref(), device);
     }
     let takes_value = |a: &str| matches!(a, "--device" | "--model" | "--prompt" | "-n");
     let path = args.iter().enumerate().find(|(i, a)| !a.starts_with("--") && (*i == 0 || !takes_value(&args[i - 1])));
@@ -105,10 +107,18 @@ fn main() {
 }
 
 /// Load a Hugging Face checkpoint and stream a greedy continuation of `prompt`.
-fn pretrained(dir: &str, prompt: &str, n: usize, device: Device) {
+fn pretrained(dir: &str, prompt: &str, n: usize, quant: Option<&str>, device: Device) {
     let t0 = Instant::now();
     let tok = HfTokenizer::from_dir(dir).expect("tokenizer.json");
-    let model = Llama::from_pretrained(dir, device).expect("load model");
+    let mut model = Llama::from_pretrained(dir, device).expect("load model");
+    match quant {
+        Some("--int8") => model.quantize_int8(),
+        Some("--int4") => model.quantize_int4(32),
+        _ => {}
+    }
+    if let Some(q) = quant {
+        println!("weights quantized: {}", &q[2..]);
+    }
     let c = &model.config;
     println!(
         "loaded {dir}: {} layers, hidden {}, {} heads / {} kv heads, vocab {} ({:.1}M parameters, {:.1}s)",

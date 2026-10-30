@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.0
+
+- Group-wise int4 weight-only quantization: `Linear::quantize_int4(group)`,
+  `Llama::quantize_int4`, `GPT2::quantize_int4` (output head stays int8). Two 4-bit values
+  per byte plus one f32 scale per `group` input rows: about 1/8 of the f32 weight memory.
+- Backend primitives `dequant_int4` / `matmul_int4` with fused kernels on CPU, MPS and CUDA
+  (dequantize + GEMM for more than 16 rows); `Tensor::matmul_int4` is differentiable in its
+  input, so LoRA trains on int4 models.
+- `Linear::dims`; `--int4` in the `gpt2` and `llama` examples; quantized matvec benchmark.
+
 ## 1.3.0
 
 - LoRA: `Linear::add_lora` / `merge_lora`, `Llama::add_lora` and `GPT2::add_lora` (by

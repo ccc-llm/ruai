@@ -22,10 +22,11 @@ pub const PLAIN_KERNELS: &[&str] = &[
     "index_add",
     "gather",
     "scatter_add",
+    "dequant_int4",
 ];
 /// Kernels instantiated for each float storage type: `<name>_<f32|f16|bf16>`.
 pub const FLOAT_KERNELS: &[&str] =
-    &["unary", "binary", "where", "reduce_strided", "reduce_rows", "index_select", "im2col", "col2im", "matmul_int8"];
+    &["unary", "binary", "where", "reduce_strided", "reduce_rows", "index_select", "im2col", "col2im", "matmul_int8", "matmul_int4"];
 const DTYPES: [DType; 5] = [DType::F32, DType::F16, DType::BF16, DType::I32, DType::I8];
 
 pub fn kernel_names() -> Vec<String> {

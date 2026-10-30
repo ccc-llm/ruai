@@ -186,3 +186,11 @@ fn int8_matmul_input_gradient() {
     let s = Tensor::from_vec(vec![0.1, 0.3], &[2], dev());
     gradcheck("matmul_int8", &[&[2, 3]], move |x| x[0].matmul_int8(&q, &s));
 }
+
+#[test]
+fn int4_matmul_input_gradient() {
+    // k = 4, n = 2, group 2: bytes pack rows (0, 1) and (2, 3)
+    let q = Tensor::from_vec(vec![0x7F as f32, -0x6E as f32, 0x21 as f32, 0x0F as f32], &[2, 2], dev()).to_dtype(ruai::DType::I8);
+    let s = Tensor::from_vec(vec![0.1, 0.3, 0.2, 0.05], &[2, 2], dev());
+    gradcheck("matmul_int4", &[&[3, 4]], move |x| x[0].matmul_int4(&q, &s));
+}

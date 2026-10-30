@@ -147,4 +147,20 @@ fn main() {
         });
         println!("  {ms:8.3} ms/step");
     }
+
+    // decoding-style matvec through a 2048 x 2048 weight: memory bound, so
+    // smaller weights read faster
+    println!("== weight-only quantized matvec [1, 2048] @ [2048, 2048] ==");
+    for q in ["f32", "int8", "int4"] {
+        rand::manual_seed(0);
+        let mut lin = ruai::nn::Linear::with_bias(2048, 2048, false, dev);
+        match q {
+            "int8" => lin.quantize_int8(),
+            "int4" => lin.quantize_int4(32),
+            _ => {}
+        }
+        let x = Tensor::randn(&[1, 2048], dev);
+        let ms = no_grad(|| time_ms(dev, 50, || drop(lin.forward(&x))));
+        println!("  {q:5} {ms:8.3} ms");
+    }
 }

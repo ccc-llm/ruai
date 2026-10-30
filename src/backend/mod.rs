@@ -91,6 +91,14 @@ impl fmt::Display for DType {
     }
 }
 
+/// Value of row `l`, column `j` of packed int4 weights (see [`Backend::dequant_int4`]);
+/// `q` holds the bytes as integers.
+pub fn int4_value<T: Copy + Into<i32>>(q: &[T], l: usize, j: usize, n: usize) -> f32 {
+    let b = (q[(l / 2) * n + j].into() & 0xFF) as u8;
+    let v = if l % 2 == 1 { b >> 4 } else { b & 0xF } as i32;
+    (if v >= 8 { v - 16 } else { v }) as f32
+}
+
 /// Host-memory buffer of one dtype.
 #[derive(Clone)]
 pub enum CpuStorage {
@@ -516,6 +524,28 @@ pub trait Backend: Send + Sync {
         let w = self.cast(q, dt);
         let sc = self.cast(scales, dt);
         let w = self.binary(BinaryOp::Mul, &w, &[k, n], &sc, &[n], &[k, n]);
+        let spec = MatmulSpec { batch: 1, m, k, n, trans_a: false, trans_b: false, a_batch_stride: 0, b_batch_stride: 0 };
+        self.matmul(x, &w, spec)
+    }
+
+    /// Dequantize group-wise int4 weights to an `F32` `[k, n]` matrix.
+    /// `q` (`I8`, `k/2 * n` bytes) packs rows `2r` (low nibble) and `2r+1`
+    /// (high nibble) of column `j` into byte `r * n + j`, as 4-bit two's
+    /// complement; `scales` (`F32`, `[k / group, n]`) has one scale per
+    /// `group` rows. The default unpacks on the host; backends override it.
+    fn dequant_int4(&self, q: &Storage, scales: &Storage, k: usize, n: usize, group: usize) -> Storage {
+        let (q, sc) = (q.to_vec_i32(), scales.to_vec());
+        let w: Vec<f32> = (0..k * n).map(|t| int4_value(&q, t / n, t % n, n) * sc[(t / n / group) * n + t % n]).collect();
+        self.from_f32(w)
+    }
+
+    /// Weight-only int4 matmul `x (m x k) @ dequant_int4(q, scales)`, output in
+    /// `x`'s dtype (layout as in [`Backend::dequant_int4`]). The default
+    /// dequantizes and calls `matmul`; backends override it to read the
+    /// packed weights directly (1/8 of the f32 weight traffic).
+    #[allow(clippy::too_many_arguments)]
+    fn matmul_int4(&self, x: &Storage, q: &Storage, scales: &Storage, m: usize, k: usize, n: usize, group: usize) -> Storage {
+        let w = self.cast(&self.dequant_int4(q, scales, k, n, group), x.dtype());
         let spec = MatmulSpec { batch: 1, m, k, n, trans_a: false, trans_b: false, a_batch_stride: 0, b_batch_stride: 0 };
         self.matmul(x, &w, spec)
     }

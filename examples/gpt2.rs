@@ -4,12 +4,13 @@
 //!     cargo run --release --example gpt2 -- --prompt "The meaning of life is"
 //!     cargo run --release --example gpt2 -- --prompt "Once upon a time" --temperature 0.8 --top-k 40
 //!     cargo run --release --example gpt2 -- --int8                     # int8 weights
+//!     cargo run --release --example gpt2 -- --int4                     # int4 weights (group 32)
 //!     cargo run --release --features mps --example gpt2 -- --device mps
 //!     cargo run --release --example gpt2 -- --no-cache                 # recompute the context each step
 //!
 //! Options: --model DIR (default data/gpt2), --prompt TEXT, --max-tokens N (100),
 //! --temperature T (0 = greedy, default 0.8), --top-k K (40), --top-p P (0.95),
-//! --seed S, --device cpu|mps|cuda|auto, --int8, --no-cache.
+//! --seed S, --device cpu|mps|cuda|auto, --int8, --int4, --no-cache.
 
 use ruai::generation::Sampler;
 use ruai::nn::gpt2::GPT2;
@@ -53,6 +54,8 @@ fn main() {
     let mut model = GPT2::from_pretrained(&dir, device).expect("load model");
     if args.has("--int8") {
         model.quantize_int8();
+    } else if args.has("--int4") {
+        model.quantize_int4(32);
     }
     let c = model.config;
     eprintln!(
@@ -60,7 +63,13 @@ fn main() {
         c.n_layer,
         c.n_embd,
         ruai::nn::Module::num_parameters(&model) as f64 / 1e6,
-        if args.has("--int8") { ", int8 weights" } else { "" },
+        if args.has("--int8") {
+            ", int8 weights"
+        } else if args.has("--int4") {
+            ", int4 weights"
+        } else {
+            ""
+        },
         t0.elapsed().as_secs_f32()
     );
 

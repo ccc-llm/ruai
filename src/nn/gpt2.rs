@@ -305,10 +305,28 @@ impl GPT2 {
     /// embedding table stays in its original precision.
     pub fn quantize_int8(&mut self) {
         for b in &mut self.blocks {
-            b.attn.c_attn.quantize_int8();
-            b.attn.c_proj.quantize_int8();
-            b.mlp.c_fc.quantize_int8();
-            b.mlp.c_proj.quantize_int8();
+            for (_, lin) in b.linears_mut() {
+                lin.quantize_int8();
+            }
+        }
+        self.quantize_head_int8();
+    }
+
+    /// Group-wise int4 quantization ([`Linear::quantize_int4`]) of every
+    /// linear layer in the blocks; the tied output head is quantized to int8.
+    /// `group` must divide `n_embd` (e.g. 32).
+    pub fn quantize_int4(&mut self, group: usize) {
+        for b in &mut self.blocks {
+            for (_, lin) in b.linears_mut() {
+                lin.quantize_int4(group);
+            }
+        }
+        self.quantize_head_int8();
+    }
+
+    fn quantize_head_int8(&mut self) {
+        if self.head_int8.is_some() {
+            return;
         }
         let w = &self.wte.weight;
         let mut head = Linear::from_weight(w.t(), None); // [n_embd, vocab]

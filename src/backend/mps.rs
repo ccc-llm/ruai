@@ -525,6 +525,15 @@ fn matrix(s: &MpsStorage, rows: usize, cols: usize, batch: usize) -> Retained<MP
     }
 }
 
+/// Parameters of the int4 kernels (`m` unused by `dequant_int4`).
+#[repr(C)]
+struct Int4Params {
+    m: u32,
+    k: u32,
+    n: u32,
+    group: u32,
+}
+
 impl Backend for MpsBackend {
     fn device(&self) -> Device {
         Device::Mps
@@ -913,6 +922,35 @@ impl Backend for MpsBackend {
         let p = Int8Params { m: u(m), k: u(k), n: u(n) };
         self.run(
             &fk("matmul_int8", dt),
+            &[Arg::Buf(st(x)), Arg::Buf(st(q)), Arg::Buf(st(scales)), Arg::Buf(&out), Arg::Bytes(bytes_of(&p))],
+            Grid::Threads(m * n),
+        );
+        wrap(out)
+    }
+
+    fn dequant_int4(&self, q: &Storage, scales: &Storage, k: usize, n: usize, group: usize) -> Storage {
+        let out = self.alloc(k * n, DType::F32);
+        let p = Int4Params { m: 0, k: u(k), n: u(n), group: u(group) };
+        self.run(
+            "dequant_int4",
+            &[Arg::Buf(st(q)), Arg::Buf(st(scales)), Arg::Buf(&out), Arg::Bytes(bytes_of(&p))],
+            Grid::Threads(k * n),
+        );
+        wrap(out)
+    }
+
+    fn matmul_int4(&self, x: &Storage, q: &Storage, scales: &Storage, m: usize, k: usize, n: usize, group: usize) -> Storage {
+        let dt = st(x).dtype;
+        if m > 16 {
+            // many rows: dequantize once and use the GEMM
+            let w = self.cast(&self.dequant_int4(q, scales, k, n, group), dt);
+            let spec = MatmulSpec { batch: 1, m, k, n, trans_a: false, trans_b: false, a_batch_stride: 0, b_batch_stride: 0 };
+            return self.matmul(x, &w, spec);
+        }
+        let out = self.alloc(m * n, dt);
+        let p = Int4Params { m: u(m), k: u(k), n: u(n), group: u(group) };
+        self.run(
+            &fk("matmul_int4", dt),
             &[Arg::Buf(st(x)), Arg::Buf(st(q)), Arg::Buf(st(scales)), Arg::Buf(&out), Arg::Bytes(bytes_of(&p))],
             Grid::Threads(m * n),
         );

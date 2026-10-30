@@ -464,3 +464,28 @@ fn int8_matmul() {
         same("i8 full", &p.cpu.full(4, -3.0, DType::I8), &p.gpu.full(4, -3.0, DType::I8), 0.0);
     });
 }
+
+#[test]
+fn int4_matmul() {
+    rand::manual_seed(10);
+    for_each_gpu(|p, _| {
+        for d in [DType::F32, DType::F16, DType::BF16] {
+            // m <= 16: fused kernel; larger m: dequantize + GEMM
+            for &(m, k, n, group) in &[(1, 64, 300, 32), (5, 32, 70, 8), (40, 64, 48, 16)] {
+                let (xc, xg) = randn_as(p, m * k, d);
+                let q: Vec<i8> = (0..k / 2 * n).map(|i| (i * 73 % 256) as u8 as i8).collect();
+                let s: Vec<f32> = (0..k / group * n).map(|j| 0.01 + (j % 13) as f32 * 1e-3).collect();
+                let (qc, qg) = (p.cpu.from_i8(q.clone()), p.gpu.from_i8(q));
+                let (sc, sg) = (p.cpu.from_f32(s.clone()), p.gpu.from_f32(s));
+                same("dequant_int4", &p.cpu.dequant_int4(&qc, &sc, k, n, group), &p.gpu.dequant_int4(&qg, &sg, k, n, group), 0.0);
+                let tol = if d == DType::F32 { 1e-4 } else { half_tol(d) * 3.0 };
+                same(
+                    &format!("{d} matmul_int4 m={m}"),
+                    &p.cpu.matmul_int4(&xc, &qc, &sc, m, k, n, group),
+                    &p.gpu.matmul_int4(&xg, &qg, &sg, m, k, n, group),
+                    tol,
+                );
+            }
+        }
+    });
+}

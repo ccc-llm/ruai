@@ -518,3 +518,43 @@ kernel void matmul_int8_t(device const T* x [[buffer(0)]], device const char* q 
     out[t] = st<T>(acc * sc[j]);
 }
 instantiate_floats("matmul_int8", matmul_int8_t)
+
+// ---------------------------------------------------------------- int4 weights
+
+struct Int4Params {
+    uint m, k, n, group;
+};
+
+// Row l, column j of packed int4 weights: byte (l / 2) * n + j, low nibble
+// for even l, high for odd l, 4-bit two's complement.
+inline float int4_at(device const uchar* q, uint l, uint j, uint n) {
+    uchar b = q[(l >> 1) * n + j];
+    int v = (l & 1) ? int(b >> 4) : int(b & 15);
+    return float(v >= 8 ? v - 16 : v);
+}
+
+// out[i, j] = sum_g scale[g, j] * sum_{l in group g} x[i, l] * w[l, j]; one thread per output.
+template <typename T>
+kernel void matmul_int4_t(device const T* x [[buffer(0)]], device const uchar* q [[buffer(1)]],
+                          device const float* sc [[buffer(2)]], device T* out [[buffer(3)]],
+                          constant Int4Params& p [[buffer(4)]], uint t [[thread_position_in_grid]]) {
+    if (t >= p.m * p.n) return;
+    uint i = t / p.n, j = t % p.n;
+    device const T* xr = x + i * p.k;
+    float acc = 0.0f;
+    for (uint g0 = 0; g0 < p.k; g0 += p.group) {
+        float part = 0.0f;
+        for (uint l = g0; l < g0 + p.group; ++l) part += ld(xr[l]) * int4_at(q, l, j, p.n);
+        acc += part * sc[(g0 / p.group) * p.n + j];
+    }
+    out[t] = st<T>(acc);
+}
+instantiate_floats("matmul_int4", matmul_int4_t)
+
+kernel void dequant_int4(device const uchar* q [[buffer(0)]], device const float* sc [[buffer(1)]],
+                         device float* out [[buffer(2)]], constant Int4Params& p [[buffer(3)]],
+                         uint t [[thread_position_in_grid]]) {
+    if (t >= p.k * p.n) return;
+    uint l = t / p.n, j = t % p.n;
+    out[t] = int4_at(q, l, j, p.n) * sc[(l / p.group) * p.n + j];
+}

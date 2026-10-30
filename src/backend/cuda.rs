@@ -380,6 +380,17 @@ fn conv_params(g: Conv2dGeom) -> ConvParams {
     }
 }
 
+/// Parameters of the int4 kernels (`m` unused by `dequant_int4`).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Int4Params {
+    m: u32,
+    k: u32,
+    n: u32,
+    group: u32,
+}
+unsafe impl DeviceRepr for Int4Params {}
+
 impl Backend for CudaBackend {
     fn device(&self) -> Device {
         Device::Cuda(self.ordinal)
@@ -761,6 +772,29 @@ impl Backend for CudaBackend {
         let p = Int8Params { m: u(m), k: u(k), n: u(n) };
         let (xp, qp, sp, op) = (self.ptr(st(x)), self.ptr(st(q)), self.ptr(st(scales)), self.ptr(&out));
         launch!(self, fk("matmul_int8", dt), threads(m * n); &xp, &qp, &sp, &op, &p);
+        wrap(out)
+    }
+
+    fn dequant_int4(&self, q: &Storage, scales: &Storage, k: usize, n: usize, group: usize) -> Storage {
+        let out = self.alloc(k * n, DType::F32);
+        let p = Int4Params { m: 0, k: u(k), n: u(n), group: u(group) };
+        let (qp, sp, op) = (self.ptr(st(q)), self.ptr(st(scales)), self.ptr(&out));
+        launch!(self, "dequant_int4", threads(k * n); &qp, &sp, &op, &p);
+        wrap(out)
+    }
+
+    fn matmul_int4(&self, x: &Storage, q: &Storage, scales: &Storage, m: usize, k: usize, n: usize, group: usize) -> Storage {
+        let dt = st(x).dtype;
+        if m > 16 {
+            // many rows: dequantize once and use cuBLAS
+            let w = self.cast(&self.dequant_int4(q, scales, k, n, group), dt);
+            let spec = MatmulSpec { batch: 1, m, k, n, trans_a: false, trans_b: false, a_batch_stride: 0, b_batch_stride: 0 };
+            return self.matmul(x, &w, spec);
+        }
+        let out = self.alloc(m * n, dt);
+        let p = Int4Params { m: u(m), k: u(k), n: u(n), group: u(group) };
+        let (xp, qp, sp, op) = (self.ptr(st(x)), self.ptr(st(q)), self.ptr(st(scales)), self.ptr(&out));
+        launch!(self, fk("matmul_int4", dt), threads(m * n); &xp, &qp, &sp, &op, &p);
         wrap(out)
     }
 

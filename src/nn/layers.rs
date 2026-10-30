@@ -32,6 +32,9 @@ pub struct Linear {
     /// Weight-only int8 copy `(q [in, out] I8, scale [out] F32)` after
     /// [`Linear::quantize_int8`]; `weight` is then an empty placeholder.
     int8: Option<(Tensor, Tensor)>,
+    /// Group-wise int4 copy `(q [in/2, out] I8 packed, scale [in/group, out] F32)`
+    /// after [`Linear::quantize_int4`].
+    int4: Option<(Tensor, Tensor)>,
     /// Optional low-rank adapter.
     pub lora: Option<Lora>,
 }
@@ -49,18 +52,28 @@ impl Linear {
             weight: uniform_param(&[in_features, out_features], bound, device),
             bias: bias.then(|| uniform_param(&[out_features], bound, device)),
             int8: None,
+            int4: None,
             lora: None,
         }
     }
 
     /// Wrap existing tensors (`weight` `[in, out]`).
     pub fn from_weight(weight: Tensor, bias: Option<Tensor>) -> Self {
-        Linear { weight, bias, int8: None, lora: None }
+        Linear { weight, bias, int8: None, int4: None, lora: None }
     }
 
-    /// Whether [`Linear::quantize_int8`] has been applied.
+    /// Whether [`Linear::quantize_int8`] or [`Linear::quantize_int4`] has been applied.
     pub fn is_quantized(&self) -> bool {
-        self.int8.is_some()
+        self.int8.is_some() || self.int4.is_some()
+    }
+
+    /// `(in, out)` features, also after quantization.
+    pub fn dims(&self) -> (usize, usize) {
+        match (&self.int8, &self.int4) {
+            (Some((q, _)), _) => (q.shape()[0], q.shape()[1]),
+            (_, Some((q, _))) => (2 * q.shape()[0], q.shape()[1]),
+            _ => (self.weight.shape()[0], self.weight.shape()[1]),
+        }
     }
 
     /// Attach a trainable LoRA adapter of rank `rank` (`scale = alpha / rank`)
@@ -70,10 +83,7 @@ impl Linear {
     /// The adapter is saved as `lora_a` / `lora_b`.
     pub fn add_lora(&mut self, rank: usize, alpha: f32) {
         assert!(rank > 0, "LoRA rank must be positive");
-        let (k, n) = match &self.int8 {
-            Some((q, _)) => (q.shape()[0], q.shape()[1]),
-            None => (self.weight.shape()[0], self.weight.shape()[1]),
-        };
+        let (k, n) = self.dims();
         let dev = self.bias.as_ref().map_or_else(|| self.weight.device(), Tensor::device);
         self.weight.set_requires_grad(false);
         if let Some(b) = &self.bias {
@@ -90,7 +100,7 @@ impl Linear {
     /// the weight stays frozen. Not possible on an int8 layer.
     pub fn merge_lora(&mut self) {
         let Some(l) = self.lora.take() else { return };
-        assert!(self.int8.is_none(), "cannot merge LoRA into an int8 weight");
+        assert!(!self.is_quantized(), "cannot merge LoRA into a quantized weight");
         let merged = no_grad(|| &self.weight + &(l.a.matmul(&l.b) * l.scale).to_dtype(self.weight.dtype()));
         self.weight.set_storage(merged.storage());
     }
@@ -100,7 +110,7 @@ impl Linear {
     /// memory and traffic. The f32 weight is released; the layer is no longer
     /// trainable. The int8 tensors are saved as buffers `weight_int8` / `weight_scale`.
     pub fn quantize_int8(&mut self) {
-        if self.int8.is_some() {
+        if self.is_quantized() {
             return;
         }
         let (k, n) = (self.weight.shape()[0], self.weight.shape()[1]);
@@ -119,11 +129,48 @@ impl Linear {
     }
 }
 
+impl Linear {
+    /// Replace the weight by a group-wise symmetric int4 copy: every `group`
+    /// input rows of each output column share a scale `max |W| / 7`, values
+    /// are rounded to `-8..=7` and packed two per byte. About 1/8 of the f32
+    /// weight memory (plus one f32 scale per group), for inference or
+    /// LoRA fine-tuning. `in_features` must be a multiple of `group` (even).
+    /// Saved as buffers `weight_int4` / `weight_int4_scale`.
+    pub fn quantize_int4(&mut self, group: usize) {
+        if self.is_quantized() {
+            return;
+        }
+        let (k, n) = self.dims();
+        assert!(group >= 2 && group.is_multiple_of(2) && k.is_multiple_of(group), "int4 group {group} must be even and divide in_features {k}");
+        let dev = self.weight.device();
+        let w = self.weight.to_vec();
+        let groups = k / group;
+        let mut scale = vec![0f32; groups * n];
+        for (l, row) in w.chunks_exact(n).enumerate() {
+            for (s, &v) in scale[(l / group) * n..(l / group + 1) * n].iter_mut().zip(row) {
+                *s = s.max(v.abs());
+            }
+        }
+        scale.iter_mut().for_each(|s| *s = if *s > 0.0 { *s / 7.0 } else { 1.0 });
+        let qv = |l: usize, j: usize| (w[l * n + j] / scale[(l / group) * n + j]).round().clamp(-8.0, 7.0) as i8;
+        let mut packed = vec![0i8; k / 2 * n];
+        for r in 0..k / 2 {
+            for j in 0..n {
+                let (lo, hi) = (qv(2 * r, j) as u8 & 0xF, qv(2 * r + 1, j) as u8 & 0xF);
+                packed[r * n + j] = (lo | (hi << 4)) as i8;
+            }
+        }
+        self.int4 = Some((Tensor::from_vec_i8(packed, &[k / 2, n], dev), Tensor::from_vec(scale, &[groups, n], dev)));
+        self.weight = Tensor::zeros(&[0], dev);
+    }
+}
+
 impl Module for Linear {
     fn forward(&self, x: &Tensor) -> Tensor {
-        let y = match &self.int8 {
-            Some((q, s)) => x.matmul_int8(q, s),
-            None => x.matmul(&self.weight), // half under autocast
+        let y = match (&self.int8, &self.int4) {
+            (Some((q, s)), _) => x.matmul_int8(q, s),
+            (_, Some((q, s))) => x.matmul_int4(q, s),
+            _ => x.matmul(&self.weight), // half under autocast
         };
         let y = match &self.lora {
             Some(l) => {
@@ -143,7 +190,7 @@ impl Module for Linear {
     }
     fn named_parameters(&self) -> Vec<(String, Tensor)> {
         let mut v = Vec::new();
-        if self.int8.is_none() {
+        if !self.is_quantized() {
             v.push(("weight".to_string(), self.weight.clone()));
         }
         if let Some(b) = &self.bias {
@@ -156,9 +203,10 @@ impl Module for Linear {
         v
     }
     fn named_buffers(&self) -> Vec<(String, Tensor)> {
-        match &self.int8 {
-            Some((q, s)) => vec![("weight_int8".to_string(), q.clone()), ("weight_scale".to_string(), s.clone())],
-            None => vec![],
+        match (&self.int8, &self.int4) {
+            (Some((q, s)), _) => vec![("weight_int8".to_string(), q.clone()), ("weight_scale".to_string(), s.clone())],
+            (_, Some((q, s))) => vec![("weight_int4".to_string(), q.clone()), ("weight_int4_scale".to_string(), s.clone())],
+            _ => vec![],
         }
     }
 }

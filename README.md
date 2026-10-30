@@ -224,6 +224,7 @@ autocast 規則（同 PyTorch）：matmul / Linear / Conv 以半精度執行；s
 | Llama | `nn::llama::Llama`：RMSNorm、RoPE（含 Llama 3.1 頻率縮放）、SwiGLU、GQA（KV cache 只存 K/V head）、tied / untied head、int8；參數名稱同 HF `LlamaForCausalLM`，`from_pretrained`（單檔或分片 safetensors）/ `save_pretrained` |
 | 視覺 | `nn::resnet::ResNet`（BasicBlock / Bottleneck、resnet18/34/50/101/152、CIFAR 式小型版；參數名稱與數量同 torchvision，`load_torchvision` 自動轉換 BN 形狀與 fc 轉置）、`nn::vit::ViT`（patch embedding、`[CLS]`、可學習位置編碼；ViT-B/16 參數數量同 timm） |
 | seq2seq | `nn::seq2seq::Seq2Seq`（pre-LN encoder + 含 cross-attention 的 decoder、`encode` / `decode` / `decode_cached` / `greedy`）、`DecoderBlock`、`F::padding_mask`、`F::cross_entropy_ignore` |
+| int4 | `Linear::quantize_int4(group)`、`Llama` / `GPT2::quantize_int4`：每 `group` 個輸入列共用一個 scale 的對稱 int4，一個 byte 放兩個值（約 f32 的 1/8）；`matmul_int4` 在 CPU / MPS / CUDA 有直接讀 packed 權重的融合 kernel，輸出 head 維持 int8 |
 | int8 | `DType::I8`、`Linear::quantize_int8`（逐輸出通道對稱量化）、`GPT2::quantize_int8`；`matmul_int8` 原語在 CPU / MPS / CUDA 都有直接讀 int8 的融合 kernel（記憶體流量為 f32 的 1/4），大 batch 時改為反量化 + GEMM |
 | 混合精度 | `autocast(F16 \| BF16, ..)`、`GradScaler`（動態 loss scaling、溢位跳步、狀態可存進 checkpoint）、`Module::to_dtype` |
 | Tensor | 任意維度、NumPy 廣播、`reshape/view/permute/transpose/unsqueeze/flatten/expand`、運算子多載 (`&a + &b`, `a * 2.0`) |
@@ -325,6 +326,15 @@ Autograd、所有 nn 層、優化器都只透過 `Tensor` 運算操作資料，�
 
 > 在 Apple M1–M3 上 FP16 與 FP32 的運算吞吐量相同，所以 autocast 在這台機器上**不會更快**（多出的型別轉換反而讓它慢約 10%）；CPU 沒有半精度運算單元，也一樣較慢。半精度的速度優勢預期出現在 NVIDIA GPU 的 Tensor Core 上（CUDA 後端已支援，尚待實機量測）；在任何裝置上它都能把權重/啟用值的記憶體減半，也能直接載入 F16/BF16 權重。
 
+權重量化的解碼式矩陣向量乘（`[1, 2048] @ [2048, 2048]`，`bench` 最後一項，Apple M3）：
+
+| | f32 | int8 | int4 |
+|---|---|---|---|
+| CPU | 0.86 ms | 0.30 ms | 0.29 ms |
+| MPS | 0.25 ms | 0.46 ms | 0.32 ms |
+
+CPU 上量化約快 3 倍（記憶體頻寬受限）；MPS 上目前的融合 kernel（每個輸出一個 thread）還比 MPS 的 f32 GEMM 慢，優化排在 v1.5。
+
 GPU 計時採 throughput 方式（連續執行 N 次後同步一次，同 `torch.cuda.synchronize()` 慣例）。很小的運算（如 256×256 matmul、小 CNN）在 GPU 上受每個 op 的派送開銷限制，不一定比 CPU 快；模型越大 GPU 優勢越明顯。
 
 ## 測試
@@ -348,6 +358,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - `tests/vision.rs`：ResNet-18/34/50 與 ViT-B/16 的參數數量與 torchvision / timm 完全一致、ResNet 參數名稱與形狀、torchvision 版面（1-D BN、`[out, in]` fc、`num_batches_tracked`）載入後輸出相同、max pool 的 padding 是 -inf、小型 ResNet / ViT 學會分類
 - `tests/seq2seq.rs`：解碼端 KV cache 與 teacher forcing 一致、有 padding mask 時來源 padding 完全不影響輸出（沒 mask 時會影響）、`cross_entropy_ignore`、學會反轉序列
 - `tests/finetune.rs`：LoRA 初始為恆等、只訓練 adapter、凍結參數不變、合併前後輸出相同、只存 adapter 再載入、int8 底模上可訓練；gradient checkpointing 在 Llama / Llama+LoRA / 含 dropout 的 GPT / GPT-2 上梯度與不重算時相同
+- `tests/quant.rs`：int4 打包與獨立計算的反量化逐元素相同、融合 kernel 與預設（主機反量化 + GEMM）一致、Llama / GPT-2 的 int4 誤差、int4 底模上的 LoRA 可訓練；`tests/devices.rs` 另含 `matmul_int4` / `dequant_int4` 在 GPU 與 CPU 的對照
 - `tests/training.rs`：MLP 學會 XOR、CNN（含 BatchNorm）收斂、GPT 記住序列、存檔/載入 round-trip
 
 ## 版本規劃
@@ -367,7 +378,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v1.1 | GitHub Actions CI（Linux / macOS，可手動觸發 GPT-2 真實權重測試）、`zeros_like` 保留 dtype、`collator` 保留影像形狀 | ✅ |
 | v1.2 | Hugging Face `tokenizer.json` 分詞器（`HfTokenizer`）、`llama --model` 載入預訓練模型 | ✅（尚未以真實檔案驗證） |
 | v1.3 | LoRA（含 int8 底模）、gradient checkpointing、`freeze` / `trainable_parameters` | ✅ |
-| v1.4 | int4 權重量化 | |
+| v1.4 | 分組 int4 權重量化（CPU / MPS / CUDA 融合 kernel，可在其上訓練 LoRA） | ✅ |
 | v1.5 | 融合 attention kernel | |
 | v2.0 | 不複製的 strided view、預先配置的 KV cache、二階導數 | |
 

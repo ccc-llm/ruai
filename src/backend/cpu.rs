@@ -27,6 +27,12 @@ pub(crate) struct CpuCore;
 
 static CORE: CpuCore = CpuCore;
 
+/// Sign-extended low (`hi = false`) or high nibble of a packed int4 byte.
+#[inline]
+fn nibble(b: i8, hi: bool) -> f32 {
+    (if hi { b >> 4 } else { ((b as u8) << 4) as i8 >> 4 }) as f32
+}
+
 fn f32s(s: &Storage) -> &[f32] {
     match s {
         Storage::Cpu(CpuStorage::F32(v)) => v.as_slice(),
@@ -890,6 +896,52 @@ impl Backend for CpuCore {
         wrap(out)
     }
 
+    fn dequant_int4(&self, q: &Storage, scales: &Storage, k: usize, n: usize, group: usize) -> Storage {
+        let (q, sc) = (i8s(q), f32s(scales));
+        let mut w = vec![0f32; k * n];
+        w.par_chunks_mut(n.max(1)).enumerate().for_each(|(l, row)| {
+            let s = &sc[(l / group) * n..(l / group + 1) * n];
+            for (j, (o, &s)) in row.iter_mut().zip(s).enumerate() {
+                *o = nibble(q[(l / 2) * n + j], l % 2 == 1) * s;
+            }
+        });
+        wrap(w)
+    }
+
+    fn matmul_int4(&self, x: &Storage, q: &Storage, scales: &Storage, m: usize, k: usize, n: usize, group: usize) -> Storage {
+        let (x, q, sc) = (f32s(x), i8s(q), f32s(scales));
+        let mut out = vec![0.0f32; m * n];
+        if out.is_empty() {
+            return wrap(out);
+        }
+        // like matmul_int8, with a partial sum per group of rows
+        let cw = 256.min(n.max(1));
+        out.par_chunks_mut(n).enumerate().for_each(|(i, orow)| {
+            let xr = &x[i * k..(i + 1) * k];
+            orow.par_chunks_mut(cw).enumerate().for_each(|(cb, acc)| {
+                let (j0, w) = (cb * cw, acc.len());
+                let mut part = vec![0f32; w];
+                for g in 0..k / group {
+                    part.iter_mut().for_each(|p| *p = 0.0);
+                    for l in g * group..(g + 1) * group {
+                        let xv = xr[l];
+                        if xv == 0.0 {
+                            continue;
+                        }
+                        let (qr, hi) = (&q[(l / 2) * n + j0..(l / 2) * n + j0 + w], l % 2 == 1);
+                        for (p, &b) in part.iter_mut().zip(qr) {
+                            *p += xv * nibble(b, hi);
+                        }
+                    }
+                    for ((a, p), s) in acc.iter_mut().zip(&part).zip(&sc[g * n + j0..g * n + j0 + w]) {
+                        *a += p * s;
+                    }
+                }
+            });
+        });
+        wrap(out)
+    }
+
     fn adam_step(&self, p: &Storage, g: &Storage, m: &Storage, v: &Storage, h: AdamParams) -> (Storage, Storage, Storage) {
         let (p, g, m, v) = (f32s(p), f32s(g), f32s(m), f32s(v));
         let n = p.len();
@@ -1061,5 +1113,12 @@ impl Backend for CpuBackend {
     fn matmul_int8(&self, x: &Storage, q: &Storage, scales: &Storage, m: usize, k: usize, n: usize) -> Storage {
         let (x, d) = up(x);
         down(CORE.matmul_int8(&x, q, scales, m, k, n), d)
+    }
+    fn dequant_int4(&self, q: &Storage, scales: &Storage, k: usize, n: usize, group: usize) -> Storage {
+        CORE.dequant_int4(q, scales, k, n, group)
+    }
+    fn matmul_int4(&self, x: &Storage, q: &Storage, scales: &Storage, m: usize, k: usize, n: usize, group: usize) -> Storage {
+        let (x, d) = up(x);
+        down(CORE.matmul_int4(&x, q, scales, m, k, n, group), d)
     }
 }
