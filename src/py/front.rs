@@ -27,6 +27,31 @@ pub fn default_stub_dirs() -> Vec<std::path::PathBuf> {
     v
 }
 
+/// Where py0 packages (`import shlex`, `from pathlib import Path`) are looked
+/// up: `NAME.pyi` stubs whose declarations map to Rust (by default under
+/// `ruai::pyrt::lib::NAME`).
+pub fn package_dirs() -> Vec<std::path::PathBuf> {
+    let mut v = vec![];
+    if let Ok(p) = std::env::var("PY0_LIB") {
+        v.extend(std::env::split_paths(&p));
+    }
+    v.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/py/lib"));
+    v
+}
+
+/// The stub of package `module`, if there is one.
+pub fn package_stub(module: &str) -> Option<std::path::PathBuf> {
+    package_dirs().into_iter().map(|d| d.join(format!("{}.pyi", module))).find(|p| p.exists())
+}
+
+/// Which names of a stub the program sees.
+enum StubNames<'a> {
+    /// `from M import a, b`: exactly these, unqualified.
+    Only(&'a [String]),
+    /// `import M as A`: everything, as `A.name`.
+    Qualified(&'a str),
+}
+
 pub fn lower(src: &str) -> Res<Program> {
     lower_with(src, &default_stub_dirs())
 }
@@ -62,6 +87,7 @@ pub fn lower_modules(src: &str, stub_dirs: &[std::path::PathBuf], modules: &[Str
         exc_vars: HashMap::new(),
         typevars: HashSet::new(),
         local_modules: HashSet::new(),
+        package_aliases: HashMap::new(),
         protocols: HashMap::new(),
         templates: HashMap::new(),
         instances: HashMap::new(),
@@ -109,6 +135,8 @@ struct Front {
     typevars: HashSet<String>,
     /// local modules of a multi-file program: `m.x` is `x`
     local_modules: HashSet<String>,
+    /// `import M as A` of a package: `A` -> `M`.
+    package_aliases: HashMap<String, String>,
     /// `class P(Protocol)`: its method names
     protocols: HashMap<String, Vec<String>>,
     /// generic functions (instantiated per call) and their instances by type key
@@ -391,6 +419,8 @@ impl Front {
 
     fn module(&mut self, body: &[AStmt]) -> Res<()> {
         let mut stub_imports: Vec<(String, Vec<String>, u32)> = Vec::new();
+        // packages: (module, alias for `import M as A`, names for `from M import ...`, line)
+        let mut package_imports: Vec<(String, Option<String>, Vec<String>, u32)> = Vec::new();
         let mut main_body: Vec<&AStmt> = Vec::new();
         let mut fdefs: Vec<&ast::StmtFunctionDef> = Vec::new();
         let mut cdefs: Vec<&ast::StmtClassDef> = Vec::new();
@@ -402,6 +432,15 @@ impl Front {
                 AStmt::Import(i) => {
                     for a in &i.names {
                         let n = a.name.id.as_str();
+                        if !stdlib::MODULES.contains(&n) && package_stub(n).is_some() {
+                            if n.contains('.') && a.asname.is_none() {
+                                return err(self.line(s), format!("`import {}` needs an alias", n))
+                                    .map_err(|e| e.hint(format!("write `import {} as name` or `from {} import ...`", n, n)));
+                            }
+                            let alias = a.asname.as_ref().unwrap_or(&a.name).id.to_string();
+                            package_imports.push((n.to_string(), Some(alias), vec![], self.line(s)));
+                            continue;
+                        }
                         if !(stdlib::MODULES.contains(&n) || ["dataclasses", "typing"].contains(&n)) || a.asname.is_some() {
                             return err(self.line(s), format!("module `{}` is not supported", n))
                                 .map_err(|e| e.hint(format!("supported: {}, dataclasses, typing", stdlib::MODULES.join(", "))));
@@ -422,6 +461,14 @@ impl Front {
                                 let local = a.asname.as_ref().unwrap_or(&a.name).id.to_string();
                                 self.from_names.insert(local, format!("{}.{}", m, a.name.id));
                             }
+                        }
+                        m if !stdlib::MODULES.contains(&m) && package_stub(m).is_some() => {
+                            for a in &i.names {
+                                if a.asname.is_some() {
+                                    return err(self.line(s), "`from PACKAGE import x as y` is not supported");
+                                }
+                            }
+                            package_imports.push((m.to_string(), None, i.names.iter().map(|a| a.name.id.to_string()).collect(), self.line(s)));
                         }
                         m if m.starts_with("rust.") => {
                             stub_imports.push((m[5..].to_string(), i.names.iter().map(|a| a.name.id.to_string()).collect::<Vec<_>>(), self.line(s)));
@@ -552,6 +599,9 @@ impl Front {
             }
             self.p.consts.push(Const { name, value: e });
         }
+        for (module, alias, names, line) in package_imports {
+            self.load_package(&module, alias.as_deref(), &names, line)?;
+        }
         for (krate, names, line) in stub_imports {
             self.load_stub(&krate, &names, line)?;
         }
@@ -611,6 +661,41 @@ impl Front {
         Ok(())
     }
 
+    /// A py0 package: `import M [as A]` or `from M import a, b` with the stub
+    /// `M.pyi` from [`package_dirs`]. Its `# rust: PATH` line gives the Rust
+    /// module of its declarations (default `ruai::pyrt::lib::M`); a `# crate:
+    /// pyrt/FEATURE` line enables a runtime feature of ruai.
+    fn load_package(&mut self, module: &str, alias: Option<&str>, names: &[String], line: u32) -> Res<()> {
+        let path = package_stub(module).ok_or_else(|| Error::new(line, format!("no package `{}`", module)))?;
+        let text = std::fs::read_to_string(&path).map_err(|e| Error::new(line, e.to_string()))?;
+        let prefix = text
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("# rust:"))
+            .map(|l| l.trim().to_string())
+            .unwrap_or_else(|| format!("ruai::pyrt::lib::{}", module.replace('.', "_")));
+        if let Some(dep) = text.lines().find_map(|l| l.trim().strip_prefix("# crate:")).map(|l| l.trim().to_string()) {
+            if !self.p.crates.contains(&dep) {
+                self.p.crates.push(dep);
+            }
+        }
+        if let Some(a) = alias {
+            self.package_aliases.insert(a.to_string(), module.to_string());
+        }
+        let parsed = ruff_python_parser::parse_module(&text)
+            .map_err(|e| Error::new(line, format!("{}: {}", path.display(), e.error)))?
+            .into_syntax();
+        let saved_lines = std::mem::replace(&mut self.lines, LineIndex::from_source_text(&text));
+        self.in_stub = Some(prefix.clone());
+        let which = match alias {
+            Some(a) => StubNames::Qualified(a),
+            None => StubNames::Only(names),
+        };
+        let r = self.stub_items_as(&prefix, module, &parsed.body, which);
+        self.in_stub = None;
+        self.lines = saved_lines;
+        r.map_err(|e| Error::new(line, format!("in {}: line {}: {}", path.display(), e.line, e.msg)))
+    }
+
     /// `from rust.<crate> import A, b`: declarations of `<crate>.pyi`.
     fn load_stub(&mut self, krate: &str, names: &[String], line: u32) -> Res<()> {
         let file = format!("{}.pyi", krate);
@@ -640,6 +725,17 @@ impl Front {
     }
 
     fn stub_items(&mut self, krate: &str, body: &[AStmt], names: &[String]) -> Res<()> {
+        self.stub_items_as(krate, krate, body, StubNames::Only(names))
+    }
+
+    /// Declare a stub's classes and functions; `krate` is the Rust module
+    /// path, `label` the name used in messages.
+    fn stub_items_as(&mut self, krate: &str, label: &str, body: &[AStmt], which: StubNames) -> Res<()> {
+        let no_names: Vec<String> = vec![];
+        let names: &[String] = match &which {
+            StubNames::Only(n) => n,
+            StubNames::Qualified(_) => &no_names,
+        };
         for s in body {
             match s {
                 AStmt::ClassDef(d) => {
@@ -696,8 +792,14 @@ impl Front {
                 AStmt::FunctionDef(f) => {
                     let fid = self.signature(f, None)?;
                     let name = f.name.id.to_string();
-                    if names.contains(&name) {
-                        self.funcs.insert(name, fid);
+                    match &which {
+                        StubNames::Qualified(a) => {
+                            self.funcs.insert(format!("{}.{}", a, name), fid);
+                        }
+                        StubNames::Only(_) if names.contains(&name) => {
+                            self.funcs.insert(name, fid);
+                        }
+                        StubNames::Only(_) => {}
                     }
                 }
                 _ => {}
@@ -705,15 +807,18 @@ impl Front {
         }
         for n in names {
             if !self.classes.contains_key(n) && !self.funcs.contains_key(n) {
-                return err(0, format!("`{}` is not declared in the stub of `{}`", n, krate));
+                return err(0, format!("`{}` is not declared in the stub of `{}`", n, label));
             }
         }
-        // only the imported names are visible to the program
+        // only the imported names are visible to the program (classes of
+        // `import M as A` as `A.Class`)
         for s in body {
             if let AStmt::ClassDef(d) = s {
                 let n = d.name.id.to_string();
                 if !names.contains(&n) {
-                    self.classes.remove(&n);
+                    if let (Some(cid), StubNames::Qualified(a)) = (self.classes.remove(&n), &which) {
+                        self.classes.insert(format!("{}.{}", a, n), cid);
+                    }
                 }
             }
         }

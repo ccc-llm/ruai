@@ -19,6 +19,7 @@ pub mod files;
 pub mod out;
 pub use out::flush;
 pub mod generator;
+pub mod lib;
 pub use generator::Gen;
 pub mod spec;
 pub mod stdlib;

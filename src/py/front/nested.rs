@@ -235,14 +235,17 @@ impl Front {
     pub(super) fn local_name(&self, e: &AExpr) -> Option<AExpr> {
         let AExpr::Attribute(a) = e else { return None };
         let AExpr::Name(m) = &*a.value else { return None };
-        if !self.local_modules.contains(m.id.as_str()) || self.lookup(m.id.as_str()).is_some() {
+        if self.lookup(m.id.as_str()).is_some() {
             return None;
         }
-        Some(AExpr::Name(ast::ExprName {
-            node_index: Default::default(),
-            range: a.range,
-            id: a.attr.id.clone(),
-            ctx: ast::ExprContext::Load,
-        }))
+        // `A.x` of a package imported as `A`: its declarations are named `A.x`
+        let id = if self.package_aliases.contains_key(m.id.as_str()) {
+            ast::name::Name::new(format!("{}.{}", m.id, a.attr.id))
+        } else if self.local_modules.contains(m.id.as_str()) {
+            a.attr.id.clone()
+        } else {
+            return None;
+        };
+        Some(AExpr::Name(ast::ExprName { node_index: Default::default(), range: a.range, id, ctx: ast::ExprContext::Load }))
     }
 }

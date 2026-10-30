@@ -115,6 +115,23 @@ def keep(xs: Own[list[int]]) -> None: ...           # Vec<i64>
 
 An annotation the code contradicts (modifying a `Ref[...]`) is an error.
 
+## Packages and the standard library (ruai)
+
+`import M`, `import M as A` and `from M import x` also find **py0 packages**: stubs `M.pyi`
+in ruai's `src/py/lib/` (or in a directory listed in `PY0_LIB`), whose declarations map to Rust
+under `ruai::pyrt::lib::M`. ruai rewrites Python's standard library this way, module by
+module, each checked against CPython (`tests/py0/py/std_*.py`): `shlex`, `fnmatch`, `html`
+so far, besides the modules built into the translator (`math`, `collections`, `heapq`,
+`bisect`, `itertools`, `functools`, `random`, `re`, `sys`, `time`, `json.dumps`, `os.path`).
+
+```python
+import shlex
+from fnmatch import fnmatch
+
+words: list[str] = shlex.split("cp 'my file.txt' backup/")
+print(words, fnmatch("my file.txt", "*.txt"))
+```
+
 ## Rust crates
 
 `from rust.CRATE import Name` uses a Rust crate. Its declarations come from a stub,

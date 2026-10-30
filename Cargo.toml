@@ -1,6 +1,6 @@
 [package]
 name = "ruai"
-version = "3.2.0"
+version = "3.3.0"
 edition = "2021"
 description = "A Swiss-army AI toolkit in Rust: a PyTorch-like engine (autograd, GPU, GPT-2/Llama), and a git-style `ruai` command"
 license = "MIT"

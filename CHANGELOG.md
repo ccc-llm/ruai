@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.3.0
+
+- py0 packages: `import M`, `import M as A` and `from M import x, y` resolve to a stub
+  `M.pyi` in `src/py/lib/` (or a directory in `PY0_LIB`). A package stub declares functions and
+  classes in typed Python; their Rust code defaults to `ruai::pyrt::lib::M` (`# rust: PATH`
+  overrides it, `# crate: pyrt/FEATURE` enables a runtime feature of ruai). `import M as A`
+  keeps the names qualified (`A.f`, `A.Class`), so packages never clash.
+- `ruai::pyrt::lib`: Python's standard library rewritten in Rust, module by module, each
+  checked against CPython by `tests/py0/py/std_*.py`: `shlex` (split / quote / join, CPython's
+  POSIX tokenizer and error messages), `fnmatch` (fnmatch / fnmatchcase / filter, CPython's
+  translation rules for ranges and brackets), `html` (escape / unescape with the full HTML5
+  entity table and CPython's handling of invalid references).
+
 ## 3.2.0
 
 - py2rs is merged into ruai with its full git history (`git subtree`) and becomes **py0**:

@@ -1,0 +1,9 @@
+"""py0 package `shlex` (CPython's `shlex`, POSIX mode)."""
+
+from rust import Result
+
+def split(s: str) -> Result[list[str]]: ...
+
+def quote(s: str) -> str: ...
+
+def join(split_command: list[str]) -> str: ...

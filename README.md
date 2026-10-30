@@ -198,6 +198,8 @@ def total(items: list[Item], tax: float = 0.05) -> float:
 print(f"{total([Item('apple', 1.5), Item('pear', 2.25)]):.2f}")
 ```
 
+**py0 套件與標準函式庫**：`import M` / `import M as A` / `from M import x` 會在 `src/py/lib/M.pyi`（以及 `PY0_LIB` 列出的目錄）找套件 stub——以型別宣告描述函式與類別，對應到 `ruai::pyrt::lib::M` 下的 Rust 實作（或 stub 開頭 `# rust:` 指定的路徑；需要額外依賴時以 `# crate: pyrt/FEATURE` 開啟 ruai 的執行期 feature）。Python 標準函式庫逐模組以 Rust 重寫在 `src/pyrt/lib/`，每個模組都有與 CPython 對照的測試程式（`tests/py0/py/std_*.py`）。目前有 `shlex`（split / quote / join）、`fnmatch`（fnmatch / fnmatchcase / filter）、`html`（escape / unescape，含完整 HTML5 實體表），另外 py2rs 原本內建 `math`、`collections`、`heapq`、`bisect`、`itertools`、`functools`、`random`、`re`、`sys`、`time`、`json.dumps`、`os.path`。
+
 `ruai py run prog.py` 把它翻成可讀的 Rust（`ruai py emit` 可看），以 Cargo 編譯（第一次需要幾秒，之後有快取）後執行，輸出與 CPython 相同；做不到時在翻譯階段就以行號與提示拒絕。py0 由 [py2rs](py0/README.tw.md) 併入（保留完整 git 歷史），規格見 [py0/SPEC.md](py0/SPEC.md)。翻譯出的程式依賴 `ruai`，但只開執行期 feature（`default-features = false, features = ["pyrt"]`），不會編譯神經網路引擎。執行 py0 程式需要 Rust 工具鏈（cargo）。
 
 ### 強化學習環境（world）
@@ -482,7 +484,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v3.0 | 單一 crate + features、引擎移到 `src/nn/`、git 式 `ruai` 指令（`ruai nn devices / info / generate`、外部 `ruai-NAME`） | ✅ |
 | v3.1 | `world`：gymnasium 1.x 的 API 與環境（逐位元相同）、NumPy 相容亂數 `ruai::rng`、`ruai world list / run`、REINFORCE 範例 | ✅ |
 | v3.2 | `py`：以 git subtree 併入 py2rs（翻譯器 `ruai::py`、執行期 `ruai::pyrt`），`ruai py run / emit / check / explain / build / pyo3 / stub / test / fuzz` | ✅ |
-| v3.3 | py0 套件機制、以 Rust 實作的 Python 標準函式庫 | |
+| v3.3 | py0 套件機制（`import M [as A]` / `from M import x` → `src/py/lib/M.pyi` + `ruai::pyrt::lib::M`）、以 Rust 重寫的 Python 標準函式庫（第一批：`shlex`、`fnmatch`、`html`） | ✅ |
 | v3.4 | `ruai agent`：以 py0 改寫 agge | |
 | v3.5–3.7 | py0 的 numpy、ml（sklearn 子集）、gymnasium 與 nn 套件 | |
 | v4.0 | 穩定版、英文文件 | |
