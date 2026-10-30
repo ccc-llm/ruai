@@ -42,6 +42,7 @@ pub enum DType {
 }
 
 impl DType {
+    /// Bytes per element.
     pub fn size_in_bytes(&self) -> usize {
         match self {
             DType::I8 => 1,
@@ -50,10 +51,12 @@ impl DType {
         }
     }
 
+    /// `true` for `F32`, `F16` and `BF16`.
     pub fn is_float(&self) -> bool {
         !matches!(self, DType::I32 | DType::I8)
     }
 
+    /// `true` for the 16-bit float types `F16` and `BF16`.
     pub fn is_half(&self) -> bool {
         matches!(self, DType::F16 | DType::BF16)
     }
@@ -91,10 +94,15 @@ impl fmt::Display for DType {
 /// Host-memory buffer of one dtype.
 #[derive(Clone)]
 pub enum CpuStorage {
+    /// `f32` elements.
     F32(Arc<Vec<f32>>),
+    /// `f16` elements.
     F16(Arc<Vec<half::f16>>),
+    /// `bf16` elements.
     BF16(Arc<Vec<half::bf16>>),
+    /// `i32` elements.
     I32(Arc<Vec<i32>>),
+    /// `i8` elements.
     I8(Arc<Vec<i8>>),
 }
 
@@ -102,14 +110,18 @@ pub enum CpuStorage {
 /// never mutated in place once created.
 #[derive(Clone)]
 pub enum Storage {
+    /// Host memory.
     Cpu(CpuStorage),
+    /// NVIDIA GPU memory.
     #[cfg(feature = "cuda")]
     Cuda(cuda::CudaStorage),
+    /// Apple Metal buffer.
     #[cfg(feature = "mps")]
     Mps(mps::MpsStorage),
 }
 
 impl Storage {
+    /// Device the buffer lives on.
     pub fn device(&self) -> Device {
         match self {
             Storage::Cpu(_) => Device::Cpu,
@@ -120,6 +132,7 @@ impl Storage {
         }
     }
 
+    /// Element type.
     pub fn dtype(&self) -> DType {
         match self {
             Storage::Cpu(CpuStorage::F32(_)) => DType::F32,
@@ -134,6 +147,7 @@ impl Storage {
         }
     }
 
+    /// Number of elements.
     pub fn len(&self) -> usize {
         match self {
             Storage::Cpu(CpuStorage::F32(v)) => v.len(),
@@ -148,10 +162,12 @@ impl Storage {
         }
     }
 
+    /// `true` if the storage has no elements.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// Backend of this storage's device.
     pub fn backend(&self) -> &'static dyn Backend {
         backend_for(self.device())
     }
@@ -182,33 +198,53 @@ impl Storage {
     }
 }
 
+/// Elementwise unary operation (see [`Backend::unary`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnaryOp {
+    /// `-x`
     Neg,
+    /// `e^x`
     Exp,
+    /// Natural logarithm.
     Log,
+    /// Square root.
     Sqrt,
+    /// `1 / x`
     Recip,
+    /// `|x|`
     Abs,
+    /// Hyperbolic tangent.
     Tanh,
+    /// `1 / (1 + e^-x)`
     Sigmoid,
+    /// `max(x, 0)`
     Relu,
     /// GELU (tanh approximation)
     Gelu,
     /// d/dx GELU (tanh approximation)
     GeluGrad,
+    /// Sine.
     Sin,
+    /// Cosine.
     Cos,
 }
 
+/// Elementwise binary operation with broadcasting (see [`Backend::binary`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BinaryOp {
+    /// `a + b`
     Add,
+    /// `a - b`
     Sub,
+    /// `a * b`
     Mul,
+    /// `a / b`
     Div,
+    /// `a ^ b`
     Pow,
+    /// Elementwise `max(a, b)`.
     Maximum,
+    /// Elementwise `min(a, b)`.
     Minimum,
     /// 1.0 where equal, else 0.0
     Eq,
@@ -218,10 +254,14 @@ pub enum BinaryOp {
     Lt,
 }
 
+/// Reduction along one axis (see [`Backend::reduce`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReduceOp {
+    /// Sum.
     Sum,
+    /// Maximum.
     Max,
+    /// Minimum.
     Min,
     /// Index of the maximum along the axis (I32 output).
     ArgMax,
@@ -230,17 +270,26 @@ pub enum ReduceOp {
 /// Parameters for im2col / col2im (2D convolution lowering).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Conv2dGeom {
+    /// Batch size.
     pub n: usize,
+    /// Input channels.
     pub c: usize,
+    /// Input height.
     pub h: usize,
+    /// Input width.
     pub w: usize,
+    /// Kernel height.
     pub kh: usize,
+    /// Kernel width.
     pub kw: usize,
+    /// Stride (both axes).
     pub stride: usize,
+    /// Zero padding (both axes).
     pub padding: usize,
 }
 
 impl Conv2dGeom {
+    /// Output spatial size `(OH, OW)`.
     pub fn out_hw(&self) -> (usize, usize) {
         let oh = (self.h + 2 * self.padding - self.kh) / self.stride + 1;
         let ow = (self.w + 2 * self.padding - self.kw) / self.stride + 1;
@@ -254,23 +303,36 @@ impl Conv2dGeom {
 /// (0 = broadcast the same matrix), likewise for `B`. `C` is contiguous.
 #[derive(Clone, Copy, Debug)]
 pub struct MatmulSpec {
+    /// Number of matrix products.
     pub batch: usize,
+    /// Rows of `op(A)` and `C`.
     pub m: usize,
+    /// Inner (contracted) dimension.
     pub k: usize,
+    /// Columns of `op(B)` and `C`.
     pub n: usize,
+    /// Transpose `A[i]` (stored as `k x m`).
     pub trans_a: bool,
+    /// Transpose `B[i]` (stored as `n x k`).
     pub trans_b: bool,
+    /// Element offset between consecutive `A[i]` (0 = broadcast).
     pub a_batch_stride: usize,
+    /// Element offset between consecutive `B[i]` (0 = broadcast).
     pub b_batch_stride: usize,
 }
 
 /// Hyper-parameters of one Adam/AdamW update (bias corrections precomputed).
 #[derive(Clone, Copy, Debug)]
 pub struct AdamParams {
+    /// Learning rate.
     pub lr: f32,
+    /// First-moment decay.
     pub beta1: f32,
+    /// Second-moment decay.
     pub beta2: f32,
+    /// Added to the denominator for numerical stability.
     pub eps: f32,
+    /// Weight-decay coefficient (0 = none).
     pub weight_decay: f32,
     /// AdamW-style decay applied to the weights instead of the gradient.
     pub decoupled: bool,
@@ -298,6 +360,7 @@ fn keep_axis(shape: &[usize], axis: usize) -> Vec<usize> {
 /// simple elementwise kernels for `unary`/`binary`, etc.).
 #[allow(clippy::wrong_self_convention)]
 pub trait Backend: Send + Sync {
+    /// Device this backend runs on.
     fn device(&self) -> Device;
 
     /// Block until all queued work on this device has finished
@@ -305,20 +368,25 @@ pub trait Backend: Send + Sync {
     fn synchronize(&self) {}
 
     // ---- memory ----
+    /// Upload `f32` data as an `F32` storage.
     fn from_f32(&self, data: Vec<f32>) -> Storage;
+    /// Upload `i32` data as an `I32` storage.
     fn from_i32(&self, data: Vec<i32>) -> Storage;
     /// Copy to host as f32 (any dtype).
     fn to_f32(&self, x: &Storage) -> Vec<f32>;
     /// Copy to host as i32 (any dtype).
     fn to_i32(&self, x: &Storage) -> Vec<i32>;
+    /// `len` elements of `dtype`, all set to `value`.
     fn full(&self, len: usize, value: f32, dtype: DType) -> Storage;
     /// Upload int8 data (default: through i32 and a cast).
     fn from_i8(&self, data: Vec<i8>) -> Storage {
         self.cast(&self.from_i32(data.into_iter().map(i32::from).collect()), DType::I8)
     }
+    /// Convert to `dtype` (returns `x` itself if it already has that dtype).
     fn cast(&self, x: &Storage, dtype: DType) -> Storage;
 
     // ---- elementwise ----
+    /// Elementwise unary op (float dtypes).
     fn unary(&self, op: UnaryOp, x: &Storage) -> Storage;
     /// Elementwise binary op with NumPy broadcasting into `out_shape`.
     /// Comparison ops (`Eq`/`Gt`/`Lt`) return a 0/1 mask in the inputs' float
@@ -342,6 +410,7 @@ pub trait Backend: Send + Sync {
     fn reduce(&self, op: ReduceOp, x: &Storage, shape: &[usize], axis: usize) -> Storage;
 
     // ---- linear algebra / layout ----
+    /// Batched GEMM described by `spec` (see [`MatmulSpec`]).
     fn matmul(&self, a: &Storage, b: &Storage, spec: MatmulSpec) -> Storage;
     /// Generic axis permutation (copy).
     fn permute(&self, x: &Storage, shape: &[usize], perm: &[usize]) -> Storage;

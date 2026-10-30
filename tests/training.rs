@@ -2,6 +2,7 @@
 
 use rustnn::functional as F;
 use rustnn::nn::{self, Module, Sequential};
+use rustnn::generation::Sampler;
 use rustnn::optim::{Adam, Optimizer, SGD};
 use rustnn::{rand, serialize, Device, Tensor};
 
@@ -81,5 +82,5 @@ fn gpt_memorizes_sequence() {
         opt.step();
     }
     model.eval();
-    assert_eq!(model.generate(&[0], 7, 0.0), vec![0, 1, 2, 3, 4, 0, 1, 2]);
+    assert_eq!(model.generate(&[0], 7, &mut Sampler::greedy()), vec![0, 1, 2, 3, 4, 0, 1, 2]);
 }

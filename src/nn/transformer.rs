@@ -2,13 +2,16 @@ use super::layers::{FeedForward, LayerNorm, Linear};
 use super::module::{prefixed, Module};
 use crate::device::Device;
 use crate::functional as F;
+use crate::generation::Sampler;
 use crate::tensor::Tensor;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Cached keys and values of one attention layer, `[B, H, T_past, D/H]`.
 #[derive(Clone, Default)]
 pub struct LayerKv {
+    /// Keys `[B, H, T_past, D/H]`.
     pub k: Option<Tensor>,
+    /// Values `[B, H, T_past, D/H]`.
     pub v: Option<Tensor>,
 }
 
@@ -18,6 +21,7 @@ impl LayerKv {
         self.k.as_ref().map_or(0, |k| k.dim(2))
     }
 
+    /// Whether nothing is cached.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -39,10 +43,12 @@ impl LayerKv {
 /// generating `n` tokens costs O(n) layer evaluations instead of O(n²).
 #[derive(Clone, Default)]
 pub struct KvCache {
+    /// One entry per attention layer.
     pub layers: Vec<LayerKv>,
 }
 
 impl KvCache {
+    /// An empty cache for `n_layers` layers.
     pub fn new(n_layers: usize) -> Self {
         KvCache { layers: vec![LayerKv::default(); n_layers] }
     }
@@ -52,10 +58,12 @@ impl KvCache {
         self.layers.first().map_or(0, LayerKv::len)
     }
 
+    /// Whether nothing is cached.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// Drop all cached positions.
     pub fn clear(&mut self) {
         self.layers.iter_mut().for_each(|l| *l = LayerKv::default());
     }
@@ -63,16 +71,23 @@ impl KvCache {
 
 /// Multi-head attention over `[B, T, D]` inputs.
 pub struct MultiHeadAttention {
+    /// Query projection.
     pub wq: Linear,
+    /// Key projection.
     pub wk: Linear,
+    /// Value projection.
     pub wv: Linear,
+    /// Output projection.
     pub wo: Linear,
+    /// Number of heads.
     pub n_heads: usize,
+    /// Dropout on the attention weights (training only).
     pub dropout: f32,
     training: AtomicBool,
 }
 
 impl MultiHeadAttention {
+    /// Attention of width `dim` split into `n_heads` heads.
     pub fn new(dim: usize, n_heads: usize, dropout: f32, device: Device) -> Self {
         assert_eq!(dim % n_heads, 0, "dim {dim} must be divisible by n_heads {n_heads}");
         MultiHeadAttention {
@@ -142,16 +157,23 @@ impl Module for MultiHeadAttention {
 /// `x = x + Attn(LN(x)); x = x + FFN(LN(x))`.
 /// With `causal = true` it is a GPT-style decoder block.
 pub struct TransformerBlock {
+    /// Norm before attention.
     pub ln1: LayerNorm,
+    /// Self-attention.
     pub attn: MultiHeadAttention,
+    /// Norm before the feed-forward.
     pub ln2: LayerNorm,
+    /// Position-wise MLP.
     pub ffn: FeedForward,
+    /// Whether [`Module::forward`] applies a causal mask.
     pub causal: bool,
+    /// Dropout on each residual branch.
     pub dropout: f32,
     training: AtomicBool,
 }
 
 impl TransformerBlock {
+    /// A block of width `dim` with an MLP hidden size `ff_hidden`.
     pub fn new(dim: usize, n_heads: usize, ff_hidden: usize, dropout: f32, causal: bool, device: Device) -> Self {
         TransformerBlock {
             ln1: LayerNorm::new(dim, device),
@@ -206,25 +228,39 @@ impl Module for TransformerBlock {
 
 /// A GPT-style decoder-only language model.
 pub struct GPT {
+    /// Token embeddings.
     pub tok_emb: super::layers::Embedding,
+    /// Learned position embeddings.
     pub pos_emb: super::layers::Embedding,
+    /// Causal transformer blocks.
     pub blocks: Vec<TransformerBlock>,
+    /// Final layer norm.
     pub ln_f: LayerNorm,
+    /// Output projection to vocabulary logits.
     pub head: Linear,
+    /// Maximum context length.
     pub max_len: usize,
 }
 
+/// Hyperparameters of [`GPT`].
 #[derive(Clone, Copy, Debug)]
 pub struct GPTConfig {
+    /// Vocabulary size.
     pub vocab_size: usize,
+    /// Maximum context length.
     pub max_len: usize,
+    /// Model width.
     pub dim: usize,
+    /// Attention heads per block.
     pub n_heads: usize,
+    /// Number of blocks.
     pub n_layers: usize,
+    /// Dropout probability (training only).
     pub dropout: f32,
 }
 
 impl GPT {
+    /// Randomly initialized model.
     pub fn new(cfg: GPTConfig, device: Device) -> Self {
         GPT {
             tok_emb: super::layers::Embedding::new(cfg.vocab_size, cfg.dim, device),
@@ -278,32 +314,14 @@ impl GPT {
         self.head.forward(&self.ln_f.forward(&x))
     }
 
-    /// Autoregressive sampling of `n` new tokens after `prompt` with a KV
-    /// cache. `temperature <= 0` means greedy decoding. Past `max_len`
-    /// tokens the context window slides over the last `max_len` tokens
-    /// (re-encoded without the cache), exactly like [`GPT::generate_uncached`].
-    pub fn generate(&self, prompt: &[usize], n: usize, temperature: f32) -> Vec<usize> {
-        let mut sampler = crate::generation::Sampler::new(temperature, 0, 1.0, crate::rand::randint(usize::MAX) as u64);
+    /// Autoregressive generation of `n` new tokens after `prompt` with a KV
+    /// cache, picking each token with `sampler` (e.g. [`Sampler::greedy`]).
+    /// Past `max_len` tokens the context window slides over the last
+    /// `max_len` tokens (re-encoded without the cache), like
+    /// [`GPT::generate_uncached`]. Returns the prompt followed by the new tokens.
+    pub fn generate(&self, prompt: &[usize], n: usize, sampler: &mut Sampler) -> Vec<usize> {
         let dev = self.head.weight.device();
-        let mut ids = prompt.to_vec();
-        let mut cache = KvCache::new(self.blocks.len());
-        crate::no_grad(|| {
-            let mut pending: Vec<usize> = ids.clone();
-            for _ in 0..n {
-                if cache.len() + pending.len() > self.max_len {
-                    // slide the window: re-encode the most recent max_len tokens
-                    cache.clear();
-                    pending = ids[ids.len() - self.max_len..].to_vec();
-                }
-                let logits = self.forward_cached(&Tensor::from_indices(&pending, &[1, pending.len()], dev), &mut cache);
-                let v = logits.dim(-1);
-                let last = logits.narrow(1, pending.len() - 1, 1).reshape(&[v]).to_vec();
-                let next = sampler.sample(&last);
-                ids.push(next);
-                pending = vec![next];
-            }
-        });
-        ids
+        crate::generation::generate_cached(prompt, n, self.max_len, dev, sampler, |t, c| self.forward_cached(t, c), |_| true)
     }
 
     /// Like [`GPT::generate`] but recomputes the whole context every step

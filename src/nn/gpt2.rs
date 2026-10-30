@@ -27,13 +27,18 @@ use crate::Device;
 use std::io;
 use std::path::Path;
 
+/// GPT-2 hyperparameters (names as in Hugging Face `GPT2Config`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GPT2Config {
+    /// Vocabulary size (50257 for the OpenAI tokenizer).
     pub vocab_size: usize,
     /// Maximum context length.
     pub n_positions: usize,
+    /// Model width.
     pub n_embd: usize,
+    /// Number of transformer blocks.
     pub n_layer: usize,
+    /// Attention heads per block.
     pub n_head: usize,
 }
 
@@ -76,10 +81,14 @@ struct Block {
 
 /// GPT-2 language model (inference and fine-tuning).
 pub struct GPT2 {
+    /// Architecture hyperparameters.
     pub config: GPT2Config,
+    /// Token embeddings `[vocab, n_embd]` (also the tied output head).
     pub wte: Embedding,
+    /// Learned position embeddings `[n_positions, n_embd]`.
     pub wpe: Embedding,
     blocks: Vec<Block>,
+    /// Final layer norm.
     pub ln_f: LayerNorm,
     /// int8 copy of the tied head (`wteᵀ`), set by [`GPT2::quantize_int8`].
     head_int8: Option<Linear>,

@@ -9,11 +9,15 @@ use std::io;
 
 pub mod lr;
 
+/// A parameter-update rule over a fixed list of parameters.
 pub trait Optimizer {
     /// Apply one update using the parameters' current `.grad()`.
     fn step(&mut self);
+    /// The parameters being optimized.
     fn params(&self) -> &[Tensor];
+    /// Current learning rate.
     fn lr(&self) -> f32;
+    /// Set the learning rate (e.g. from an [`lr::LrScheduler`]).
     fn set_lr(&mut self, lr: f32);
 
     /// Short identifier stored in checkpoints (e.g. `"adam"`).
@@ -29,6 +33,7 @@ pub trait Optimizer {
     /// to each parameter's device).
     fn load_state_dict(&mut self, state: &[(String, Tensor)]) -> io::Result<()>;
 
+    /// Clear the gradients of all parameters.
     fn zero_grad(&self) {
         for p in self.params() {
             p.zero_grad();
@@ -39,17 +44,22 @@ pub trait Optimizer {
 /// Stochastic gradient descent with optional momentum and weight decay.
 pub struct SGD {
     params: Vec<Tensor>,
+    /// Learning rate.
     pub lr: f32,
+    /// Momentum factor (0 = plain SGD).
     pub momentum: f32,
+    /// L2 penalty added to the gradient (0 = none).
     pub weight_decay: f32,
     velocity: Vec<Option<Tensor>>,
 }
 
 impl SGD {
+    /// Plain SGD without momentum or weight decay.
     pub fn new(params: Vec<Tensor>, lr: f32) -> Self {
         Self::with_momentum(params, lr, 0.0, 0.0)
     }
 
+    /// SGD with `momentum` and L2 `weight_decay`.
     pub fn with_momentum(params: Vec<Tensor>, lr: f32, momentum: f32, weight_decay: f32) -> Self {
         let n = params.len();
         SGD { params, lr, momentum, weight_decay, velocity: vec![None; n] }
@@ -150,11 +160,17 @@ impl<'a> StateMap<'a> {
 /// Adam, or AdamW when `decoupled_weight_decay` is set.
 pub struct Adam {
     params: Vec<Tensor>,
+    /// Learning rate.
     pub lr: f32,
+    /// First-moment decay (default 0.9).
     pub beta1: f32,
+    /// Second-moment decay (default 0.999).
     pub beta2: f32,
+    /// Denominator epsilon (default 1e-8).
     pub eps: f32,
+    /// Weight-decay coefficient (default 0).
     pub weight_decay: f32,
+    /// Apply weight decay directly to the weights (AdamW) instead of the gradient.
     pub decoupled_weight_decay: bool,
     m: Vec<Option<Storage>>,
     v: Vec<Option<Storage>>,
@@ -162,6 +178,7 @@ pub struct Adam {
 }
 
 impl Adam {
+    /// Adam with the default betas `(0.9, 0.999)`, `eps = 1e-8` and no weight decay.
     pub fn new(params: Vec<Tensor>, lr: f32) -> Self {
         let n = params.len();
         Adam {

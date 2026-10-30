@@ -16,6 +16,7 @@ use crate::tensor::Tensor;
 use std::io;
 use std::path::Path;
 
+/// Residual block type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockKind {
     /// Two 3x3 convolutions (ResNet-18/34).
@@ -25,6 +26,7 @@ pub enum BlockKind {
 }
 
 impl BlockKind {
+    /// Output channels per block width (1 or 4).
     pub fn expansion(&self) -> usize {
         match self {
             BlockKind::Basic => 1,
@@ -33,14 +35,18 @@ impl BlockKind {
     }
 }
 
+/// ResNet hyperparameters.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResNetConfig {
+    /// Block type.
     pub block: BlockKind,
     /// Number of blocks in each stage.
     pub layers: Vec<usize>,
     /// Base channel width of each stage (output is `width * expansion`).
     pub widths: Vec<usize>,
+    /// Input image channels.
     pub in_channels: usize,
+    /// Output classes.
     pub num_classes: usize,
     /// ImageNet stem (7x7 stride-2 conv + 3x3 stride-2 max pool); otherwise
     /// a CIFAR stem (3x3 stride-1 conv, no pooling) for small images.
@@ -58,18 +64,23 @@ impl ResNetConfig {
             imagenet_stem: true,
         }
     }
+    /// ResNet-18 (11.7M parameters with 1000 classes).
     pub fn resnet18(num_classes: usize) -> Self {
         Self::imagenet(BlockKind::Basic, &[2, 2, 2, 2], num_classes)
     }
+    /// ResNet-34 (21.8M parameters with 1000 classes).
     pub fn resnet34(num_classes: usize) -> Self {
         Self::imagenet(BlockKind::Basic, &[3, 4, 6, 3], num_classes)
     }
+    /// ResNet-50 (25.6M parameters with 1000 classes).
     pub fn resnet50(num_classes: usize) -> Self {
         Self::imagenet(BlockKind::Bottleneck, &[3, 4, 6, 3], num_classes)
     }
+    /// ResNet-101.
     pub fn resnet101(num_classes: usize) -> Self {
         Self::imagenet(BlockKind::Bottleneck, &[3, 4, 23, 3], num_classes)
     }
+    /// ResNet-152.
     pub fn resnet152(num_classes: usize) -> Self {
         Self::imagenet(BlockKind::Bottleneck, &[3, 8, 36, 3], num_classes)
     }
@@ -171,13 +182,16 @@ impl ResBlock {
 
 /// A residual network for image classification: `[N, C, H, W]` -> logits `[N, classes]`.
 pub struct ResNet {
+    /// Architecture hyperparameters.
     pub config: ResNetConfig,
     stem: ConvBn,
     stages: Vec<Vec<ResBlock>>,
+    /// Classifier on the pooled features.
     pub fc: Linear,
 }
 
 impl ResNet {
+    /// Randomly initialized network.
     pub fn new(config: ResNetConfig, device: Device) -> Self {
         assert_eq!(config.layers.len(), config.widths.len(), "layers and widths must have the same length");
         let w0 = config.widths[0];

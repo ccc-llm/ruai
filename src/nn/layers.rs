@@ -11,7 +11,9 @@ fn uniform_param(shape: &[usize], bound: f32, device: Device) -> Tensor {
 
 /// Fully connected layer `y = x @ W + b`, with `W` stored as `[in, out]`.
 pub struct Linear {
+    /// `[in, out]` weight matrix.
     pub weight: Tensor,
+    /// Optional `[out]` bias.
     pub bias: Option<Tensor>,
     /// Weight-only int8 copy `(q [in, out] I8, scale [out] F32)` after
     /// [`Linear::quantize_int8`]; `weight` is then an empty placeholder.
@@ -19,10 +21,12 @@ pub struct Linear {
 }
 
 impl Linear {
+    /// A layer with bias, initialized like PyTorch (`U(-1/√in, 1/√in)`).
     pub fn new(in_features: usize, out_features: usize, device: Device) -> Self {
         Self::with_bias(in_features, out_features, true, device)
     }
 
+    /// Like [`Linear::new`], with or without a bias.
     pub fn with_bias(in_features: usize, out_features: usize, bias: bool, device: Device) -> Self {
         let bound = 1.0 / (in_features as f32).sqrt();
         Linear {
@@ -37,6 +41,7 @@ impl Linear {
         Linear { weight, bias, int8: None }
     }
 
+    /// Whether [`Linear::quantize_int8`] has been applied.
     pub fn is_quantized(&self) -> bool {
         self.int8.is_some()
     }
@@ -99,13 +104,18 @@ impl Module for Linear {
 
 /// 2D convolution over `[N, C, H, W]` with a square kernel.
 pub struct Conv2d {
+    /// `[out_ch, in_ch, k, k]` kernels.
     pub weight: Tensor,
+    /// Optional `[out_ch]` bias.
     pub bias: Option<Tensor>,
+    /// Step between kernel positions.
     pub stride: usize,
+    /// Zero padding on each side.
     pub padding: usize,
 }
 
 impl Conv2d {
+    /// A convolution with bias (`padding` zeros on each side), PyTorch-style initialization.
     pub fn new(in_ch: usize, out_ch: usize, kernel: usize, stride: usize, padding: usize, device: Device) -> Self {
         Self::with_bias(in_ch, out_ch, kernel, stride, padding, true, device)
     }
@@ -135,18 +145,23 @@ impl Module for Conv2d {
     }
 }
 
+/// 2D max pooling with a square window.
 pub struct MaxPool2d {
+    /// Window size.
     pub kernel: usize,
+    /// Step between windows.
     pub stride: usize,
     /// Implicit `-inf` padding on each side.
     pub padding: usize,
 }
 
 impl MaxPool2d {
+    /// Max pooling without padding.
     pub fn new(kernel: usize, stride: usize) -> Self {
         MaxPool2d { kernel, stride, padding: 0 }
     }
 
+    /// Max pooling with `padding` (`<= kernel / 2`) on each side.
     pub fn with_padding(kernel: usize, stride: usize, padding: usize) -> Self {
         MaxPool2d { kernel, stride, padding }
     }
@@ -167,12 +182,16 @@ impl Module for GlobalAvgPool {
     }
 }
 
+/// 2D average pooling with a square window (no padding).
 pub struct AvgPool2d {
+    /// Window size.
     pub kernel: usize,
+    /// Step between windows.
     pub stride: usize,
 }
 
 impl AvgPool2d {
+    /// Average pooling over `kernel x kernel` windows every `stride` pixels.
     pub fn new(kernel: usize, stride: usize) -> Self {
         AvgPool2d { kernel, stride }
     }
@@ -186,16 +205,23 @@ impl Module for AvgPool2d {
 
 /// Batch normalization over the channel dim of `[N, C, H, W]`.
 pub struct BatchNorm2d {
+    /// Learned scale `[1, C, 1, 1]`.
     pub weight: Tensor,
+    /// Learned shift `[1, C, 1, 1]`.
     pub bias: Tensor,
+    /// Running mean `[1, C, 1, 1]` used in eval mode.
     pub running_mean: Tensor,
+    /// Running (unbiased) variance `[1, C, 1, 1]` used in eval mode.
     pub running_var: Tensor,
+    /// Weight of the current batch in the running statistics (default 0.1).
     pub momentum: f32,
+    /// Added to the variance (default 1e-5).
     pub eps: f32,
     training: AtomicBool,
 }
 
 impl BatchNorm2d {
+    /// Batch norm over `channels` (scale 1, shift 0).
     pub fn new(channels: usize, device: Device) -> Self {
         BatchNorm2d {
             weight: Tensor::ones(&[1, channels, 1, 1], device).requires_grad_(),
@@ -248,12 +274,16 @@ impl Module for BatchNorm2d {
 
 /// Layer normalization over the last dimension.
 pub struct LayerNorm {
+    /// Learned scale `[dim]`.
     pub weight: Tensor,
+    /// Learned shift `[dim]`.
     pub bias: Tensor,
+    /// Added to the variance (default 1e-5).
     pub eps: f32,
 }
 
 impl LayerNorm {
+    /// Layer norm over a last dimension of size `dim` (scale 1, shift 0).
     pub fn new(dim: usize, device: Device) -> Self {
         LayerNorm {
             weight: Tensor::ones(&[dim], device).requires_grad_(),
@@ -274,10 +304,12 @@ impl Module for LayerNorm {
 
 /// Lookup table of `num` vectors of size `dim`.
 pub struct Embedding {
+    /// `[num, dim]` table.
     pub weight: Tensor,
 }
 
 impl Embedding {
+    /// A table of `num` vectors of size `dim`, initialized from N(0, 0.02²).
     pub fn new(num: usize, dim: usize, device: Device) -> Self {
         Embedding { weight: (Tensor::randn(&[num, dim], device) * 0.02).detach().requires_grad_() }
     }
@@ -302,12 +334,15 @@ impl Module for Embedding {
     }
 }
 
+/// Inverted dropout (identity in eval mode).
 pub struct Dropout {
+    /// Probability of zeroing an element.
     pub p: f32,
     training: AtomicBool,
 }
 
 impl Dropout {
+    /// Dropout with drop probability `p` (training mode).
     pub fn new(p: f32) -> Self {
         Dropout { p, training: AtomicBool::new(true) }
     }
@@ -332,7 +367,8 @@ impl Module for Flatten {
 }
 
 macro_rules! activation {
-    ($name:ident, $method:ident) => {
+    ($name:ident, $method:ident, $doc:literal) => {
+        #[doc = $doc]
         pub struct $name;
         impl Module for $name {
             fn forward(&self, x: &Tensor) -> Tensor {
@@ -342,18 +378,21 @@ macro_rules! activation {
     };
 }
 
-activation!(ReLU, relu);
-activation!(GELU, gelu);
-activation!(Tanh, tanh);
-activation!(Sigmoid, sigmoid);
+activation!(ReLU, relu, "`max(x, 0)` element-wise.");
+activation!(GELU, gelu, "GELU (tanh approximation) element-wise.");
+activation!(Tanh, tanh, "Hyperbolic tangent element-wise.");
+activation!(Sigmoid, sigmoid, "Logistic sigmoid element-wise.");
 
 /// Two-layer MLP used inside transformer blocks: Linear -> GELU -> Linear.
 pub struct FeedForward {
+    /// `[dim, hidden]` input projection.
     pub fc1: Linear,
+    /// `[hidden, dim]` output projection.
     pub fc2: Linear,
 }
 
 impl FeedForward {
+    /// An MLP `dim -> hidden -> dim`.
     pub fn new(dim: usize, hidden: usize, device: Device) -> Self {
         FeedForward { fc1: Linear::new(dim, hidden, device), fc2: Linear::new(hidden, dim, device) }
     }
@@ -372,11 +411,14 @@ impl Module for FeedForward {
 
 /// RMS normalization over the last dimension with a learned scale (Llama).
 pub struct RMSNorm {
+    /// Learned scale `[dim]`.
     pub weight: Tensor,
+    /// Added to the mean square.
     pub eps: f32,
 }
 
 impl RMSNorm {
+    /// RMS norm over a last dimension of size `dim` (scale 1).
     pub fn new(dim: usize, eps: f32, device: Device) -> Self {
         RMSNorm { weight: Tensor::ones(&[dim], device).requires_grad_(), eps }
     }
@@ -394,12 +436,16 @@ impl Module for RMSNorm {
 /// Gated feed-forward (Shazeer 2020) used by Llama:
 /// `down_proj(silu(gate_proj(x)) * up_proj(x))`, all without bias.
 pub struct SwiGLU {
+    /// `[dim, hidden]` gate projection (SiLU branch).
     pub gate_proj: Linear,
+    /// `[dim, hidden]` linear branch.
     pub up_proj: Linear,
+    /// `[hidden, dim]` output projection.
     pub down_proj: Linear,
 }
 
 impl SwiGLU {
+    /// A gated MLP `dim -> hidden -> dim` without biases.
     pub fn new(dim: usize, hidden: usize, device: Device) -> Self {
         SwiGLU {
             gate_proj: Linear::with_bias(dim, hidden, false, device),

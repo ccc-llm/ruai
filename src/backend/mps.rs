@@ -69,7 +69,9 @@ impl BufferHandle {
 #[derive(Clone)]
 pub struct MpsStorage {
     buf: Arc<BufferHandle>,
+    /// Number of elements.
     pub len: usize,
+    /// Element type.
     pub dtype: DType,
 }
 
@@ -143,6 +145,7 @@ impl Stream {
     }
 }
 
+/// [`Backend`] implementation for Apple GPUs via Metal / MPS.
 pub struct MpsBackend {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
@@ -162,6 +165,7 @@ pub fn is_available() -> bool {
     BACKEND.get().is_some() || MTLCreateSystemDefaultDevice().is_some()
 }
 
+/// The process-wide MPS backend (created on first use).
 pub fn backend() -> &'static dyn Backend {
     BACKEND.get_or_init(MpsBackend::new)
 }

@@ -196,6 +196,7 @@ pub struct LoadReport {
 }
 
 impl LoadReport {
+    /// `true` if every name matched (nothing missing or unexpected).
     pub fn is_exact(&self) -> bool {
         self.missing.is_empty() && self.unexpected.is_empty()
     }

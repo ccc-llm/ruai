@@ -38,11 +38,15 @@ enum Buf {
 #[derive(Clone)]
 pub struct CudaStorage {
     buf: Buf,
+    /// GPU index (as in `Device::Cuda(ordinal)`).
     pub ordinal: usize,
+    /// Number of elements.
     pub len: usize,
+    /// Element type.
     pub dtype: DType,
 }
 
+/// [`Backend`] implementation for NVIDIA GPUs (custom kernels + cuBLAS).
 pub struct CudaBackend {
     ordinal: usize,
     stream: Arc<CudaStream>,
@@ -61,6 +65,7 @@ pub fn is_available(ordinal: usize) -> bool {
     CudaContext::device_count().map(|n| (ordinal as i32) < n).unwrap_or(false)
 }
 
+/// The backend for GPU `ordinal` (created on first use, then cached).
 pub fn backend(ordinal: usize) -> &'static dyn Backend {
     let map = BACKENDS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut map = map.lock().unwrap();

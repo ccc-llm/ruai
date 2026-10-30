@@ -14,21 +14,27 @@ pub fn argmax(logits: &[f32]) -> usize {
 /// * `top_p < 1`: nucleus sampling over the smallest set with mass >= `p`
 #[derive(Clone, Debug)]
 pub struct Sampler {
+    /// Softmax temperature; `<= 0` means greedy.
     pub temperature: f32,
+    /// Keep only the `top_k` highest logits (0 = no limit).
     pub top_k: usize,
+    /// Nucleus threshold on cumulative probability (1 = off).
     pub top_p: f32,
     rng: Rng,
 }
 
 impl Sampler {
+    /// A sampler with its own RNG seeded by `seed`.
     pub fn new(temperature: f32, top_k: usize, top_p: f32, seed: u64) -> Self {
         Sampler { temperature, top_k, top_p, rng: Rng::new(seed) }
     }
 
+    /// Always pick the argmax.
     pub fn greedy() -> Self {
         Self::new(0.0, 0, 1.0, 0)
     }
 
+    /// Draw a token index from `logits` (length `vocab`).
     pub fn sample(&mut self, logits: &[f32]) -> usize {
         if self.temperature <= 0.0 {
             return argmax(logits);

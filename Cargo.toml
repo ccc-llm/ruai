@@ -1,9 +1,14 @@
 [package]
 name = "rust-nn"
-version = "0.9.0"
+version = "1.0.0"
 edition = "2021"
 description = "A small PyTorch-like neural network engine in Rust (autograd, CNN/ResNet/ViT, Transformer/GPT/Llama, seq2seq)"
 license = "MIT"
+repository = "https://github.com/ccc-llm/rust-nn"
+readme = "README.md"
+keywords = ["neural-network", "deep-learning", "autograd", "transformer", "gpu"]
+categories = ["science", "algorithms"]
+exclude = ["/scripts", "/runs", "/data", "*.safetensors"]
 
 [lib]
 name = "rustnn"

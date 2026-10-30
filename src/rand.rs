@@ -14,14 +14,17 @@ pub struct Rng {
 }
 
 impl Rng {
+    /// A generator starting from `seed`.
     pub fn new(seed: u64) -> Self {
         Rng { state: seed }
     }
 
+    /// Internal state (pass to [`Rng::new`] to resume the stream).
     pub fn state(&self) -> u64 {
         self.state
     }
 
+    /// Next 64 random bits.
     #[inline]
     pub fn next_u64(&mut self) -> u64 {
         self.state = self.state.wrapping_add(0x9e37_79b9_7f4a_7c15);
@@ -53,6 +56,7 @@ impl Rng {
 
 static GLOBAL: Mutex<Rng> = Mutex::new(Rng { state: 0x853c_49e6_748f_ea9b });
 
+/// Reseed the global generator (like `torch.manual_seed`).
 pub fn manual_seed(seed: u64) {
     GLOBAL.lock().unwrap().state = seed;
 }

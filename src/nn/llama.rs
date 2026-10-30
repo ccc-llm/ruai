@@ -32,25 +32,40 @@ use std::path::Path;
 /// Llama 3.1-style RoPE frequency scaling (`rope_scaling.rope_type == "llama3"`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RopeScaling {
+    /// Context-extension factor.
     pub factor: f32,
+    /// Wavelengths longer than `original / low_freq_factor` are fully scaled.
     pub low_freq_factor: f32,
+    /// Wavelengths shorter than `original / high_freq_factor` are kept.
     pub high_freq_factor: f32,
+    /// Context length the model was pre-trained with.
     pub original_max_position_embeddings: usize,
 }
 
+/// Llama hyperparameters (field names as in Hugging Face `LlamaConfig`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LlamaConfig {
+    /// Vocabulary size.
     pub vocab_size: usize,
+    /// Model width.
     pub hidden_size: usize,
+    /// SwiGLU hidden size.
     pub intermediate_size: usize,
+    /// Number of decoder layers.
     pub num_hidden_layers: usize,
+    /// Query heads per layer.
     pub num_attention_heads: usize,
     /// `< num_attention_heads` means grouped-query attention.
     pub num_key_value_heads: usize,
+    /// Size of each attention head (usually `hidden_size / num_attention_heads`).
     pub head_dim: usize,
+    /// Maximum context length.
     pub max_position_embeddings: usize,
+    /// RMSNorm epsilon.
     pub rms_norm_eps: f32,
+    /// RoPE base θ.
     pub rope_theta: f32,
+    /// Optional RoPE frequency scaling.
     pub rope_scaling: Option<RopeScaling>,
     /// Output head shares the token embedding table.
     pub tie_word_embeddings: bool,
@@ -207,9 +222,12 @@ struct DecoderLayer {
 
 /// Llama-style decoder-only language model.
 pub struct Llama {
+    /// Architecture hyperparameters.
     pub config: LlamaConfig,
+    /// Token embeddings `[vocab, hidden]`.
     pub embed_tokens: Embedding,
     layers: Vec<DecoderLayer>,
+    /// Final RMSNorm.
     pub norm: RMSNorm,
     /// Untied output head (`None` when tied to `embed_tokens`).
     pub lm_head: Option<Linear>,

@@ -11,16 +11,26 @@ use crate::functional as F;
 use crate::tensor::Tensor;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Vision Transformer hyperparameters.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ViTConfig {
+    /// Input height and width (square images).
     pub image_size: usize,
+    /// Patch height and width.
     pub patch_size: usize,
+    /// Input channels.
     pub in_channels: usize,
+    /// Output classes.
     pub num_classes: usize,
+    /// Model width.
     pub dim: usize,
+    /// Number of encoder blocks.
     pub depth: usize,
+    /// Attention heads.
     pub heads: usize,
+    /// MLP hidden size.
     pub mlp_dim: usize,
+    /// Dropout probability (training only).
     pub dropout: f32,
 }
 
@@ -45,6 +55,7 @@ impl ViTConfig {
         ViTConfig { image_size, patch_size, in_channels, num_classes, dim, depth, heads, mlp_dim: 2 * dim, dropout: 0.0 }
     }
 
+    /// Number of patches per image.
     pub fn num_patches(&self) -> usize {
         (self.image_size / self.patch_size).pow(2)
     }
@@ -52,19 +63,25 @@ impl ViTConfig {
 
 /// Vision Transformer classifier: `[N, C, H, W]` -> logits `[N, classes]`.
 pub struct ViT {
+    /// Hyperparameters.
     pub config: ViTConfig,
+    /// Patch embedding: a `patch_size`-strided convolution.
     pub patch_embed: Conv2d,
     /// `[1, 1, dim]`
     pub cls_token: Tensor,
     /// `[1, num_patches + 1, dim]`
     pub pos_embed: Tensor,
+    /// Encoder blocks (bidirectional).
     pub blocks: Vec<TransformerBlock>,
+    /// Final layer norm.
     pub norm: LayerNorm,
+    /// Classifier on the `[CLS]` vector.
     pub head: Linear,
     training: AtomicBool,
 }
 
 impl ViT {
+    /// Randomly initialized model.
     pub fn new(config: ViTConfig, device: Device) -> Self {
         let c = config;
         assert!(c.image_size.is_multiple_of(c.patch_size), "image_size must be a multiple of patch_size");

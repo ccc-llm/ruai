@@ -30,12 +30,16 @@ use std::thread::JoinHandle;
 
 /// Random-access collection of samples.
 pub trait Dataset: Send + Sync {
+    /// Sample type returned by [`Dataset::get`].
     type Item: Send + 'static;
 
+    /// Number of samples.
     fn len(&self) -> usize;
 
+    /// Sample `index` (`0..len()`).
     fn get(&self, index: usize) -> Self::Item;
 
+    /// `true` if there are no samples.
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -70,7 +74,9 @@ impl<D: Dataset + ?Sized> Dataset for Arc<D> {
 
 /// A view of a dataset restricted to some indices.
 pub struct Subset<D> {
+    /// The underlying dataset.
     pub dataset: Arc<D>,
+    /// Indices into `dataset`; sample `i` of the subset is `dataset.get(indices[i])`.
     pub indices: Vec<usize>,
 }
 
@@ -105,18 +111,25 @@ pub fn random_split<D: Dataset>(dataset: D, lengths: &[usize], seed: u64) -> Vec
 /// In-memory classification data: `N` samples of `sample_shape` floats plus a label each.
 #[derive(Clone)]
 pub struct ClassificationData {
+    /// Flattened features, `N * prod(sample_shape)` values.
     pub features: Vec<f32>,
+    /// Class label per sample, length `N`.
     pub labels: Vec<usize>,
+    /// Shape of one sample.
     pub sample_shape: Vec<usize>,
 }
 
-/// A batch of inputs `[B, ...sample_shape]` and `I32` targets `[B]`.
+/// A batch of inputs and `I32` targets `[B]`. [`ClassificationData::collate`]
+/// produces flattened inputs `[B, prod(sample_shape)]`; reshape them as needed.
 pub struct Batch {
+    /// Input features.
     pub inputs: Tensor,
+    /// `I32` class targets `[B]`.
     pub targets: Tensor,
 }
 
 impl ClassificationData {
+    /// Wrap flattened `features` and `labels`; panics if `features.len() != labels.len() * prod(sample_shape)`.
     pub fn new(features: Vec<f32>, labels: Vec<usize>, sample_shape: &[usize]) -> Self {
         let per: usize = sample_shape.iter().product();
         assert_eq!(features.len(), labels.len() * per, "ClassificationData: features do not match labels x sample_shape");
@@ -215,10 +228,12 @@ impl<D: Dataset + 'static, B: Send + 'static> DataLoader<D, B> {
         self
     }
 
+    /// The wrapped dataset.
     pub fn dataset(&self) -> &D {
         &self.dataset
     }
 
+    /// Samples per batch.
     pub fn batch_size(&self) -> usize {
         self.batch_size
     }
@@ -233,6 +248,7 @@ impl<D: Dataset + 'static, B: Send + 'static> DataLoader<D, B> {
         }
     }
 
+    /// `true` if an epoch yields no batches.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

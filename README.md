@@ -2,6 +2,16 @@
 
 一個用 Rust 寫的、類似 PyTorch 的神經網路引擎：動態計算圖 + 反向自動微分，支援訓練與推理，內建 CNN、ResNet、ViT、Transformer（GPT / GPT-2 / Llama）與 encoder-decoder。支援 CPU（rayon 多執行緒，macOS 可選用 Accelerate）、Apple GPU（Metal / MPS）與 NVIDIA GPU（CUDA）。
 
+## 安裝
+
+```toml
+[dependencies]
+rust-nn = { git = "https://github.com/ccc-llm/rust-nn" }   # 程式中以 rustnn 引用
+# GPU：features = ["mps"]（Apple）或 ["cuda"]（NVIDIA）；macOS CPU 加速：["accelerate"]
+```
+
+> 尚未發布到 crates.io（名稱 `rust-nn` 與既有的 `rust_nn` 衝突，見「版本規劃」）。各版變更見 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 快速開始
 
 ```bash
@@ -319,7 +329,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v0.7 | KV cache、載入 GPT-2 官方權重、BPE tokenizer、取樣、int8 量化 | ✅（GPT-2 尚未以真實權重驗證） |
 | v0.8 | RMSNorm、RoPE、SwiGLU、GQA、Llama 模型（HF 版面載入／匯出） | ✅（Llama 尚未以真實權重驗證） |
 | v0.9 | ResNet、ViT、encoder-decoder Transformer（cross-attention、seq2seq） | ✅ |
-| v1.0 | API 整理、rustdoc 文件、clippy 乾淨、`cargo package` 可發布 | |
+| v1.0 | API 整理（`GPT::generate` 改用 `Sampler`）、所有公開項目都有 rustdoc、clippy 乾淨、`cargo package` 可打包 | ✅（crates.io 名稱待定） |
 
 ## 目前限制
 

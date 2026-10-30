@@ -133,11 +133,11 @@ fn main() {
     restored.eval();
     for prompt in ["the ", "attention "] {
         let ids: Vec<usize> = prompt.chars().map(stoi).collect();
-        let out = restored.generate(&ids, 120, 0.0);
+        let out = restored.generate(&ids, 120, &mut Sampler::greedy());
         let s: String = out.iter().map(|&i| vocab[i]).collect();
         println!("\n[greedy] {s}");
     }
     let ids: Vec<usize> = "rust ".chars().map(stoi).collect();
-    let s: String = restored.generate(&ids, 120, 0.8).iter().map(|&i| vocab[i]).collect();
+    let s: String = restored.generate(&ids, 120, &mut Sampler::new(0.8, 0, 1.0, 1)).iter().map(|&i| vocab[i]).collect();
     println!("\n[T=0.8] {s}");
 }

@@ -30,6 +30,7 @@ fn promoted(a: &Tensor, b: &Tensor) -> (Tensor, Tensor) {
 /// Anything usable as an index tensor: `&Tensor` (any dtype), `&[usize]`,
 /// `&Vec<usize>`, `&[usize; N]`. Converted to an `I32` tensor on `device`.
 pub trait IntoIndices {
+    /// Convert to an `I32` index tensor on `device`.
     fn into_indices(self, device: Device) -> Tensor;
 }
 
@@ -79,26 +80,32 @@ impl Tensor {
         })
     }
 
+    /// Elementwise `-x`.
     pub fn neg(&self) -> Tensor {
         self.unary_op(UnaryOp::Neg, "neg", |g, _, _| g.neg())
     }
 
+    /// Elementwise `e^x`.
     pub fn exp(&self) -> Tensor {
         self.unary_op(UnaryOp::Exp, "exp", |g, _, y| g * y)
     }
 
+    /// Elementwise natural logarithm.
     pub fn log(&self) -> Tensor {
         self.unary_op(UnaryOp::Log, "log", |g, x, _| g / x)
     }
 
+    /// Elementwise square root.
     pub fn sqrt(&self) -> Tensor {
         self.unary_op(UnaryOp::Sqrt, "sqrt", |g, _, y| g * &(y.unary_raw(UnaryOp::Recip) * 0.5))
     }
 
+    /// Elementwise `1 / x`.
     pub fn recip(&self) -> Tensor {
         self.unary_op(UnaryOp::Recip, "recip", |g, _, y| (g * &(y * y)).neg())
     }
 
+    /// Elementwise `|x|` (gradient `sign(x)`, 0 at 0).
     pub fn abs(&self) -> Tensor {
         self.unary_op(UnaryOp::Abs, "abs", |g, x, _| {
             let sign = &x.gt_scalar(0.0) - &x.lt_scalar(0.0);
@@ -106,14 +113,17 @@ impl Tensor {
         })
     }
 
+    /// Elementwise hyperbolic tangent.
     pub fn tanh(&self) -> Tensor {
         self.unary_op(UnaryOp::Tanh, "tanh", |g, _, y| g * &((y * y).neg() + 1.0))
     }
 
+    /// Elementwise logistic sigmoid `1 / (1 + e^-x)`.
     pub fn sigmoid(&self) -> Tensor {
         self.unary_op(UnaryOp::Sigmoid, "sigmoid", |g, _, y| g * &(y * &(y.neg() + 1.0)))
     }
 
+    /// Elementwise `max(x, 0)`.
     pub fn relu(&self) -> Tensor {
         self.unary_op(UnaryOp::Relu, "relu", |g, x, _| g * &x.gt_scalar(0.0))
     }
@@ -128,10 +138,12 @@ impl Tensor {
         self * &self.sigmoid()
     }
 
+    /// Elementwise sine.
     pub fn sin(&self) -> Tensor {
         self.unary_op(UnaryOp::Sin, "sin", |g, x, _| g * &x.unary_raw(UnaryOp::Cos))
     }
 
+    /// Elementwise cosine.
     pub fn cos(&self) -> Tensor {
         self.unary_op(UnaryOp::Cos, "cos", |g, x, _| (g * &x.unary_raw(UnaryOp::Sin)).neg())
     }
@@ -170,20 +182,24 @@ impl Tensor {
         })
     }
 
+    /// `self + other` with broadcasting and dtype promotion.
     pub fn add(&self, other: &Tensor) -> Tensor {
         self.binary_op(BinaryOp::Add, other, "add", |g, a, b| {
             (need(a).then(|| g.clone()), need(b).then(|| g.clone()))
         })
     }
 
+    /// `self - other` with broadcasting and dtype promotion.
     pub fn sub(&self, other: &Tensor) -> Tensor {
         self.binary_op(BinaryOp::Sub, other, "sub", |g, a, b| (need(a).then(|| g.clone()), need(b).then(|| g.neg())))
     }
 
+    /// `self * other` with broadcasting and dtype promotion.
     pub fn mul(&self, other: &Tensor) -> Tensor {
         self.binary_op(BinaryOp::Mul, other, "mul", |g, a, b| (need(a).then(|| g * b), need(b).then(|| g * a)))
     }
 
+    /// `self / other` with broadcasting and dtype promotion.
     pub fn div(&self, other: &Tensor) -> Tensor {
         self.binary_op(BinaryOp::Div, other, "div", |g, a, b| {
             (need(a).then(|| g / b), need(b).then(|| (&(g * a) / &(b * b)).neg()))
@@ -250,31 +266,38 @@ impl Tensor {
         Tensor::scalar(v, self.device())
     }
 
+    /// `self + v`.
     pub fn add_scalar(&self, v: f32) -> Tensor {
         self.add(&self.scalar_like(v))
     }
 
+    /// `self * v`.
     pub fn mul_scalar(&self, v: f32) -> Tensor {
         self.mul(&self.scalar_like(v))
     }
 
     // comparisons (not differentiable; return 0/1 tensors)
+    /// 1 where `self == other`, else 0 (broadcasting; not differentiable).
     pub fn eq_t(&self, other: &Tensor) -> Tensor {
         self.binary_raw(BinaryOp::Eq, other)
     }
 
+    /// 1 where `self > other`, else 0 (broadcasting; not differentiable).
     pub fn gt(&self, other: &Tensor) -> Tensor {
         self.binary_raw(BinaryOp::Gt, other)
     }
 
+    /// 1 where `self < other`, else 0 (broadcasting; not differentiable).
     pub fn lt(&self, other: &Tensor) -> Tensor {
         self.binary_raw(BinaryOp::Lt, other)
     }
 
+    /// 1 where `self > v`, else 0 (not differentiable).
     pub fn gt_scalar(&self, v: f32) -> Tensor {
         self.gt(&self.scalar_like(v))
     }
 
+    /// 1 where `self < v`, else 0 (not differentiable).
     pub fn lt_scalar(&self, v: f32) -> Tensor {
         self.lt(&self.scalar_like(v))
     }
@@ -325,6 +348,7 @@ impl Tensor {
         (ax, keep, drop)
     }
 
+    /// Sum along `dim` (negative counts from the end); `keepdim` keeps it as size 1.
     pub fn sum(&self, dim: isize, keepdim: bool) -> Tensor {
         let (ax, keep, drop) = self.reduced_shapes(dim);
         let s = self.backend().reduce(ReduceOp::Sum, &self.storage(), self.shape(), ax);
@@ -341,11 +365,13 @@ impl Tensor {
         self.reshape(&[self.numel()]).sum(0, false)
     }
 
+    /// Mean along `dim`.
     pub fn mean(&self, dim: isize, keepdim: bool) -> Tensor {
         let n = self.dim(dim) as f32;
         self.sum(dim, keepdim) * (1.0 / n)
     }
 
+    /// Mean of all elements (rank-0 result).
     pub fn mean_all(&self) -> Tensor {
         self.sum_all() * (1.0 / self.numel() as f32)
     }
@@ -370,11 +396,12 @@ impl Tensor {
         })
     }
 
+    /// Min along `dim`; the gradient flows to the minimal element(s).
     pub fn min(&self, dim: isize, keepdim: bool) -> Tensor {
         self.neg().max(dim, keepdim).neg()
     }
 
-    /// Index of the max along `dim` (as f32, not differentiable).
+    /// Index of the max along `dim` as an `I32` tensor (not differentiable).
     pub fn argmax(&self, dim: isize, keepdim: bool) -> Tensor {
         let (ax, keep, drop) = self.reduced_shapes(dim);
         let s = self.backend().reduce(ReduceOp::ArgMax, &self.storage(), self.shape(), ax);
@@ -407,12 +434,14 @@ impl Tensor {
         self.reshape(&resolved)
     }
 
+    /// Merge dims `start_dim..` into one: `[B, C, H, W]` -> `[B, C*H*W]` for `start_dim = 1`.
     pub fn flatten(&self, start_dim: usize) -> Tensor {
         let mut s = self.shape()[..start_dim].to_vec();
         s.push(self.shape()[start_dim..].iter().product());
         self.reshape(&s)
     }
 
+    /// Insert a size-1 dim at `dim`.
     pub fn unsqueeze(&self, dim: isize) -> Tensor {
         let d = norm_dim(dim, self.rank() + 1);
         let mut s = self.shape().to_vec();
@@ -420,6 +449,7 @@ impl Tensor {
         self.reshape(&s)
     }
 
+    /// Remove dim `dim`, which must have size 1 (panics otherwise).
     pub fn squeeze(&self, dim: isize) -> Tensor {
         let d = norm_dim(dim, self.rank());
         assert_eq!(self.shape()[d], 1, "squeeze: dim {d} has size {}", self.shape()[d]);
@@ -428,6 +458,7 @@ impl Tensor {
         self.reshape(&s)
     }
 
+    /// Reorder dims: output dim `i` is input dim `perm[i]` (copy).
     pub fn permute(&self, perm: &[usize]) -> Tensor {
         assert_eq!(perm.len(), self.rank(), "permute: wrong number of dims");
         if perm.iter().enumerate().all(|(i, &p)| i == p) {
@@ -442,6 +473,7 @@ impl Tensor {
         Tensor::from_op(s, out_shape, vec![self.clone()], "permute", move |g| vec![Some(g.permute(&inv))])
     }
 
+    /// Swap dims `d0` and `d1` (copy).
     pub fn transpose(&self, d0: isize, d1: isize) -> Tensor {
         let (a, b) = (norm_dim(d0, self.rank()), norm_dim(d1, self.rank()));
         let mut perm: Vec<usize> = (0..self.rank()).collect();

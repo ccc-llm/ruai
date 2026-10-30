@@ -19,6 +19,7 @@ pub(crate) struct Node {
     name: &'static str,
 }
 
+/// Shared state behind a [`Tensor`] (storage, shape, gradient, graph node).
 pub struct TensorImpl {
     id: usize,
     storage: RwLock<Storage>,
@@ -28,7 +29,9 @@ pub struct TensorImpl {
     node: Option<Node>,
 }
 
-/// An n-dimensional `f32` array with optional gradient tracking.
+/// An n-dimensional array with optional gradient tracking. Elements are one
+/// [`DType`] (`F32`, `F16`, `BF16`, `I32` or `I8`) and live on one [`Device`]
+/// (CPU, or MPS / CUDA with the matching cargo feature).
 /// Cloning a `Tensor` is cheap: clones share the same underlying data.
 #[derive(Clone)]
 pub struct Tensor(Arc<TensorImpl>);
@@ -51,6 +54,7 @@ pub struct AutocastGuard {
 }
 
 impl AutocastGuard {
+    /// Enter an autocast region with `dtype` (`F16`/`BF16`, panics otherwise) or disable autocast with `None`.
     pub fn new(dtype: Option<DType>) -> Self {
         if let Some(d) = dtype {
             assert!(d.is_half(), "autocast dtype must be F16 or BF16, got {d}");
@@ -75,6 +79,7 @@ pub fn autocast<T>(dtype: DType, f: impl FnOnce() -> T) -> T {
     f()
 }
 
+/// Whether operations are currently recorded for autograd (false inside [`no_grad`]).
 pub fn is_grad_enabled() -> bool {
     GRAD_ENABLED.with(|g| g.get())
 }
@@ -85,6 +90,7 @@ pub struct NoGradGuard {
 }
 
 impl NoGradGuard {
+    /// Disable grad mode until the guard is dropped.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let prev = GRAD_ENABLED.with(|g| g.replace(false));
@@ -146,6 +152,7 @@ impl Tensor {
         }
     }
 
+    /// An `F32` tensor from row-major data (panics if `data.len()` doesn't match `shape`).
     pub fn from_vec(data: Vec<f32>, shape: &[usize], device: Device) -> Tensor {
         assert_eq!(data.len(), numel(shape), "data length {} != numel of {shape:?}", data.len());
         Self::from_storage(backend_for(device).from_f32(data), shape.to_vec())
@@ -168,6 +175,7 @@ impl Tensor {
         Self::from_vec_i32(idx.iter().map(|&i| i as i32).collect(), shape, device)
     }
 
+    /// An `F32` CPU tensor copied from `data`.
     pub fn from_slice(data: &[f32], shape: &[usize]) -> Tensor {
         Self::from_vec(data.to_vec(), shape, Device::Cpu)
     }
@@ -177,22 +185,27 @@ impl Tensor {
         Self::from_vec(vec![v], &[], device)
     }
 
+    /// An `F32` tensor filled with `value`.
     pub fn full(shape: &[usize], value: f32, device: Device) -> Tensor {
         Self::from_storage(backend_for(device).full(numel(shape), value, DType::F32), shape.to_vec())
     }
 
+    /// An `F32` tensor of zeros.
     pub fn zeros(shape: &[usize], device: Device) -> Tensor {
         Self::full(shape, 0.0, device)
     }
 
+    /// An `F32` tensor of ones.
     pub fn ones(shape: &[usize], device: Device) -> Tensor {
         Self::full(shape, 1.0, device)
     }
 
+    /// `F32` zeros with `t`'s shape and device (not its dtype).
     pub fn zeros_like(t: &Tensor) -> Tensor {
         Self::zeros(t.shape(), t.device())
     }
 
+    /// `F32` ones with `t`'s shape and device (not its dtype).
     pub fn ones_like(t: &Tensor) -> Tensor {
         Self::ones(t.shape(), t.device())
     }
@@ -218,6 +231,7 @@ impl Tensor {
         self
     }
 
+    /// Turn gradient tracking on or off. Panics for non-float tensors, or when disabling it on a non-leaf.
     pub fn set_requires_grad(&self, v: bool) {
         assert!(!v || self.dtype().is_float(), "only floating-point tensors can require grad");
         assert!(self.0.node.is_none() || v, "cannot disable grad on a non-leaf tensor");
@@ -228,18 +242,22 @@ impl Tensor {
     // accessors
     // ------------------------------------------------------------------
 
+    /// Unique id of this tensor (shared by its clones).
     pub fn id(&self) -> usize {
         self.0.id
     }
 
+    /// Dimensions, outermost first.
     pub fn shape(&self) -> &[usize] {
         &self.0.shape
     }
 
+    /// Number of dimensions.
     pub fn rank(&self) -> usize {
         self.0.shape.len()
     }
 
+    /// Total number of elements.
     pub fn numel(&self) -> usize {
         numel(&self.0.shape)
     }
@@ -249,10 +267,12 @@ impl Tensor {
         self.0.shape[crate::shape::norm_dim(d, self.rank())]
     }
 
+    /// The underlying storage (a cheap reference-counted clone).
     pub fn storage(&self) -> Storage {
         self.0.storage.read().unwrap().clone()
     }
 
+    /// Device the data lives on.
     pub fn device(&self) -> Device {
         self.0.storage.read().unwrap().device()
     }
@@ -261,6 +281,7 @@ impl Tensor {
         backend_for(self.device())
     }
 
+    /// Element type.
     pub fn dtype(&self) -> DType {
         self.0.storage.read().unwrap().dtype()
     }
@@ -282,10 +303,12 @@ impl Tensor {
         }
     }
 
+    /// Whether gradients are tracked for this tensor.
     pub fn requires_grad(&self) -> bool {
         self.0.requires_grad.load(Ordering::Relaxed)
     }
 
+    /// `true` if not produced by a recorded op (e.g. a parameter or input).
     pub fn is_leaf(&self) -> bool {
         self.0.node.is_none()
     }
@@ -316,10 +339,12 @@ impl Tensor {
         self.0.grad.read().unwrap().clone()
     }
 
+    /// Overwrite the accumulated gradient.
     pub fn set_grad(&self, g: Option<Tensor>) {
         *self.0.grad.write().unwrap() = g;
     }
 
+    /// Clear the accumulated gradient.
     pub fn zero_grad(&self) {
         self.set_grad(None);
     }
@@ -361,6 +386,7 @@ impl Tensor {
         self.backward_with(Tensor::ones_like(self));
     }
 
+    /// Reverse-mode differentiation with an explicit seed gradient (same shape as `self`); leaf gradients accumulate into `.grad()`.
     pub fn backward_with(&self, seed: Tensor) {
         assert!(self.requires_grad(), "backward() on a tensor that does not require grad");
         assert_eq!(seed.shape(), self.shape(), "seed gradient shape mismatch");

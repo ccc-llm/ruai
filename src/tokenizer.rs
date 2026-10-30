@@ -85,6 +85,7 @@ pub fn pre_tokenize(text: &str) -> Vec<&str> {
     out
 }
 
+/// GPT-2 byte-level BPE tokenizer (`vocab.json` + `merges.txt`).
 pub struct Gpt2Tokenizer {
     encoder: HashMap<String, usize>,
     decoder: Vec<String>,
@@ -105,6 +106,7 @@ impl Gpt2Tokenizer {
         Self::from_files(dir.join("vocab.json"), dir.join("merges.txt"))
     }
 
+    /// Load from explicit `vocab.json` and `merges.txt` paths.
     pub fn from_files(vocab: impl AsRef<Path>, merges: impl AsRef<Path>) -> io::Result<Self> {
         Self::from_strings(&std::fs::read_to_string(vocab)?, &std::fs::read_to_string(merges)?)
     }
@@ -129,6 +131,7 @@ impl Gpt2Tokenizer {
         Ok(Gpt2Tokenizer { encoder, decoder, ranks, byte_to_char, char_to_byte, cache: Mutex::new(HashMap::new()) })
     }
 
+    /// Number of token ids (max id + 1).
     pub fn vocab_size(&self) -> usize {
         self.decoder.len()
     }
@@ -168,6 +171,7 @@ impl Gpt2Tokenizer {
         ids
     }
 
+    /// Encode text to token ids (panics if a BPE token is missing from the vocab).
     pub fn encode(&self, text: &str) -> Vec<usize> {
         let mut out = Vec::new();
         for piece in pre_tokenize(text) {

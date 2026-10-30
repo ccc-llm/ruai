@@ -12,33 +12,50 @@ use crate::functional as F;
 use crate::tensor::Tensor;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Encoder-decoder hyperparameters.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Seq2SeqConfig {
+    /// Source vocabulary size.
     pub src_vocab: usize,
+    /// Target vocabulary size.
     pub tgt_vocab: usize,
+    /// Model width.
     pub dim: usize,
+    /// Attention heads.
     pub heads: usize,
+    /// Encoder blocks.
     pub encoder_layers: usize,
+    /// Decoder blocks.
     pub decoder_layers: usize,
+    /// Feed-forward hidden size.
     pub ff_hidden: usize,
     /// Maximum source and target length (learned position embeddings).
     pub max_len: usize,
+    /// Dropout probability (training only).
     pub dropout: f32,
 }
 
 /// Pre-LN decoder block: causal self-attention, cross-attention, feed-forward.
 pub struct DecoderBlock {
+    /// Norm before self-attention.
     pub ln1: LayerNorm,
+    /// Causal self-attention over the target.
     pub self_attn: MultiHeadAttention,
+    /// Norm before cross-attention.
     pub ln2: LayerNorm,
+    /// Attention from the target to the encoder memory.
     pub cross_attn: MultiHeadAttention,
+    /// Norm before the feed-forward.
     pub ln3: LayerNorm,
+    /// Position-wise MLP.
     pub ffn: FeedForward,
+    /// Dropout on each residual branch.
     pub dropout: f32,
     training: AtomicBool,
 }
 
 impl DecoderBlock {
+    /// A decoder block of width `dim`.
     pub fn new(dim: usize, heads: usize, ff_hidden: usize, dropout: f32, device: Device) -> Self {
         DecoderBlock {
             ln1: LayerNorm::new(dim, device),
@@ -100,15 +117,25 @@ impl Module for DecoderBlock {
 
 /// Encoder-decoder Transformer.
 pub struct Seq2Seq {
+    /// Hyperparameters.
     pub config: Seq2SeqConfig,
+    /// Source token embeddings.
     pub src_emb: Embedding,
+    /// Source position embeddings.
     pub src_pos: Embedding,
+    /// Target token embeddings.
     pub tgt_emb: Embedding,
+    /// Target position embeddings.
     pub tgt_pos: Embedding,
+    /// Encoder blocks (bidirectional).
     pub encoder: Vec<TransformerBlock>,
+    /// Norm on the encoder output.
     pub encoder_norm: LayerNorm,
+    /// Decoder blocks.
     pub decoder: Vec<DecoderBlock>,
+    /// Norm before the output head.
     pub decoder_norm: LayerNorm,
+    /// Output projection to target logits.
     pub head: Linear,
     training: AtomicBool,
 }
@@ -118,6 +145,7 @@ fn positions(start: usize, t: usize, device: Device) -> Tensor {
 }
 
 impl Seq2Seq {
+    /// Randomly initialized model.
     pub fn new(config: Seq2SeqConfig, device: Device) -> Self {
         let c = config;
         Seq2Seq {

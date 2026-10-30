@@ -4,6 +4,7 @@
 use rustnn::amp::{autocast, GradScaler};
 use rustnn::functional as F;
 use rustnn::nn::{self, Module, Sequential};
+use rustnn::generation::Sampler;
 use rustnn::optim::{Adam, Optimizer, SGD};
 use rustnn::{rand, serialize, DType, Device, Tensor};
 
@@ -175,8 +176,8 @@ fn train_gpt_amp(d: Option<DType>) -> (f32, Vec<usize>) {
     }
     model.eval();
     let out = match d {
-        Some(d) => autocast(d, || model.generate(&[0], 7, 0.0)),
-        None => model.generate(&[0], 7, 0.0),
+        Some(d) => autocast(d, || model.generate(&[0], 7, &mut Sampler::greedy())),
+        None => model.generate(&[0], 7, &mut Sampler::greedy()),
     };
     (last, out)
 }

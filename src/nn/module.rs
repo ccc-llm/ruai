@@ -7,6 +7,7 @@ use crate::tensor::Tensor;
 /// `named_parameters` / `named_buffers`; container modules forward
 /// `set_training` to their children.
 pub trait Module: Send + Sync {
+    /// Apply the module to `x`.
     fn forward(&self, x: &Tensor) -> Tensor;
 
     /// Trainable tensors, with hierarchical names like `"0.weight"`.
@@ -22,14 +23,17 @@ pub trait Module: Send + Sync {
     /// Switch between training and evaluation behaviour (dropout, batch norm).
     fn set_training(&self, _training: bool) {}
 
+    /// Trainable tensors without their names.
     fn parameters(&self) -> Vec<Tensor> {
         self.named_parameters().into_iter().map(|(_, t)| t).collect()
     }
 
+    /// Switch to training mode.
     fn train(&self) {
         self.set_training(true);
     }
 
+    /// Switch to evaluation mode.
     fn eval(&self) {
         self.set_training(false);
     }
@@ -61,12 +65,14 @@ pub trait Module: Send + Sync {
         }
     }
 
+    /// Clear the gradients of all parameters.
     fn zero_grad(&self) {
         for p in self.parameters() {
             p.zero_grad();
         }
     }
 
+    /// Total number of trainable scalars.
     fn num_parameters(&self) -> usize {
         self.parameters().iter().map(|p| p.numel()).sum()
     }
@@ -99,6 +105,7 @@ pub struct Sequential {
 }
 
 impl Sequential {
+    /// An empty chain.
     pub fn new() -> Self {
         Self::default()
     }
@@ -110,14 +117,17 @@ impl Sequential {
         self
     }
 
+    /// Append a module.
     pub fn push<M: Module + 'static>(&mut self, m: M) {
         self.layers.push(Box::new(m));
     }
 
+    /// Number of modules.
     pub fn len(&self) -> usize {
         self.layers.len()
     }
 
+    /// Whether the chain is empty.
     pub fn is_empty(&self) -> bool {
         self.layers.is_empty()
     }

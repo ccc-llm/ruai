@@ -63,7 +63,7 @@ fn kv_cache_matches_full_forward() {
         let full = gpt.forward_ids(&ids, 1, 10);
         check_cache(&full, |t, c| gpt.forward_cached(t, c), &ids, &[3, 1, 1, 5]);
         // cached generation == recomputing everything (also past max_len: window slides)
-        assert_eq!(gpt.generate(&ids[..3], 20, 0.0), gpt.generate_uncached(&ids[..3], 20));
+        assert_eq!(gpt.generate(&ids[..3], 20, &mut Sampler::greedy()), gpt.generate_uncached(&ids[..3], 20));
     });
 }
 

@@ -11,6 +11,7 @@
 use super::Optimizer;
 use std::f32::consts::PI;
 
+/// A learning-rate schedule: a function of the step number.
 pub trait LrScheduler {
     /// Learning rate for (0-based) training step `step`.
     fn lr_at(&self, step: usize) -> f32;
@@ -45,8 +46,11 @@ impl LrScheduler for ConstantLr {
 /// Multiply by `gamma` every `step_size` steps.
 #[derive(Clone, Copy, Debug)]
 pub struct StepLr {
+    /// Learning rate at step 0.
     pub base_lr: f32,
+    /// Steps between decays.
     pub step_size: usize,
+    /// Decay factor applied every `step_size` steps.
     pub gamma: f32,
 }
 
@@ -59,7 +63,9 @@ impl LrScheduler for StepLr {
 /// Multiply by `gamma` every step.
 #[derive(Clone, Copy, Debug)]
 pub struct ExponentialLr {
+    /// Learning rate at step 0.
     pub base_lr: f32,
+    /// Decay factor per step.
     pub gamma: f32,
 }
 
@@ -72,9 +78,13 @@ impl LrScheduler for ExponentialLr {
 /// Linear warmup, then cosine decay from `base_lr` to `min_lr` at `total`.
 #[derive(Clone, Copy, Debug)]
 pub struct CosineLr {
+    /// Peak learning rate (reached at the end of warmup).
     pub base_lr: f32,
+    /// Final learning rate (at and after `total`).
     pub min_lr: f32,
+    /// Number of linear warmup steps (0 = none).
     pub warmup: usize,
+    /// Step at which decay reaches `min_lr`.
     pub total: usize,
 }
 
@@ -91,9 +101,13 @@ impl LrScheduler for CosineLr {
 /// Linear warmup, then linear decay from `base_lr` to `min_lr` at `total`.
 #[derive(Clone, Copy, Debug)]
 pub struct LinearLr {
+    /// Peak learning rate (reached at the end of warmup).
     pub base_lr: f32,
+    /// Final learning rate (at and after `total`).
     pub min_lr: f32,
+    /// Number of linear warmup steps (0 = none).
     pub warmup: usize,
+    /// Step at which decay reaches `min_lr`.
     pub total: usize,
 }
 

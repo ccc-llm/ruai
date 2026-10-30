@@ -2,8 +2,10 @@
 
 use std::fmt;
 
+/// A compute device.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Device {
+    /// Host CPU (always available; the default).
     #[default]
     Cpu,
     /// NVIDIA GPU (requires the `cuda` feature), with device ordinal.
@@ -13,11 +15,13 @@ pub enum Device {
 }
 
 impl Device {
+    /// `true` for [`Device::Cpu`].
     pub fn is_cpu(&self) -> bool {
         matches!(self, Device::Cpu)
     }
 
-    /// Whether this device's backend was compiled into this build.
+    /// Whether this device can be used: its backend was compiled in (feature
+    /// `mps` / `cuda`) and a matching GPU is present at runtime.
     pub fn is_available(&self) -> bool {
         match self {
             Device::Cpu => true,

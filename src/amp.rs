@@ -27,12 +27,16 @@ use crate::tensor::{no_grad, Tensor};
 /// The loss is multiplied by `scale` before `backward()` so small F16
 /// gradients do not flush to zero. Before the optimizer step the gradients
 /// are divided by `scale`; if any is inf/NaN the step is skipped and the
-/// scale halved, and after `growth_interval` clean steps it is doubled.
+/// scale multiplied by `backoff_factor` (default 0.5); after
+/// `growth_interval` clean steps it is multiplied by `growth_factor` (default 2).
 #[derive(Clone, Debug)]
 pub struct GradScaler {
     scale: f32,
+    /// Scale multiplier after `growth_interval` clean steps (default 2).
     pub growth_factor: f32,
+    /// Scale multiplier after an overflow (default 0.5).
     pub backoff_factor: f32,
+    /// Consecutive clean steps before growing the scale (default 2000).
     pub growth_interval: u32,
     good_steps: u32,
     /// `Some(found_inf)` once `unscale` ran for the current step.
@@ -47,10 +51,12 @@ impl Default for GradScaler {
 }
 
 impl GradScaler {
+    /// A scaler with initial scale `65536` (2^16).
     pub fn new() -> Self {
         Self::with_scale(65536.0)
     }
 
+    /// A scaler with the given initial scale.
     pub fn with_scale(scale: f32) -> Self {
         GradScaler {
             scale,
@@ -63,6 +69,7 @@ impl GradScaler {
         }
     }
 
+    /// Current loss scale.
     pub fn scale_value(&self) -> f32 {
         self.scale
     }

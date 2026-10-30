@@ -1,5 +1,6 @@
 //! Shape helpers (all storage is contiguous, row-major).
 
+/// Number of elements in `shape` (1 for a scalar `[]`).
 pub fn numel(shape: &[usize]) -> usize {
     shape.iter().product()
 }

@@ -2,9 +2,11 @@
 //!
 //! A small PyTorch-like deep learning engine:
 //!
-//! * [`Tensor`] — n-dimensional `f32` arrays with reverse-mode autograd
-//! * [`nn`] — layers (Linear, Conv2d, BatchNorm2d, LayerNorm, Embedding,
-//!   MultiHeadAttention, TransformerBlock, GPT, ...)
+//! * [`Tensor`] — n-dimensional arrays (F32 / F16 / BF16 / I32 / I8) on CPU,
+//!   Apple GPU (`mps` feature) or NVIDIA GPU (`cuda` feature), with
+//!   reverse-mode autograd
+//! * [`nn`] — layers (Linear, Conv2d, BatchNorm2d, LayerNorm, RMSNorm,
+//!   Embedding, MultiHeadAttention, TransformerBlock, SwiGLU, GPT, ...)
 //! * [`functional`] — softmax, cross-entropy, conv2d, pooling, attention, ...
 //! * [`optim`] — SGD, Adam, AdamW, gradient clipping, LR schedulers ([`optim::lr`])
 //! * [`serialize`] — save / load weights (safetensors, PyTorch/HF compatible)
@@ -15,8 +17,8 @@
 //! * [`nn::resnet`] / [`nn::vit`] / [`nn::seq2seq`] — ResNet, Vision Transformer, encoder-decoder Transformer
 //! * [`data`] — `Dataset` / `DataLoader` with multi-threaded prefetching
 //! * [`metrics`] — running averages, accuracy, throughput
-//! * [`backend`] — the device abstraction (CPU today; CUDA and MPS plug in
-//!   by implementing [`backend::Backend`])
+//! * [`backend`] — the device abstraction: every op is built from the
+//!   primitives of [`backend::Backend`] (CPU, MPS and CUDA implement them)
 //!
 //! ```
 //! use rustnn::{Tensor, Device};
@@ -25,6 +27,29 @@
 //! y.backward();
 //! assert_eq!(x.grad().unwrap().to_vec(), vec![2.0, 4.0, 6.0]);
 //! ```
+//!
+//! A training step looks like PyTorch:
+//!
+//! ```
+//! use rustnn::prelude::*;
+//! use rustnn::optim::Adam;
+//!
+//! let model = nn::Sequential::new()
+//!     .add(nn::Linear::new(4, 16, Device::Cpu))
+//!     .add(nn::ReLU)
+//!     .add(nn::Linear::new(16, 3, Device::Cpu));
+//! let mut opt = Adam::new(model.parameters(), 1e-2);
+//! let x = Tensor::randn(&[8, 4], Device::Cpu);
+//! let y = [0usize, 1, 2, 0, 1, 2, 0, 1];
+//! for _ in 0..5 {
+//!     opt.zero_grad();
+//!     let loss = F::cross_entropy(&model.forward(&x), &y, 0.0);
+//!     loss.backward();
+//!     opt.step();
+//! }
+//! ```
+
+#![warn(missing_docs)]
 
 pub mod amp;
 pub mod backend;
@@ -53,6 +78,7 @@ pub mod prelude {
     pub use crate::functional as F;
     pub use crate::nn::{self, Module};
     pub use crate::data::{DataLoader, Dataset};
+    pub use crate::generation::Sampler;
     pub use crate::optim::{self, lr::LrScheduler, Optimizer};
     pub use crate::{autocast, no_grad, DType, Device, IntoIndices, Tensor};
 }
