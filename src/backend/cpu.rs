@@ -1,11 +1,20 @@
 //! CPU backend: host `Vec` storage, parallelized with rayon. Matmul uses the
 //! pure-Rust `matrixmultiply` GEMM (or Apple Accelerate with `--features accelerate`).
+//!
+//! The kernels (`CpuCore`) work on `F32` (and `I32` indices). `F16` / `BF16`
+//! are handled by the public `CpuBackend` wrapper: inputs are widened to f32,
+//! the f32 kernel runs, and the result is rounded back. That is exact up to
+//! the final rounding but not faster than f32 — on CPUs half precision is a
+//! storage format; the speedups are on GPUs.
 
 use super::{
     reference::Unfused, AdamParams, Backend, BinaryOp, Conv2dGeom, CpuStorage, DType, MatmulSpec, ReduceOp, Storage, UnaryOp,
 };
 use crate::device::Device;
 use crate::shape::{broadcast_strides, numel, split_axis, strides};
+use half::slice::HalfFloatSliceExt;
+use half::vec::HalfFloatVecExt;
+use half::{bf16, f16};
 use rayon::prelude::*;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -13,7 +22,10 @@ use std::sync::Arc;
 /// Below this many elements, work is done on the calling thread.
 const PAR_THRESHOLD: usize = 1 << 15;
 
-pub struct CpuBackend;
+/// The f32 / i32 kernels.
+pub(crate) struct CpuCore;
+
+static CORE: CpuCore = CpuCore;
 
 fn f32s(s: &Storage) -> &[f32] {
     match s {
@@ -36,8 +48,20 @@ fn as_f32(s: &Storage) -> Cow<'_, [f32]> {
     match s {
         Storage::Cpu(CpuStorage::F32(v)) => Cow::Borrowed(v.as_slice()),
         Storage::Cpu(CpuStorage::I32(v)) => Cow::Owned(v.iter().map(|&x| x as f32).collect()),
+        Storage::Cpu(CpuStorage::F16(v)) => Cow::Owned(v.to_f32_vec()),
+        Storage::Cpu(CpuStorage::BF16(v)) => Cow::Owned(v.to_f32_vec()),
         #[allow(unreachable_patterns)]
         _ => panic!("CPU backend received a non-CPU storage ({})", s.device()),
+    }
+}
+
+/// Round f32 values into a storage of `dtype`.
+fn from_f32_as(v: Vec<f32>, dtype: DType) -> Storage {
+    match dtype {
+        DType::F32 => wrap(v),
+        DType::F16 => Storage::Cpu(CpuStorage::F16(Arc::new(Vec::<f16>::from_f32_slice(&v)))),
+        DType::BF16 => Storage::Cpu(CpuStorage::BF16(Arc::new(Vec::<bf16>::from_f32_slice(&v)))),
+        DType::I32 => wrap_i32(v.into_iter().map(|x| x as i32).collect()),
     }
 }
 
@@ -243,7 +267,7 @@ mod accelerate {
     pub const TRANS: i32 = 112;
 }
 
-impl Backend for CpuBackend {
+impl Backend for CpuCore {
     fn device(&self) -> Device {
         Device::Cpu
     }
@@ -263,14 +287,14 @@ impl Backend for CpuBackend {
     fn to_i32(&self, x: &Storage) -> Vec<i32> {
         match x {
             Storage::Cpu(CpuStorage::I32(v)) => v.to_vec(),
-            _ => f32s(x).iter().map(|&v| v as i32).collect(),
+            _ => as_f32(x).iter().map(|&v| v as i32).collect(),
         }
     }
 
     fn full(&self, len: usize, value: f32, dtype: DType) -> Storage {
         match dtype {
-            DType::F32 => wrap(vec![value; len]),
             DType::I32 => wrap_i32(vec![value as i32; len]),
+            d => from_f32_as(vec![value; len], d),
         }
     }
 
@@ -279,8 +303,8 @@ impl Backend for CpuBackend {
             return x.clone();
         }
         match dtype {
-            DType::F32 => wrap(self.to_f32(x)),
             DType::I32 => wrap_i32(self.to_i32(x)),
+            d => from_f32_as(self.to_f32(x), d),
         }
     }
 
@@ -529,6 +553,8 @@ impl Backend for CpuBackend {
         match x {
             Storage::Cpu(CpuStorage::F32(v)) => wrap(narrow_t(v, shape, axis, start, len)),
             Storage::Cpu(CpuStorage::I32(v)) => wrap_i32(narrow_t(v, shape, axis, start, len)),
+            Storage::Cpu(CpuStorage::F16(v)) => Storage::Cpu(CpuStorage::F16(Arc::new(narrow_t(v, shape, axis, start, len)))),
+            Storage::Cpu(CpuStorage::BF16(v)) => Storage::Cpu(CpuStorage::BF16(Arc::new(narrow_t(v, shape, axis, start, len)))),
             #[allow(unreachable_patterns)]
             _ => panic!("CPU backend received a non-CPU storage"),
         }
@@ -538,6 +564,11 @@ impl Backend for CpuBackend {
         match xs[0].dtype() {
             DType::F32 => wrap(cat_t(&xs.iter().map(|s| f32s(s)).collect::<Vec<_>>(), shapes, axis)),
             DType::I32 => wrap_i32(cat_t(&xs.iter().map(|s| i32s(s)).collect::<Vec<_>>(), shapes, axis)),
+            d => {
+                // half: concatenate in f32 (exact) and round back
+                let fs: Vec<Vec<f32>> = xs.iter().map(|s| as_f32(s).into_owned()).collect();
+                from_f32_as(cat_t(&fs.iter().map(Vec::as_slice).collect::<Vec<_>>(), shapes, axis), d)
+            }
         }
     }
 
@@ -808,8 +839,136 @@ impl Backend for CpuBackend {
     }
 }
 
-impl CpuBackend {
+impl CpuCore {
     fn static_ref(&self) -> &'static dyn Backend {
         super::backend_for(Device::Cpu)
+    }
+}
+
+/// The CPU backend: `CpuCore` plus half-precision handling (see module docs).
+pub struct CpuBackend;
+
+/// Widen a half storage to f32; returns the original dtype to restore.
+fn up(s: &Storage) -> (Cow<'_, Storage>, Option<DType>) {
+    match s.dtype() {
+        d @ (DType::F16 | DType::BF16) => (Cow::Owned(CORE.cast(s, DType::F32)), Some(d)),
+        _ => (Cow::Borrowed(s), None),
+    }
+}
+
+fn down(s: Storage, d: Option<DType>) -> Storage {
+    match d {
+        Some(d) if s.dtype() == DType::F32 => CORE.cast(&s, d),
+        _ => s,
+    }
+}
+
+impl Backend for CpuBackend {
+    fn device(&self) -> Device {
+        Device::Cpu
+    }
+    fn from_f32(&self, data: Vec<f32>) -> Storage {
+        CORE.from_f32(data)
+    }
+    fn from_i32(&self, data: Vec<i32>) -> Storage {
+        CORE.from_i32(data)
+    }
+    fn to_f32(&self, x: &Storage) -> Vec<f32> {
+        CORE.to_f32(x)
+    }
+    fn to_i32(&self, x: &Storage) -> Vec<i32> {
+        CORE.to_i32(x)
+    }
+    fn full(&self, len: usize, value: f32, dtype: DType) -> Storage {
+        CORE.full(len, value, dtype)
+    }
+    fn cast(&self, x: &Storage, dtype: DType) -> Storage {
+        CORE.cast(x, dtype)
+    }
+    fn unary(&self, op: UnaryOp, x: &Storage) -> Storage {
+        let (x, d) = up(x);
+        down(CORE.unary(op, &x), d)
+    }
+    fn binary(&self, op: BinaryOp, a: &Storage, sa: &[usize], b: &Storage, sb: &[usize], so: &[usize]) -> Storage {
+        let ((a, da), (b, db)) = (up(a), up(b));
+        down(CORE.binary(op, &a, sa, &b, sb, so), da.or(db))
+    }
+    fn expand(&self, x: &Storage, s: &[usize], so: &[usize]) -> Storage {
+        let (x, d) = up(x);
+        down(CORE.expand(&x, s, so), d)
+    }
+    fn where_cond(&self, c: &Storage, a: &Storage, b: &Storage) -> Storage {
+        let ((c, _), (a, d), (b, _)) = (up(c), up(a), up(b));
+        down(CORE.where_cond(&c, &a, &b), d)
+    }
+    fn reduce(&self, op: ReduceOp, x: &Storage, s: &[usize], axis: usize) -> Storage {
+        let (x, d) = up(x);
+        down(CORE.reduce(op, &x, s, axis), d) // ArgMax stays I32
+    }
+    fn matmul(&self, a: &Storage, b: &Storage, spec: MatmulSpec) -> Storage {
+        let ((a, d), (b, _)) = (up(a), up(b));
+        down(CORE.matmul(&a, &b, spec), d)
+    }
+    fn permute(&self, x: &Storage, s: &[usize], p: &[usize]) -> Storage {
+        let (x, d) = up(x);
+        down(CORE.permute(&x, s, p), d)
+    }
+    fn narrow(&self, x: &Storage, s: &[usize], axis: usize, start: usize, len: usize) -> Storage {
+        CORE.narrow(x, s, axis, start, len)
+    }
+    fn cat(&self, xs: &[&Storage], shapes: &[&[usize]], axis: usize) -> Storage {
+        CORE.cat(xs, shapes, axis)
+    }
+    fn index_select(&self, t: &Storage, cols: usize, idx: &Storage) -> Storage {
+        let (t, d) = up(t);
+        down(CORE.index_select(&t, cols, idx), d)
+    }
+    fn index_add(&self, s: &Storage, rows: usize, cols: usize, idx: &Storage) -> Storage {
+        let (s, d) = up(s);
+        down(CORE.index_add(&s, rows, cols, idx), d)
+    }
+    fn gather(&self, x: &Storage, s: &[usize], axis: usize, idx: &Storage, l: usize) -> Storage {
+        let (x, d) = up(x);
+        down(CORE.gather(&x, s, axis, idx, l), d)
+    }
+    fn scatter_add(&self, src: &Storage, idx: &Storage, l: usize, s: &[usize], axis: usize) -> Storage {
+        let (src, d) = up(src);
+        down(CORE.scatter_add(&src, idx, l, s, axis), d)
+    }
+    fn im2col(&self, x: &Storage, g: Conv2dGeom) -> Storage {
+        let (x, d) = up(x);
+        down(CORE.im2col(&x, g), d)
+    }
+    fn col2im(&self, c: &Storage, g: Conv2dGeom) -> Storage {
+        let (c, d) = up(c);
+        down(CORE.col2im(&c, g), d)
+    }
+    fn softmax(&self, x: &Storage, s: &[usize], axis: usize) -> Storage {
+        let (x, d) = up(x);
+        down(CORE.softmax(&x, s, axis), d)
+    }
+    fn softmax_backward(&self, y: &Storage, g: &Storage, s: &[usize], axis: usize) -> Storage {
+        let ((y, d), (g, _)) = (up(y), up(g));
+        down(CORE.softmax_backward(&y, &g, s, axis), d)
+    }
+    fn log_softmax(&self, x: &Storage, s: &[usize], axis: usize) -> Storage {
+        let (x, d) = up(x);
+        down(CORE.log_softmax(&x, s, axis), d)
+    }
+    fn log_softmax_backward(&self, y: &Storage, g: &Storage, s: &[usize], axis: usize) -> Storage {
+        let ((y, d), (g, _)) = (up(y), up(g));
+        down(CORE.log_softmax_backward(&y, &g, s, axis), d)
+    }
+    fn layer_norm(&self, x: &Storage, rows: usize, dim: usize, eps: f32) -> (Storage, Storage) {
+        let (x, d) = up(x);
+        let (xh, r) = CORE.layer_norm(&x, rows, dim, eps);
+        (down(xh, d), down(r, d))
+    }
+    fn layer_norm_backward(&self, g: &Storage, xh: &Storage, r: &Storage, rows: usize, dim: usize) -> Storage {
+        let ((g, d), (xh, _), (r, _)) = (up(g), up(xh), up(r));
+        down(CORE.layer_norm_backward(&g, &xh, &r, rows, dim), d)
+    }
+    fn adam_step(&self, p: &Storage, g: &Storage, m: &Storage, v: &Storage, h: AdamParams) -> (Storage, Storage, Storage) {
+        CORE.adam_step(p, g, m, v, h)
     }
 }

@@ -321,3 +321,111 @@ fn device_from_env_and_parse() {
         assert_eq!(rustnn::Tensor::zeros(&[2], d).device(), d);
     }
 }
+
+/// Same random data as `dtype` on both devices.
+fn randn_as(p: &Pair, n: usize, dtype: DType) -> (Storage, Storage) {
+    let (c, g) = p.randn(n);
+    (p.cpu.cast(&c, dtype), p.gpu.cast(&g, dtype))
+}
+
+/// Tolerance for comparing half-precision results: both sides compute in f32
+/// and round once, so they may differ by about one unit in the last place.
+fn half_tol(d: DType) -> f32 {
+    if d == DType::BF16 {
+        1e-2
+    } else {
+        2e-3
+    }
+}
+
+#[test]
+fn half_precision_primitives() {
+    rand::manual_seed(7);
+    for_each_gpu(|p, _| {
+        for d in [DType::F16, DType::BF16] {
+            let tol = half_tol(d);
+            let (c, g) = randn_as(p, 1001, d);
+            assert_eq!(g.dtype(), d);
+            same(&format!("{d} cast"), &c, &g, 0.0);
+            // every pairwise cast
+            for to in [DType::F32, DType::F16, DType::BF16, DType::I32] {
+                same(&format!("cast {d}->{to}"), &p.cpu.cast(&c, to), &p.gpu.cast(&g, to), 0.0);
+            }
+            same(&format!("{d} full"), &p.cpu.full(9, 1.5, d), &p.gpu.full(9, 1.5, d), 0.0);
+            for op in [UnaryOp::Neg, UnaryOp::Exp, UnaryOp::Tanh, UnaryOp::Gelu, UnaryOp::Relu, UnaryOp::Sigmoid] {
+                same(&format!("{d} {op:?}"), &p.cpu.unary(op, &c), &p.gpu.unary(op, &g), tol);
+            }
+            let (sa, sb, so): (&[usize], &[usize], &[usize]) = (&[7, 11], &[11], &[7, 11]);
+            let (ac, ag) = randn_as(p, 77, d);
+            let (bc, bg) = randn_as(p, 11, d);
+            for op in [BinaryOp::Add, BinaryOp::Mul, BinaryOp::Div, BinaryOp::Maximum, BinaryOp::Gt] {
+                let (x, y) = (p.cpu.binary(op, &ac, sa, &bc, sb, so), p.gpu.binary(op, &ag, sa, &bg, sb, so));
+                assert_eq!(y.dtype(), d, "{op:?} keeps the dtype");
+                same(&format!("{d} {op:?}"), &x, &y, tol);
+            }
+            let shape = [3, 5, 7];
+            let (xc, xg) = randn_as(p, 105, d);
+            for axis in 0..3 {
+                for op in [ReduceOp::Sum, ReduceOp::Max, ReduceOp::ArgMax] {
+                    same(
+                        &format!("{d} {op:?} axis {axis}"),
+                        &p.cpu.reduce(op, &xc, &shape, axis),
+                        &p.gpu.reduce(op, &xg, &shape, axis),
+                        tol,
+                    );
+                }
+            }
+            same(&format!("{d} permute"), &p.cpu.permute(&xc, &shape, &[2, 0, 1]), &p.gpu.permute(&xg, &shape, &[2, 0, 1]), 0.0);
+            same(&format!("{d} narrow"), &p.cpu.narrow(&xc, &shape, 1, 1, 3), &p.gpu.narrow(&xg, &shape, 1, 1, 3), 0.0);
+            same(
+                &format!("{d} cat"),
+                &p.cpu.cat(&[&xc, &xc], &[&shape, &shape], 2),
+                &p.gpu.cat(&[&xg, &xg], &[&shape, &shape], 2),
+                0.0,
+            );
+            same(&format!("{d} expand"), &p.cpu.expand(&bc, sb, so), &p.gpu.expand(&bg, sb, so), 0.0);
+            let (cc, cg) = (p.cpu.cast(&p.cpu.from_f32(vec![1., 0., 0., 1.]), d), p.gpu.cast(&p.gpu.from_f32(vec![1., 0., 0., 1.]), d));
+            let (wc, wg) = randn_as(p, 4, d);
+            let (vc, vg) = randn_as(p, 4, d);
+            same(&format!("{d} where"), &p.cpu.where_cond(&cc, &wc, &vc), &p.gpu.where_cond(&cg, &wg, &vg), 0.0);
+            let (ic, ig) = p.ints(vec![3, 0, 3, 1]);
+            let (tc, tg) = randn_as(p, 4 * 6, d);
+            same(&format!("{d} index_select"), &p.cpu.index_select(&tc, 6, &ic), &p.gpu.index_select(&tg, 6, &ig), 0.0);
+            let geo = Conv2dGeom { n: 2, c: 3, h: 6, w: 5, kh: 3, kw: 3, stride: 1, padding: 1 };
+            let (xc, xg) = randn_as(p, 2 * 3 * 6 * 5, d);
+            let (colc, colg) = (p.cpu.im2col(&xc, geo), p.gpu.im2col(&xg, geo));
+            same(&format!("{d} im2col"), &colc, &colg, 0.0);
+            same(&format!("{d} col2im"), &p.cpu.col2im(&colc, geo), &p.gpu.col2im(&colg, geo), tol);
+            // f32-only kernels run through the widening fallback
+            let rs = [4, 33];
+            let (sc, sg) = randn_as(p, 4 * 33, d);
+            same(&format!("{d} softmax"), &p.cpu.softmax(&sc, &rs, 1), &p.gpu.softmax(&sg, &rs, 1), tol);
+            let (lc, _) = p.cpu.layer_norm(&sc, 4, 33, 1e-5);
+            let (lg, _) = p.gpu.layer_norm(&sg, 4, 33, 1e-5);
+            same(&format!("{d} layer_norm"), &lc, &lg, tol * 2.0);
+        }
+    });
+}
+
+#[test]
+fn half_precision_matmul() {
+    rand::manual_seed(8);
+    for_each_gpu(|p, _| {
+        for d in [DType::F16, DType::BF16] {
+            for &(batch, m, k, n) in &[(1, 17, 33, 9), (3, 16, 64, 24)] {
+                for (ta, tb) in [(false, false), (true, false), (false, true)] {
+                    for (sa, sb) in [(m * k, k * n), (0, k * n)] {
+                        let ablocks = if sa == 0 { 1 } else { batch };
+                        let (ac, ag) = randn_as(p, ablocks * m * k, d);
+                        let (bc, bg) = randn_as(p, batch * k * n, d);
+                        let spec = MatmulSpec { batch, m, k, n, trans_a: ta, trans_b: tb, a_batch_stride: sa, b_batch_stride: sb };
+                        let (x, y) = (p.cpu.matmul(&ac, &bc, spec), p.gpu.matmul(&ag, &bg, spec));
+                        assert_eq!(y.dtype(), d);
+                        // f32 accumulation on both sides; GPU summation order differs
+                        same(&format!("{d} matmul {spec:?}"), &x, &y, half_tol(d) * 3.0);
+                    }
+                }
+            }
+        }
+    });
+}

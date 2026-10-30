@@ -2,30 +2,79 @@
 // Compiled at runtime (newLibraryWithSource) with safe math, so results
 // match the CPU backend closely. Parameter structs mirror `#[repr(C)]`
 // structs in mps.rs; all sizes are 32-bit.
+//
+// Float kernels are templates over the storage type (float, half, bf16_t)
+// and always compute in f32: `ld` widens a stored value, `st<T>` rounds back.
+// Names: <kernel>_<f32|f16|bf16>.
 
 #include <metal_stdlib>
 using namespace metal;
 
 #define MAX_RANK 8
 
+// explicit instantiation under a host-visible name (pattern from MLX)
+#define instantiate(name, func, ...) \
+    template [[host_name(name)]] [[kernel]] decltype(func<__VA_ARGS__>) func<__VA_ARGS__>;
+#define instantiate_floats(base, func)              \
+    instantiate(base "_f32", func, float)           \
+    instantiate(base "_f16", func, half)            \
+    instantiate(base "_bf16", func, bf16_t)
+
+// bfloat16 stored as raw bits (no dependency on Metal 3.1's `bfloat`)
+struct bf16_t {
+    ushort bits;
+};
+
+inline float ld(float v) { return v; }
+inline float ld(half v) { return float(v); }
+inline float ld(bf16_t v) { return as_type<float>(uint(v.bits) << 16); }
+inline float ld(int v) { return float(v); }
+
+template <typename T> inline T st(float f);
+template <> inline float st<float>(float f) { return f; }
+template <> inline half st<half>(float f) { return half(f); }
+template <> inline int st<int>(float f) { return int(f); }
+template <> inline bf16_t st<bf16_t>(float f) {
+    uint u = as_type<uint>(f);
+    bf16_t r;
+    if ((u & 0x7fffffffu) > 0x7f800000u) {
+        r.bits = 0x7fc0; // NaN
+    } else {
+        u += 0x7fffu + ((u >> 16) & 1u); // round to nearest even
+        r.bits = ushort(u >> 16);
+    }
+    return r;
+}
+
 // ---------------------------------------------------------------- memory
 
-kernel void fill_u32(device uint* out [[buffer(0)]],
-                     constant uint& n [[buffer(1)]],
-                     constant uint& bits [[buffer(2)]],
-                     uint i [[thread_position_in_grid]]) {
-    if (i < n) out[i] = bits;
+template <typename W>
+kernel void fill_t(device W* out [[buffer(0)]],
+                   constant uint& n [[buffer(1)]],
+                   constant uint& bits [[buffer(2)]],
+                   uint i [[thread_position_in_grid]]) {
+    if (i < n) out[i] = W(bits);
 }
+instantiate("fill_u32", fill_t, uint)
+instantiate("fill_u16", fill_t, ushort)
 
-kernel void cast_f32_i32(device const float* x [[buffer(0)]], device int* y [[buffer(1)]],
-                         constant uint& n [[buffer(2)]], uint i [[thread_position_in_grid]]) {
-    if (i < n) y[i] = int(x[i]);
+template <typename S, typename D>
+kernel void cast_t(device const S* x [[buffer(0)]], device D* y [[buffer(1)]],
+                   constant uint& n [[buffer(2)]], uint i [[thread_position_in_grid]]) {
+    if (i < n) y[i] = st<D>(ld(x[i]));
 }
-
-kernel void cast_i32_f32(device const int* x [[buffer(0)]], device float* y [[buffer(1)]],
-                         constant uint& n [[buffer(2)]], uint i [[thread_position_in_grid]]) {
-    if (i < n) y[i] = float(x[i]);
-}
+instantiate("cast_f32_f16", cast_t, float, half)
+instantiate("cast_f32_bf16", cast_t, float, bf16_t)
+instantiate("cast_f32_i32", cast_t, float, int)
+instantiate("cast_f16_f32", cast_t, half, float)
+instantiate("cast_f16_bf16", cast_t, half, bf16_t)
+instantiate("cast_f16_i32", cast_t, half, int)
+instantiate("cast_bf16_f32", cast_t, bf16_t, float)
+instantiate("cast_bf16_f16", cast_t, bf16_t, half)
+instantiate("cast_bf16_i32", cast_t, bf16_t, int)
+instantiate("cast_i32_f32", cast_t, int, float)
+instantiate("cast_i32_f16", cast_t, int, half)
+instantiate("cast_i32_bf16", cast_t, int, bf16_t)
 
 // ---------------------------------------------------------------- elementwise
 
@@ -42,11 +91,12 @@ inline float gelu_grad_f(float x) {
 }
 
 // op codes must match UnaryOp order in mps.rs
-kernel void unary_f32(device const float* x [[buffer(0)]], device float* y [[buffer(1)]],
-                      constant uint& n [[buffer(2)]], constant uint& op [[buffer(3)]],
-                      uint i [[thread_position_in_grid]]) {
+template <typename T>
+kernel void unary_t(device const T* x [[buffer(0)]], device T* y [[buffer(1)]],
+                    constant uint& n [[buffer(2)]], constant uint& op [[buffer(3)]],
+                    uint i [[thread_position_in_grid]]) {
     if (i >= n) return;
-    float v = x[i];
+    float v = ld(x[i]);
     float r;
     switch (op) {
         case 0: r = -v; break;
@@ -63,8 +113,9 @@ kernel void unary_f32(device const float* x [[buffer(0)]], device float* y [[buf
         case 11: r = sin(v); break;
         default: r = cos(v); break;
     }
-    y[i] = r;
+    y[i] = st<T>(r);
 }
+instantiate_floats("unary", unary_t)
 
 struct BinParams {
     uint n;
@@ -92,9 +143,10 @@ inline float binop(uint op, float a, float b) {
     }
 }
 
-kernel void binary_f32(device const float* a [[buffer(0)]], device const float* b [[buffer(1)]],
-                       device float* out [[buffer(2)]], constant BinParams& p [[buffer(3)]],
-                       uint i [[thread_position_in_grid]]) {
+template <typename T>
+kernel void binary_t(device const T* a [[buffer(0)]], device const T* b [[buffer(1)]],
+                     device T* out [[buffer(2)]], constant BinParams& p [[buffer(3)]],
+                     uint i [[thread_position_in_grid]]) {
     if (i >= p.n) return;
     uint rem = i, oa = 0, ob = 0;
     for (int d = int(p.rank) - 1; d >= 0; --d) {
@@ -103,8 +155,9 @@ kernel void binary_f32(device const float* a [[buffer(0)]], device const float* 
         oa += c * p.sa[d];
         ob += c * p.sb[d];
     }
-    out[i] = binop(p.op, a[oa], b[ob]);
+    out[i] = st<T>(binop(p.op, ld(a[oa]), ld(b[ob])));
 }
+instantiate_floats("binary", binary_t)
 
 struct CopyParams {
     uint n;
@@ -115,10 +168,11 @@ struct CopyParams {
     uint strides[MAX_RANK];
 };
 
-// out[i] = x[base + strided offset of i]  (dtype agnostic: copies 32-bit words)
-// Used for expand (stride 0), permute and narrow.
-kernel void strided_copy(device const uint* x [[buffer(0)]], device uint* out [[buffer(1)]],
-                         constant CopyParams& p [[buffer(2)]], uint i [[thread_position_in_grid]]) {
+// out[i] = x[base + strided offset of i]  (dtype agnostic: copies 32- or
+// 16-bit words). Used for expand (stride 0), permute and narrow.
+template <typename W>
+kernel void strided_copy_t(device const W* x [[buffer(0)]], device W* out [[buffer(1)]],
+                           constant CopyParams& p [[buffer(2)]], uint i [[thread_position_in_grid]]) {
     if (i >= p.n) return;
     uint rem = i, o = p.base;
     for (int d = int(p.rank) - 1; d >= 0; --d) {
@@ -128,6 +182,8 @@ kernel void strided_copy(device const uint* x [[buffer(0)]], device uint* out [[
     }
     out[i] = x[o];
 }
+instantiate("strided_copy_u32", strided_copy_t, uint)
+instantiate("strided_copy_u16", strided_copy_t, ushort)
 
 struct CatParams {
     uint n;      // elements of this input
@@ -136,18 +192,23 @@ struct CatParams {
     uint offset;  // offset of this input inside an output block
 };
 
-kernel void cat_copy(device const uint* x [[buffer(0)]], device uint* out [[buffer(1)]],
-                     constant CatParams& p [[buffer(2)]], uint i [[thread_position_in_grid]]) {
+template <typename W>
+kernel void cat_copy_t(device const W* x [[buffer(0)]], device W* out [[buffer(1)]],
+                       constant CatParams& p [[buffer(2)]], uint i [[thread_position_in_grid]]) {
     if (i >= p.n) return;
     uint o = i / p.blk_in, j = i % p.blk_in;
     out[o * p.blk_out + p.offset + j] = x[i];
 }
+instantiate("cat_copy_u32", cat_copy_t, uint)
+instantiate("cat_copy_u16", cat_copy_t, ushort)
 
-kernel void where_f32(device const float* c [[buffer(0)]], device const float* a [[buffer(1)]],
-                      device const float* b [[buffer(2)]], device float* out [[buffer(3)]],
-                      constant uint& n [[buffer(4)]], uint i [[thread_position_in_grid]]) {
-    if (i < n) out[i] = c[i] != 0.0f ? a[i] : b[i];
+template <typename T>
+kernel void where_t(device const T* c [[buffer(0)]], device const T* a [[buffer(1)]],
+                    device const T* b [[buffer(2)]], device T* out [[buffer(3)]],
+                    constant uint& n [[buffer(4)]], uint i [[thread_position_in_grid]]) {
+    if (i < n) out[i] = ld(c[i]) != 0.0f ? a[i] : b[i];
 }
+instantiate_floats("where", where_t)
 
 // ---------------------------------------------------------------- reductions
 
@@ -171,8 +232,9 @@ inline float simd_combine(uint op, float v) {
 }
 
 // One thread per output element (used when inner > 1, and for argmax).
-kernel void reduce_strided(device const float* x [[buffer(0)]], device float* out [[buffer(1)]],
-                           constant RedParams& p [[buffer(2)]], uint t [[thread_position_in_grid]]) {
+template <typename T>
+kernel void reduce_strided_t(device const T* x [[buffer(0)]], device T* out [[buffer(1)]],
+                             constant RedParams& p [[buffer(2)]], uint t [[thread_position_in_grid]]) {
     if (t >= p.outer * p.inner) return;
     uint o = t / p.inner, i = t % p.inner;
     uint base = o * p.len * p.inner + i;
@@ -180,16 +242,17 @@ kernel void reduce_strided(device const float* x [[buffer(0)]], device float* ou
         float best = -INFINITY;
         uint bi = 0;
         for (uint l = 0; l < p.len; ++l) {
-            float v = x[base + l * p.inner];
+            float v = ld(x[base + l * p.inner]);
             if (v > best) { best = v; bi = l; }
         }
         ((device int*)out)[t] = int(bi);
         return;
     }
     float acc = red_init(p.op);
-    for (uint l = 0; l < p.len; ++l) acc = red_combine(p.op, acc, x[base + l * p.inner]);
-    out[t] = acc;
+    for (uint l = 0; l < p.len; ++l) acc = red_combine(p.op, acc, ld(x[base + l * p.inner]));
+    out[t] = st<T>(acc);
 }
+instantiate_floats("reduce_strided", reduce_strided_t)
 
 // Threadgroup-wide reduction helpers. `buf` must hold 32 floats.
 inline float tg_reduce(uint op, float v, threadgroup float* buf, uint lane, uint sg, uint nsg) {
@@ -210,16 +273,18 @@ inline float tg_reduce(uint op, float v, threadgroup float* buf, uint lane, uint
     uint sg [[simdgroup_index_in_threadgroup]]
 
 // One threadgroup per row (inner == 1).
-kernel void reduce_rows(device const float* x [[buffer(0)]], device float* out [[buffer(1)]],
-                        constant RedParams& p [[buffer(2)]], ROW_ARGS) {
+template <typename T>
+kernel void reduce_rows_t(device const T* x [[buffer(0)]], device T* out [[buffer(1)]],
+                          constant RedParams& p [[buffer(2)]], ROW_ARGS) {
     threadgroup float buf[32];
     uint nsg = (tg + 31) / 32;
-    device const float* xr = x + row * p.len;
+    device const T* xr = x + row * p.len;
     float acc = red_init(p.op);
-    for (uint l = tid; l < p.len; l += tg) acc = red_combine(p.op, acc, xr[l]);
+    for (uint l = tid; l < p.len; l += tg) acc = red_combine(p.op, acc, ld(xr[l]));
     acc = tg_reduce(p.op, acc, buf, lane, sg, nsg);
-    if (tid == 0) out[row] = acc;
+    if (tid == 0) out[row] = st<T>(acc);
 }
+instantiate_floats("reduce_rows", reduce_rows_t)
 
 // ---------------------------------------------------------------- fused row ops
 
@@ -318,13 +383,15 @@ kernel void adam_step(device const float* p [[buffer(0)]], device const float* g
 
 // ---------------------------------------------------------------- indexing
 
-kernel void index_select(device const float* t [[buffer(0)]], device const int* idx [[buffer(1)]],
-                         device float* out [[buffer(2)]], constant uint& n [[buffer(3)]],
-                         constant uint& cols [[buffer(4)]], uint i [[thread_position_in_grid]]) {
+template <typename T>
+kernel void index_select_t(device const T* t [[buffer(0)]], device const int* idx [[buffer(1)]],
+                           device T* out [[buffer(2)]], constant uint& n [[buffer(3)]],
+                           constant uint& cols [[buffer(4)]], uint i [[thread_position_in_grid]]) {
     if (i >= n) return;
     uint r = i / cols, c = i % cols;
     out[i] = t[uint(idx[r]) * cols + c];
 }
+instantiate_floats("index_select", index_select_t)
 
 kernel void index_add(device const float* src [[buffer(0)]], device const int* idx [[buffer(1)]],
                       device atomic_float* out [[buffer(2)]], constant uint& n [[buffer(3)]],
@@ -364,8 +431,9 @@ struct ConvParams {
 };
 
 // cols [N, C*KH*KW, OH*OW]
-kernel void im2col(device const float* x [[buffer(0)]], device float* cols [[buffer(1)]],
-                   constant ConvParams& g [[buffer(2)]], uint t [[thread_position_in_grid]]) {
+template <typename T>
+kernel void im2col_t(device const T* x [[buffer(0)]], device T* cols [[buffer(1)]],
+                     constant ConvParams& g [[buffer(2)]], uint t [[thread_position_in_grid]]) {
     uint l = g.oh * g.ow;
     uint total = g.n * g.c * g.kh * g.kw * l;
     if (t >= total) return;
@@ -378,16 +446,18 @@ kernel void im2col(device const float* x [[buffer(0)]], device float* cols [[buf
     uint n = r / (g.c * g.kh * g.kw);
     int iy = int(oy * g.stride + ki) - int(g.padding);
     int ix = int(ox * g.stride + kj) - int(g.padding);
-    float v = 0.0f;
+    T v = st<T>(0.0f);
     if (iy >= 0 && iy < int(g.h) && ix >= 0 && ix < int(g.w)) {
         v = x[((n * g.c + c) * g.h + uint(iy)) * g.w + uint(ix)];
     }
     cols[t] = v;
 }
+instantiate_floats("im2col", im2col_t)
 
 // one thread per input pixel: gathers every column entry that read it
-kernel void col2im(device const float* cols [[buffer(0)]], device float* x [[buffer(1)]],
-                   constant ConvParams& g [[buffer(2)]], uint t [[thread_position_in_grid]]) {
+template <typename T>
+kernel void col2im_t(device const T* cols [[buffer(0)]], device T* x [[buffer(1)]],
+                     constant ConvParams& g [[buffer(2)]], uint t [[thread_position_in_grid]]) {
     uint total = g.n * g.c * g.h * g.w;
     if (t >= total) return;
     uint px = t % g.w;
@@ -407,8 +477,9 @@ kernel void col2im(device const float* cols [[buffer(0)]], device float* x [[buf
             uint ox = uint(tx) / g.stride;
             if (ox >= g.ow) continue;
             uint r = n * (g.c * g.kh * g.kw) + (c * g.kh + ki) * g.kw + kj;
-            acc += cols[r * l + oy * g.ow + ox];
+            acc += ld(cols[r * l + oy * g.ow + ox]);
         }
     }
-    x[t] = acc;
+    x[t] = st<T>(acc);
 }
+instantiate_floats("col2im", col2im_t)

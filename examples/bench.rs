@@ -109,18 +109,42 @@ fn main() {
         })
     );
 
-    println!("== GPT train step (B=8, T=128, d=256, L=4, V=256) ==");
+    let n = 2048usize;
+    for d in [DType::F32, DType::F16, DType::BF16] {
+        let a = Tensor::randn(&[n, n], dev).to_dtype(d);
+        let b = Tensor::randn(&[n, n], dev).to_dtype(d);
+        let ms = time_ms(dev, 10, || drop(a.matmul(&b)));
+        println!("== matmul {n}x{n} {d}: {ms:8.3} ms  {:7.1} GFLOP/s", 2.0 * (n as f64).powi(3) / ms / 1e6);
+    }
+
     let cfg = GPTConfig { vocab_size: 256, max_len: 128, dim: 256, n_heads: 8, n_layers: 4, dropout: 0.0 };
-    let gpt = GPT::new(cfg, dev);
-    let mut opt = Adam::new(gpt.parameters(), 1e-3);
     let ids: Vec<usize> = (0..8 * 128).map(|i| (i * 7) % 256).collect();
-    println!(
-        "  {:8.3} ms/step",
-        time_ms(dev, 20, || {
+    for amp in [None, Some(DType::F16), Some(DType::BF16)] {
+        rand::manual_seed(0);
+        let gpt = GPT::new(cfg, dev);
+        let mut opt = Adam::new(gpt.parameters(), 1e-3);
+        let mut scaler = rustnn::amp::GradScaler::new();
+        let label = amp.map_or("f32".to_string(), |d| format!("autocast {d}"));
+        println!("== GPT train step (B=8, T=128, d=256, L=4, V=256), {label} ==");
+        let ms = time_ms(dev, 10, || {
             opt.zero_grad();
-            let logits = gpt.forward_ids(&ids, 8, 128).reshape(&[8 * 128, 256]);
-            F::cross_entropy(&logits, &ids, 0.0).backward();
-            opt.step();
-        })
-    );
+            let step = || F::cross_entropy(&gpt.forward_ids(&ids, 8, 128).reshape(&[8 * 128, 256]), &ids, 0.0);
+            match amp {
+                // f16 needs loss scaling; bf16 has the f32 exponent range
+                Some(DType::F16) => {
+                    scaler.scale(&rustnn::autocast(DType::F16, step)).backward();
+                    scaler.step(&mut opt);
+                }
+                Some(d) => {
+                    rustnn::autocast(d, step).backward();
+                    opt.step();
+                }
+                None => {
+                    step().backward();
+                    opt.step();
+                }
+            }
+        });
+        println!("  {ms:8.3} ms/step");
+    }
 }

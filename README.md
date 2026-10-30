@@ -21,6 +21,9 @@ cargo run --release --features mps --example bench mps
 
 # NVIDIA GPU（CUDA）：加上 --features cuda
 cargo run --release --features cuda --example gpt -- --device cuda
+
+# 混合精度訓練（autocast + f32 主權重；f16 會自動做 loss scaling）
+cargo run --release --features mps --example gpt -- --device mps --amp f16
 ```
 
 程式裡選裝置：`Tensor::randn(&[2, 3], Device::Mps)`、`model.to_device(Device::Mps)`、`Device::best_available()`，或用環境變數 `RUSTNN_DEVICE=mps`。
@@ -84,13 +87,33 @@ for epoch in state.epoch..epochs {
 }
 ```
 
+### 混合精度（AMP）
+
+```rust
+use rustnn::amp::{autocast, GradScaler};
+
+let mut scaler = GradScaler::new();                   // f16 需要；bf16 可省略
+opt.zero_grad();
+let loss = autocast(DType::F16, || F::cross_entropy(&model.forward(&x), &y, 0.0));
+scaler.scale(&loss).backward();                       // 參數維持 f32，收到 f32 梯度
+scaler.unscale(&opt);                                 // （要做 clip_grad_norm 時）
+scaler.step(&mut opt);                                // 梯度溢位時自動跳過並調降 scale
+
+// 純半精度推理
+model.to_dtype(DType::F16);
+let y = model.forward(&x.to_dtype(DType::F16));
+```
+
+autocast 規則（同 PyTorch）：matmul / Linear / Conv 以半精度執行；softmax、log_softmax、LayerNorm、BatchNorm、loss 一律在 f32；不同浮點型別相加時提升為 f32，但 rank-0 純量會採用另一方的型別（`half * 2.0` 仍是 half）。
+
 梯度累積：`.grad` 會在多次 `backward()` 間累加，把每個 micro-batch 的 loss 乘上 `1/k` 後各自 `backward()`，再 `step()` 一次即可（`tests/io.rs` 驗證與整批結果相同）。
 
 ## 功能
 
 | 類別 | 內容 |
 |---|---|
-| DType | `F32`（所有可微分運算）、`I32`（索引：token id、類別標籤、argmax 結果），索引 tensor 存在裝置上 |
+| DType | `F32`、`F16`、`BF16`（皆可微分；半精度運算內部以 f32 計算後再捨入）、`I32`（索引：token id、類別標籤、argmax 結果，存在裝置上）；可微分的 `to_dtype`、型別提升規則 |
+| 混合精度 | `autocast(F16 \| BF16, ..)`、`GradScaler`（動態 loss scaling、溢位跳步、狀態可存進 checkpoint）、`Module::to_dtype` |
 | Tensor | 任意維度、NumPy 廣播、`reshape/view/permute/transpose/unsqueeze/flatten/expand`、運算子多載 (`&a + &b`, `a * 2.0`) |
 | Autograd | 動態計算圖、拓撲排序反向傳播、梯度累加、`no_grad()` / `NoGradGuard`、`detach()` |
 | 運算 | `+ - * /`、`exp log sqrt powf abs tanh sigmoid relu gelu sin cos maximum`、`sum mean var max min argmax`、`minimum clamp where_cond masked_fill`、batched `matmul`、`index_select gather narrow select cat stack`、`im2col` |
@@ -98,7 +121,7 @@ for epoch in state.epoch..epochs {
 | nn | `Linear`、`Conv2d`、`MaxPool2d`、`AvgPool2d`、`BatchNorm2d`、`LayerNorm`、`Embedding`、`Dropout`、`Flatten`、`ReLU/GELU/Tanh/Sigmoid`、`Sequential`、`FeedForward`、`MultiHeadAttention`（自注意力 / 交叉注意力）、`TransformerBlock`（Pre-LN，可選 causal）、`GPT` |
 | optim | `SGD`（momentum、weight decay）、`Adam`、`AdamW`（融合 kernel，一個參數一次走訪）、`clip_grad_norm`、`cosine_lr`（含 warmup） |
 | 資料 | `Dataset` trait、`DataLoader`（多執行緒預取、每 epoch 確定性打亂、`drop_last`、自訂 collate、提早中斷不卡住、worker panic 會傳遞）、`VecDataset`、`ClassificationData`、`Subset`、`random_split` |
-| 存檔 | **safetensors**（Hugging Face 官方實作）：寫 F32/I32，讀 F32/F16/BF16/F64/I64/I32/I16/I8/U8/U16/U32/BOOL；`load_state_dict`（strict 或回報 missing / unexpected）；仍可讀 v0.1–v0.4 的 RSNN 格式 |
+| 存檔 | **safetensors**（Hugging Face 官方實作）：讀寫 F32/F16/BF16/I32（保留原型別），另可讀 F64/I64/I16/I8/U8/U16/U32/BOOL；`load_state_dict`（strict 或回報 missing / unexpected）；仍可讀 v0.1–v0.4 的 RSNN 格式 |
 | checkpoint | 模型 + 優化器狀態（Adam 的 m/v/step、SGD 的 velocity）+ step/epoch + 全域 RNG 狀態 + 自訂 metadata，寫入時先寫暫存檔再改名；**接續訓練與不中斷訓練結果逐位元相同** |
 | 排程 / 指標 | `ConstantLr`、`StepLr`、`ExponentialLr`、`CosineLr`、`LinearLr`（皆含 warmup，純函式故可從任意 step 接續）；`RunningMean`、`Ema`、`Accuracy`、`Throughput` |
 | 其他 | `train()/eval()` 模式、可設定種子的亂數（`rand::Rng` 獨立串流）|
@@ -148,13 +171,15 @@ Autograd、所有 nn 層、優化器都只透過 `Tensor` 運算操作資料，�
 - **matmul**：`MPSMatrixMultiplication`（batched + 轉置），kernel 物件依形狀快取
 - **非同步**：運算累積在同一個 command buffer，每 48 個 op 或在需要讀回資料（`to_vec`、`item`）時才送出；不會每個運算都等 GPU
 - **融合原語**：softmax / log_softmax / layer_norm（含 backward）、Adam 都是單一 kernel（一個 threadgroup 處理一列，用 simdgroup 歸約）
+- **半精度**：kernel 以 template 對 float / half / bf16 實例化（bf16 以原始位元儲存、round-to-nearest-even），內部一律 f32 計算；matmul 的 F16 走 `MPSMatrixMultiplication` Float16，BF16 轉 f32 計算
 - 需求：Apple Silicon、macOS 15+（使用 `atomic_float`、`MTLMathMode`）
 
 ### CUDA（NVIDIA）
 
 - **建置**：`cudarc` 以 dynamic loading 在執行時載入 CUDA driver / NVRTC / cuBLAS，所以任何平台都能編譯 `--features cuda`；沒有 GPU 時 `Device::Cuda(0).is_available()` 回傳 `false`
 - **kernel**：`cuda_kernels.cu` 是 `mps_kernels.metal` 的逐一移植（warp shuffle 歸約、`atomicAdd`），第一次使用時以 NVRTC 編譯（不開 fast-math）
-- **matmul**：`cublasSgemmStridedBatched`，用 `C = A·B ⇔ Cᵀ = Bᵀ·Aᵀ` 把 row-major 對應到 cuBLAS 的 column-major；batch stride 0 直接支援廣播
+- **半精度**：kernel 以 template 對 float / f16 / bf16 實例化（f16 轉換用 inline PTX `cvt`，不需要 `cuda_fp16.h`）；cuBLAS 半精度 GEMM 以 f32 累加（`CUBLAS_COMPUTE_32F`）
+- **matmul**：`cublasSgemmStridedBatched`（半精度走 `GemmStridedBatchedEx`），用 `C = A·B ⇔ Cᵀ = Bᵀ·Aᵀ` 把 row-major 對應到 cuBLAS 的 column-major；batch stride 0 直接支援廣播
 - **非同步**：每張卡一條 stream，記憶體為 stream-ordered（`cuMemAllocAsync`），只有讀回資料時才同步；支援多卡 `Device::Cuda(i)`
 - **需求**：NVIDIA driver 與 CUDA 12.x 的 NVRTC、cuBLAS 函式庫（`libnvrtc` / `libcublas` 在載入路徑上即可，不需要完整 toolkit）
 
@@ -178,6 +203,16 @@ Autograd、所有 nn 層、優化器都只透過 `Tensor` 運算操作資料，�
 | GPT 訓練一步（d=64, L=2） | 29.1 ms | 9.2 ms | 6.2 ms | 3.4 ms |
 | GPT 訓練一步（d=256, L=4） | 296 ms | 105 ms | 58 ms | 29 ms |
 
+混合精度（`bench` 的最後幾項，Apple M3）：
+
+| 項目 | f32 | f16 | bf16 |
+|---|---|---|---|
+| matmul 2048×2048（MPS） | 2145 GFLOP/s | 2206 GFLOP/s | 1903 GFLOP/s（MPS 沒有 bf16 GEMM，走 f32） |
+| GPT 訓練一步（d=256, L=4，MPS，autocast） | 28.7 ms | 31.9 ms | 37.0 ms |
+| GPT 訓練一步（CPU，autocast） | 102 ms | 133 ms | 144 ms |
+
+> 在 Apple M1–M3 上 FP16 與 FP32 的運算吞吐量相同，所以 autocast 在這台機器上**不會更快**（多出的型別轉換反而讓它慢約 10%）；CPU 沒有半精度運算單元，也一樣較慢。半精度的速度優勢預期出現在 NVIDIA GPU 的 Tensor Core 上（CUDA 後端已支援，尚待實機量測）；在任何裝置上它都能把權重/啟用值的記憶體減半，也能直接載入 F16/BF16 權重。
+
 GPU 計時採 throughput 方式（連續執行 N 次後同步一次，同 `torch.cuda.synchronize()` 慣例）。很小的運算（如 256×256 matmul、小 CNN）在 GPU 上受每個 op 的派送開銷限制，不一定比 CPU 快；模型越大 GPU 優勢越明顯。
 
 ## 測試
@@ -193,6 +228,8 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - `tests/devices.rs`：跨裝置一致性——每個原語（含邊界尺寸、廣播、各種轉置/batch stride 的 matmul、各種 stride/padding 的 conv、重複索引的 scatter）在每個可用 GPU 後端上的結果都要與 CPU 相符
 - `tests/io.rs`：依 safetensors 規格**手工組出的檔案**（不經被測實作）測試多種 dtype 與 metadata、輸出檔的 header/資料區逐位元組檢查、舊格式、`load_state_dict` 報告；AdamW 與 SGD-momentum 的 checkpoint 接續後參數**逐位元相同**（含 dropout 的 RNG）；梯度累積等於整批
 - `tests/data.rs`：DataLoader 順序、打亂是排列且可重現、不同 worker 數結果相同、確實平行、提早中斷、worker panic、collate；排程數值；指標
+- `tests/amp.rs`：半精度數值與型別提升、可微分轉型、autocast 規則、AMP 梯度與 f32 梯度一致（F16 誤差 < 2%、BF16 < 8%）、GradScaler（還原尺度、溢位跳步、成長、狀態保存）、F32/F16/BF16 訓練都能收斂、半精度 CNN 推理、safetensors 保留半精度型別
+- `tests/devices.rs` 另含所有原語的 F16/BF16 版本在 GPU 與 CPU 間的對照（含各種轉置與廣播的半精度 matmul）
 - `tests/training.rs`：MLP 學會 XOR、CNN（含 BatchNorm）收斂、GPT 記住序列、存檔/載入 round-trip
 
 ## 版本規劃
@@ -204,14 +241,15 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v0.3 | MPS（Apple Metal）後端、跨裝置測試框架、`--device` 選擇 | ✅ |
 | v0.4 | CUDA 後端（cuBLAS + NVRTC）、多卡 | ✅（待實機驗證） |
 | v0.5 | DataLoader、完整 checkpoint（含優化器狀態與 RNG）、safetensors、LR 排程、梯度累積、指標 | ✅ |
-| v0.6 | f16 / bf16、混合精度訓練 | |
+| v0.6 | f16 / bf16（CPU / MPS / CUDA）、autocast、GradScaler、半精度推理 | ✅ |
 | v0.7 | KV cache、載入 GPT-2 官方權重、int8 量化 | |
 | v0.8 | ResNet、ViT、encoder-decoder、RMSNorm/RoPE/SwiGLU | |
 | v1.0 | API 穩定、文件、發布 crates.io | |
 
 ## 目前限制
 
-- 浮點運算只有 `f32`（f16/bf16 在 v0.6）
+- 半精度在 CPU 上是儲存格式（內部轉 f32 計算），不會更快
+- `index_add` / `scatter_add` / 融合 kernel 在 GPU 上只有 f32 版本，半精度輸入會先轉 f32（autocast 下本來就以 f32 執行）
 - 反向傳播不建立計算圖（不支援二階導數）
 - attention 尚未融合成單一 kernel（flash-attention 式的融合排在之後的版本）
 - MPS：小運算受派送開銷限制

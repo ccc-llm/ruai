@@ -37,6 +37,42 @@ static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
     static GRAD_ENABLED: Cell<bool> = const { Cell::new(true) };
+    static AUTOCAST: Cell<Option<DType>> = const { Cell::new(None) };
+}
+
+/// The half-precision dtype of the active [`autocast`] region, if any.
+pub fn autocast_dtype() -> Option<DType> {
+    AUTOCAST.with(|a| a.get())
+}
+
+/// RAII guard for an autocast region (see [`autocast`]); `None` disables it.
+pub struct AutocastGuard {
+    prev: Option<DType>,
+}
+
+impl AutocastGuard {
+    pub fn new(dtype: Option<DType>) -> Self {
+        if let Some(d) = dtype {
+            assert!(d.is_half(), "autocast dtype must be F16 or BF16, got {d}");
+        }
+        AutocastGuard { prev: AUTOCAST.with(|a| a.replace(dtype)) }
+    }
+}
+
+impl Drop for AutocastGuard {
+    fn drop(&mut self) {
+        AUTOCAST.with(|a| a.set(self.prev));
+    }
+}
+
+/// Run `f` with automatic mixed precision (like `torch.autocast`):
+/// matmul / linear / conv run in `dtype` (F16 or BF16) while softmax,
+/// layer/batch norm and losses run in f32. Parameters stay f32 ("master
+/// weights") and receive f32 gradients. Pair with
+/// [`crate::amp::GradScaler`] when using F16.
+pub fn autocast<T>(dtype: DType, f: impl FnOnce() -> T) -> T {
+    let _g = AutocastGuard::new(Some(dtype));
+    f()
 }
 
 pub fn is_grad_enabled() -> bool {
@@ -177,7 +213,7 @@ impl Tensor {
     }
 
     pub fn set_requires_grad(&self, v: bool) {
-        assert!(!v || self.dtype() == DType::F32, "only f32 tensors can require grad");
+        assert!(!v || self.dtype().is_float(), "only floating-point tensors can require grad");
         assert!(self.0.node.is_none() || v, "cannot disable grad on a non-leaf tensor");
         self.0.requires_grad.store(v, Ordering::Relaxed);
     }
@@ -223,12 +259,21 @@ impl Tensor {
         self.0.storage.read().unwrap().dtype()
     }
 
-    /// Convert to another dtype (not differentiable).
+    /// Convert to another dtype. Float-to-float casts are differentiable
+    /// (the gradient is cast back); casts to or from integers are not.
     pub fn to_dtype(&self, dtype: DType) -> Tensor {
-        if self.dtype() == dtype {
+        let src = self.dtype();
+        if src == dtype {
             return self.clone();
         }
-        Tensor::from_storage(self.backend().cast(&self.storage(), dtype), self.shape().to_vec())
+        let s = self.backend().cast(&self.storage(), dtype);
+        if src.is_float() && dtype.is_float() {
+            Tensor::from_op(s, self.shape().to_vec(), vec![self.clone()], "to_dtype", move |g| {
+                vec![Some(g.to_dtype(src))]
+            })
+        } else {
+            Tensor::from_storage(s, self.shape().to_vec())
+        }
     }
 
     pub fn requires_grad(&self) -> bool {
@@ -287,6 +332,14 @@ impl Tensor {
         self.set_storage(src.storage().to_device(self.device()));
     }
 
+    /// Replace the data in place, allowing a dtype change (same number of
+    /// elements); used by [`crate::nn::Module::to_dtype`].
+    pub fn set_data(&self, s: Storage) {
+        assert_eq!(s.len(), self.numel(), "set_data: size mismatch");
+        *self.0.storage.write().unwrap() = s;
+        self.zero_grad();
+    }
+
     /// A new leaf tensor sharing the same data, cut from the graph.
     pub fn detach(&self) -> Tensor {
         Tensor::from_storage(self.storage(), self.shape().to_vec())
@@ -306,6 +359,7 @@ impl Tensor {
         assert!(self.requires_grad(), "backward() on a tensor that does not require grad");
         assert_eq!(seed.shape(), self.shape(), "seed gradient shape mismatch");
         let _guard = NoGradGuard::new();
+        let _no_autocast = AutocastGuard::new(None);
 
         // Topological order (parents before children) via iterative DFS.
         let mut order: Vec<Tensor> = Vec::new();
@@ -346,9 +400,12 @@ impl Tensor {
                     let pgrads = (node.backward)(&g);
                     debug_assert_eq!(pgrads.len(), node.parents.len(), "{}: wrong number of grads", node.name);
                     for (p, pg) in node.parents.iter().zip(pgrads) {
-                        let Some(pg) = pg else { continue };
+                        let Some(mut pg) = pg else { continue };
                         if !p.requires_grad() {
                             continue;
+                        }
+                        if pg.dtype() != p.dtype() {
+                            pg = pg.to_dtype(p.dtype());
                         }
                         assert_eq!(
                             pg.shape(),

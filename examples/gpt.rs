@@ -4,6 +4,7 @@
 //!     cargo run --release --features mps --example gpt -- --device mps
 //!     cargo run --release --example gpt -- --accum 4     # gradient accumulation (4 micro-batches per step)
 //!     cargo run --release --example gpt -- --resume      # continue from runs/gpt/last.safetensors
+//!     cargo run --release --features mps --example gpt -- --device mps --amp f16   # mixed precision
 
 use rustnn::nn::{GPTConfig, Module, GPT};
 use rustnn::checkpoint::{self, TrainState};
@@ -39,8 +40,13 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let accum: usize = args.iter().position(|a| a == "--accum").map_or(1, |i| args[i + 1].parse().expect("--accum N"));
     let resume = args.iter().any(|a| a == "--resume");
+    let amp: Option<DType> = args.iter().position(|a| a == "--amp").map(|i| match args[i + 1].as_str() {
+        "f16" => DType::F16,
+        "bf16" => DType::BF16,
+        other => panic!("--amp expects f16 or bf16, got {other}"),
+    });
     // first positional argument (not a flag or a flag's value) is the text file
-    let takes_value = |a: &str| a == "--device" || a == "--accum";
+    let takes_value = |a: &str| a == "--device" || a == "--accum" || a == "--amp";
     let path = args.iter().enumerate().find(|(i, a)| !a.starts_with("--") && (*i == 0 || !takes_value(&args[i - 1])));
     let text = match path.map(|(_, p)| p.clone()) {
         Some(p) => std::fs::read_to_string(p).expect("read text file"),
@@ -69,6 +75,11 @@ fn main() {
         state = checkpoint::load(ckpt, &model, &mut opt).expect("load checkpoint");
         println!("resumed from {ckpt} at step {}", state.step);
     }
+    // f16 needs loss scaling; bf16 has the f32 exponent range
+    let mut scaler = rustnn::amp::GradScaler::with_scale(if amp == Some(DType::F16) { 65536.0 } else { 1.0 });
+    if let Some(d) = amp {
+        println!("mixed precision: autocast {d}, f32 master weights");
+    }
     if accum > 1 {
         println!("gradient accumulation: {accum} micro-batches of {batch} per step");
     }
@@ -87,15 +98,23 @@ fn main() {
                 xs.extend_from_slice(&data[s..s + block]);
                 ys.extend_from_slice(&data[s + 1..s + block + 1]);
             }
-            let logits = model.forward_ids(&xs, batch, block).reshape(&[batch * block, cfg.vocab_size]);
+            let forward = || {
+                let logits = model.forward_ids(&xs, batch, block).reshape(&[batch * block, cfg.vocab_size]);
+                F::cross_entropy(&logits, &ys, 0.0)
+            };
+            let loss = match amp {
+                Some(d) => rustnn::autocast(d, forward),
+                None => forward(),
+            };
             // gradients add up in .grad across backward() calls; scale so the
             // step uses the mean over all micro-batches
-            let loss = F::cross_entropy(&logits, &ys, 0.0) * (1.0 / accum as f32);
-            loss.backward();
+            let loss = loss * (1.0 / accum as f32);
+            scaler.scale(&loss).backward();
             step_loss += loss.item();
         }
+        scaler.unscale(&opt);
         clip_grad_norm(opt.params(), 1.0);
-        opt.step();
+        scaler.step(&mut opt);
         state.step += 1;
         if step.is_multiple_of(50) || step == steps - 1 {
             println!("step {step:4}  loss {step_loss:.4}  lr {:.5}  ({:.1}s)", opt.lr(), t0.elapsed().as_secs_f32());

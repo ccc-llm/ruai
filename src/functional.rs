@@ -24,7 +24,8 @@ pub fn cross_entropy(logits: &Tensor, targets: impl IntoIndices, label_smoothing
     let n = logits.shape()[0];
     let t = targets.into_indices(logits.device());
     assert_eq!(t.numel(), n, "cross_entropy: {} targets for {n} rows", t.numel());
-    let lsm = logits.log_softmax(-1);
+    // losses are always computed in f32 (also under autocast)
+    let lsm = logits.to_dtype(crate::DType::F32).log_softmax(-1);
     let nll = -lsm.gather(1, &t.reshape(&[n, 1])).mean_all();
     if label_smoothing > 0.0 {
         let smooth = -lsm.mean(-1, false).mean_all();
@@ -56,11 +57,19 @@ pub fn conv2d(x: &Tensor, weight: &Tensor, bias: Option<&Tensor>, stride: usize,
     let (n, h, w) = (x.shape()[0], x.shape()[2], x.shape()[3]);
     let oh = (h + 2 * padding - kh) / stride + 1;
     let ow = (w + 2 * padding - kw) / stride + 1;
+    // under autocast, lower to half before im2col (the patch matrix is the big tensor)
+    let x = match crate::tensor::autocast_dtype() {
+        Some(d) => x.to_dtype(d),
+        None => x.clone(),
+    };
     let cols = x.im2col(kh, kw, stride, padding); // [N, C*KH*KW, L]
     let wmat = weight.reshape(&[oc, c * kh * kw]);
     let out = wmat.matmul(&cols).reshape(&[n, oc, oh, ow]); // [N, OC, L] -> NCHW
     match bias {
-        Some(b) => out + b.reshape(&[1, oc, 1, 1]),
+        Some(b) => {
+            let b = b.reshape(&[1, oc, 1, 1]).to_dtype(out.dtype());
+            out + b
+        }
         None => out,
     }
 }
@@ -116,7 +125,7 @@ pub fn dropout(x: &Tensor, p: f32, training: bool) -> Tensor {
         .into_iter()
         .map(|u| if u < keep { 1.0 / keep } else { 0.0 })
         .collect();
-    x * &Tensor::from_vec(mask, x.shape(), x.device())
+    x * &Tensor::from_vec(mask, x.shape(), x.device()).to_dtype(x.dtype())
 }
 
 /// Additive causal mask `[T, T]`: 0 on/below the diagonal, -inf-ish above.

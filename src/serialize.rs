@@ -2,9 +2,9 @@
 //!
 //! The default format is [safetensors](https://huggingface.co/docs/safetensors)
 //! (via Hugging Face's reference implementation), so weights interoperate with
-//! PyTorch / Hugging Face: `F32` and `I32` are written as-is; `F16`, `BF16`,
-//! `F64` load as `F32`, and `I64`, `I16`, `I8`, `U8`, `U16`, `U32`, `BOOL` load as
-//! `I32`. Files in the legacy `RSNN` format (v0.1-v0.4) can still be loaded.
+//! PyTorch / Hugging Face: `F32`, `F16`, `BF16` and `I32` are written and
+//! read as-is; `F64` loads as `F32`, and `I64`, `I16`, `I8`, `U8`, `U16`, `U32`,
+//! `BOOL` load as `I32`. Files in the legacy `RSNN` format (v0.1-v0.4) can still be loaded.
 
 use crate::backend::DType;
 use crate::nn::Module;
@@ -38,6 +38,9 @@ pub fn to_safetensors_bytes(tensors: &[(String, Tensor)], metadata: Option<Metad
         let (dtype, bytes) = match t.dtype() {
             DType::F32 => (StDtype::F32, t.to_vec().iter().flat_map(|v| v.to_le_bytes()).collect()),
             DType::I32 => (StDtype::I32, t.to_vec_i32().iter().flat_map(|v| v.to_le_bytes()).collect()),
+            // exact: the values are already representable in the half format
+            DType::F16 => (StDtype::F16, t.to_vec().iter().flat_map(|&v| half::f16::from_f32(v).to_le_bytes()).collect()),
+            DType::BF16 => (StDtype::BF16, t.to_vec().iter().flat_map(|&v| half::bf16::from_f32(v).to_le_bytes()).collect()),
         };
         raw.push((name.clone(), dtype, t.shape().to_vec(), bytes));
     }
@@ -53,28 +56,6 @@ pub fn save_safetensors(path: impl AsRef<Path>, tensors: &[(String, Tensor)], me
     std::fs::write(path, to_safetensors_bytes(tensors, metadata)?)
 }
 
-fn f16_to_f32(h: u16) -> f32 {
-    let sign = ((h >> 15) as u32) << 31;
-    let exp = ((h >> 10) & 0x1f) as u32;
-    let frac = (h & 0x3ff) as u32;
-    let bits = match exp {
-        0 if frac == 0 => sign,
-        0 => {
-            // subnormal: normalize
-            let mut e = 127 - 15 + 1;
-            let mut f = frac;
-            while f & 0x400 == 0 {
-                f <<= 1;
-                e -= 1;
-            }
-            sign | (e << 23) | ((f & 0x3ff) << 13)
-        }
-        0x1f => sign | 0x7f80_0000 | (frac << 13), // inf / nan
-        _ => sign | ((exp + 127 - 15) << 23) | (frac << 13),
-    };
-    f32::from_bits(bits)
-}
-
 fn view_to_tensor(name: &str, v: &TensorView) -> io::Result<Tensor> {
     let shape = v.shape().to_vec();
     let b = v.data();
@@ -87,15 +68,17 @@ fn view_to_tensor(name: &str, v: &TensorView) -> io::Result<Tensor> {
             Device::Cpu,
         ),
         StDtype::F16 => Tensor::from_vec(
-            words(2).map(|c| f16_to_f32(u16::from_le_bytes([c[0], c[1]]))).collect(),
+            words(2).map(|c| half::f16::from_le_bytes([c[0], c[1]]).to_f32()).collect(),
             &shape,
             Device::Cpu,
-        ),
+        )
+        .to_dtype(DType::F16),
         StDtype::BF16 => Tensor::from_vec(
-            words(2).map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)).collect(),
+            words(2).map(|c| half::bf16::from_le_bytes([c[0], c[1]]).to_f32()).collect(),
             &shape,
             Device::Cpu,
-        ),
+        )
+        .to_dtype(DType::BF16),
         StDtype::I32 => Tensor::from_vec_i32(words(4).map(|c| i32::from_le_bytes(c.try_into().unwrap())).collect(), &shape, Device::Cpu),
         StDtype::I64 => {
             let v = words(8)

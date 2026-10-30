@@ -31,9 +31,12 @@ impl Linear {
 
 impl Module for Linear {
     fn forward(&self, x: &Tensor) -> Tensor {
-        let y = x.matmul(&self.weight);
+        let y = x.matmul(&self.weight); // half under autocast
         match &self.bias {
-            Some(b) => y + b,
+            Some(b) => {
+                let b = b.to_dtype(y.dtype());
+                y + b
+            }
             None => y,
         }
     }
@@ -144,6 +147,8 @@ fn mean_nhw(x: &Tensor) -> Tensor {
 
 impl Module for BatchNorm2d {
     fn forward(&self, x: &Tensor) -> Tensor {
+        // batch statistics are computed in f32 (also under autocast)
+        let x = &x.to_dtype(self.weight.dtype());
         let (mean, var) = if self.training.load(Ordering::Relaxed) {
             let mean = mean_nhw(x);
             let xc = x - &mean;

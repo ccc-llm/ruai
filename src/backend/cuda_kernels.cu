@@ -1,31 +1,83 @@
 // CUDA kernels for the CUDA backend; a one-to-one port of mps_kernels.metal.
-// Compiled at runtime with NVRTC (precise math, no fast-math). Parameter
-// structs are passed by value and mirror `#[repr(C)]` structs in cuda.rs.
+// Compiled at runtime with NVRTC (precise math, no fast-math, no headers).
+// Parameter structs are passed by value and mirror `#[repr(C)]` structs in
+// cuda.rs. Kernel names must match backend/kernel_names.rs.
+//
+// Float kernels are templates over the storage type (float, f16_t, bf16_t)
+// and always compute in f32: `ld` widens a stored value, `st<T>` rounds back.
 
 #define MAX_RANK 8
 #define INF __int_as_float(0x7f800000)
 
 typedef unsigned int u32;
+typedef unsigned short u16;
 typedef unsigned long long u64; // NVRTC has no <cstddef>
+
+// half types as raw bits (no cuda_fp16.h / cuda_bf16.h needed)
+struct f16_t { u16 bits; };
+struct bf16_t { u16 bits; };
+
+__device__ __forceinline__ float ld(float v) { return v; }
+__device__ __forceinline__ float ld(int v) { return (float)v; }
+__device__ __forceinline__ float ld(f16_t v) {
+    float f;
+    asm("cvt.f32.f16 %0, %1;" : "=f"(f) : "h"(v.bits));
+    return f;
+}
+__device__ __forceinline__ float ld(bf16_t v) { return __int_as_float(((u32)v.bits) << 16); }
+
+template <typename T> __device__ __forceinline__ T st(float f);
+template <> __device__ __forceinline__ float st<float>(float f) { return f; }
+template <> __device__ __forceinline__ int st<int>(float f) { return (int)f; }
+template <> __device__ __forceinline__ f16_t st<f16_t>(float f) {
+    f16_t r;
+    asm("cvt.rn.f16.f32 %0, %1;" : "=h"(r.bits) : "f"(f));
+    return r;
+}
+template <> __device__ __forceinline__ bf16_t st<bf16_t>(float f) {
+    u32 u = (u32)__float_as_int(f);
+    bf16_t r;
+    if ((u & 0x7fffffffu) > 0x7f800000u) {
+        r.bits = 0x7fc0; // NaN
+    } else {
+        u += 0x7fffu + ((u >> 16) & 1u); // round to nearest even
+        r.bits = (u16)(u >> 16);
+    }
+    return r;
+}
 
 __device__ __forceinline__ u32 gid() { return blockIdx.x * blockDim.x + threadIdx.x; }
 
+// MAKE(suffix, type) for each float storage type
+#define FOR_FLOATS(MAKE) MAKE(f32, float) MAKE(f16, f16_t) MAKE(bf16, bf16_t)
+
 // ---------------------------------------------------------------- memory
 
-extern "C" __global__ void fill_u32(u32* out, u32 n, u32 bits) {
+template <typename W> __device__ void fill_impl(W* out, u32 n, u32 bits) {
     u32 i = gid();
-    if (i < n) out[i] = bits;
+    if (i < n) out[i] = (W)bits;
 }
+extern "C" __global__ void fill_u32(u32* out, u32 n, u32 bits) { fill_impl<u32>(out, n, bits); }
+extern "C" __global__ void fill_u16(u16* out, u32 n, u32 bits) { fill_impl<u16>(out, n, bits); }
 
-extern "C" __global__ void cast_f32_i32(const float* x, int* y, u32 n) {
+template <typename S, typename D> __device__ void cast_impl(const S* x, D* y, u32 n) {
     u32 i = gid();
-    if (i < n) y[i] = (int)x[i];
+    if (i < n) y[i] = st<D>(ld(x[i]));
 }
-
-extern "C" __global__ void cast_i32_f32(const int* x, float* y, u32 n) {
-    u32 i = gid();
-    if (i < n) y[i] = (float)x[i];
-}
+#define CAST(sn, S, dn, D) \
+    extern "C" __global__ void cast_##sn##_##dn(const S* x, D* y, u32 n) { cast_impl<S, D>(x, y, n); }
+CAST(f32, float, f16, f16_t)
+CAST(f32, float, bf16, bf16_t)
+CAST(f32, float, i32, int)
+CAST(f16, f16_t, f32, float)
+CAST(f16, f16_t, bf16, bf16_t)
+CAST(f16, f16_t, i32, int)
+CAST(bf16, bf16_t, f32, float)
+CAST(bf16, bf16_t, f16, f16_t)
+CAST(bf16, bf16_t, i32, int)
+CAST(i32, int, f32, float)
+CAST(i32, int, f16, f16_t)
+CAST(i32, int, bf16, bf16_t)
 
 // ---------------------------------------------------------------- elementwise
 
@@ -42,10 +94,10 @@ __device__ __forceinline__ float gelu_grad_f(float x) {
 }
 
 // op codes must match unary_code() in cuda.rs
-extern "C" __global__ void unary_f32(const float* x, float* y, u32 n, u32 op) {
+template <typename T> __device__ void unary_impl(const T* x, T* y, u32 n, u32 op) {
     u32 i = gid();
     if (i >= n) return;
-    float v = x[i];
+    float v = ld(x[i]);
     float r;
     switch (op) {
         case 0: r = -v; break;
@@ -62,8 +114,11 @@ extern "C" __global__ void unary_f32(const float* x, float* y, u32 n, u32 op) {
         case 11: r = sinf(v); break;
         default: r = cosf(v); break;
     }
-    y[i] = r;
+    y[i] = st<T>(r);
 }
+#define MAKE_UNARY(suf, T) \
+    extern "C" __global__ void unary_##suf(const T* x, T* y, u32 n, u32 op) { unary_impl<T>(x, y, n, op); }
+FOR_FLOATS(MAKE_UNARY)
 
 struct BinParams {
     u32 n;
@@ -91,7 +146,7 @@ __device__ __forceinline__ float binop(u32 op, float a, float b) {
     }
 }
 
-extern "C" __global__ void binary_f32(const float* a, const float* b, float* out, BinParams p) {
+template <typename T> __device__ void binary_impl(const T* a, const T* b, T* out, const BinParams& p) {
     u32 i = gid();
     if (i >= p.n) return;
     u32 rem = i, oa = 0, ob = 0;
@@ -101,8 +156,11 @@ extern "C" __global__ void binary_f32(const float* a, const float* b, float* out
         oa += c * p.sa[d];
         ob += c * p.sb[d];
     }
-    out[i] = binop(p.op, a[oa], b[ob]);
+    out[i] = st<T>(binop(p.op, ld(a[oa]), ld(b[ob])));
 }
+#define MAKE_BINARY(suf, T) \
+    extern "C" __global__ void binary_##suf(const T* a, const T* b, T* out, BinParams p) { binary_impl<T>(a, b, out, p); }
+FOR_FLOATS(MAKE_BINARY)
 
 struct CopyParams {
     u32 n;
@@ -113,8 +171,8 @@ struct CopyParams {
     u32 strides[MAX_RANK];
 };
 
-// out[i] = x[base + strided offset of i]  (dtype agnostic: copies 32-bit words)
-extern "C" __global__ void strided_copy(const u32* x, u32* out, CopyParams p) {
+// out[i] = x[base + strided offset of i]  (dtype agnostic: 32- or 16-bit words)
+template <typename W> __device__ void strided_copy_impl(const W* x, W* out, const CopyParams& p) {
     u32 i = gid();
     if (i >= p.n) return;
     u32 rem = i, o = p.base;
@@ -125,6 +183,8 @@ extern "C" __global__ void strided_copy(const u32* x, u32* out, CopyParams p) {
     }
     out[i] = x[o];
 }
+extern "C" __global__ void strided_copy_u32(const u32* x, u32* out, CopyParams p) { strided_copy_impl<u32>(x, out, p); }
+extern "C" __global__ void strided_copy_u16(const u16* x, u16* out, CopyParams p) { strided_copy_impl<u16>(x, out, p); }
 
 struct CatParams {
     u32 n;
@@ -133,17 +193,22 @@ struct CatParams {
     u32 offset;
 };
 
-extern "C" __global__ void cat_copy(const u32* x, u32* out, CatParams p) {
+template <typename W> __device__ void cat_copy_impl(const W* x, W* out, const CatParams& p) {
     u32 i = gid();
     if (i >= p.n) return;
     u32 o = i / p.blk_in, j = i % p.blk_in;
     out[o * p.blk_out + p.offset + j] = x[i];
 }
+extern "C" __global__ void cat_copy_u32(const u32* x, u32* out, CatParams p) { cat_copy_impl<u32>(x, out, p); }
+extern "C" __global__ void cat_copy_u16(const u16* x, u16* out, CatParams p) { cat_copy_impl<u16>(x, out, p); }
 
-extern "C" __global__ void where_f32(const float* c, const float* a, const float* b, float* out, u32 n) {
+template <typename T> __device__ void where_impl(const T* c, const T* a, const T* b, T* out, u32 n) {
     u32 i = gid();
-    if (i < n) out[i] = c[i] != 0.0f ? a[i] : b[i];
+    if (i < n) out[i] = ld(c[i]) != 0.0f ? a[i] : b[i];
 }
+#define MAKE_WHERE(suf, T) \
+    extern "C" __global__ void where_##suf(const T* c, const T* a, const T* b, T* out, u32 n) { where_impl<T>(c, a, b, out, n); }
+FOR_FLOATS(MAKE_WHERE)
 
 // ---------------------------------------------------------------- reductions
 
@@ -182,7 +247,7 @@ __device__ float block_reduce(u32 op, float v, float* buf) {
 }
 
 // One thread per output element (used when inner > 1, and for argmax).
-extern "C" __global__ void reduce_strided(const float* x, float* out, RedParams p) {
+template <typename T> __device__ void reduce_strided_impl(const T* x, T* out, const RedParams& p) {
     u32 t = gid();
     if (t >= p.outer * p.inner) return;
     u32 o = t / p.inner, i = t % p.inner;
@@ -191,29 +256,35 @@ extern "C" __global__ void reduce_strided(const float* x, float* out, RedParams 
         float best = -INF;
         u32 bi = 0;
         for (u32 l = 0; l < p.len; ++l) {
-            float v = x[base + l * p.inner];
+            float v = ld(x[base + l * p.inner]);
             if (v > best) { best = v; bi = l; }
         }
         ((int*)out)[t] = (int)bi;
         return;
     }
     float acc = red_init(p.op);
-    for (u32 l = 0; l < p.len; ++l) acc = red_combine(p.op, acc, x[base + l * p.inner]);
-    out[t] = acc;
+    for (u32 l = 0; l < p.len; ++l) acc = red_combine(p.op, acc, ld(x[base + l * p.inner]));
+    out[t] = st<T>(acc);
 }
+#define MAKE_REDUCE_STRIDED(suf, T) \
+    extern "C" __global__ void reduce_strided_##suf(const T* x, T* out, RedParams p) { reduce_strided_impl<T>(x, out, p); }
+FOR_FLOATS(MAKE_REDUCE_STRIDED)
 
 // One block per row (inner == 1).
-extern "C" __global__ void reduce_rows(const float* x, float* out, RedParams p) {
+template <typename T> __device__ void reduce_rows_impl(const T* x, T* out, const RedParams& p) {
     __shared__ float buf[32];
     u32 row = blockIdx.x;
-    const float* xr = x + (u64)row * p.len;
+    const T* xr = x + (u64)row * p.len;
     float acc = red_init(p.op);
-    for (u32 l = threadIdx.x; l < p.len; l += blockDim.x) acc = red_combine(p.op, acc, xr[l]);
+    for (u32 l = threadIdx.x; l < p.len; l += blockDim.x) acc = red_combine(p.op, acc, ld(xr[l]));
     acc = block_reduce(p.op, acc, buf);
-    if (threadIdx.x == 0) out[row] = acc;
+    if (threadIdx.x == 0) out[row] = st<T>(acc);
 }
+#define MAKE_REDUCE_ROWS(suf, T) \
+    extern "C" __global__ void reduce_rows_##suf(const T* x, T* out, RedParams p) { reduce_rows_impl<T>(x, out, p); }
+FOR_FLOATS(MAKE_REDUCE_ROWS)
 
-// ---------------------------------------------------------------- fused row ops
+// ---------------------------------------------------------------- fused row ops (f32)
 
 extern "C" __global__ void softmax_rows(const float* x, float* y, u32 d, u32 log_mode) {
     __shared__ float buf[32];
@@ -305,12 +376,17 @@ extern "C" __global__ void adam_step(const float* p, const float* g, const float
 
 // ---------------------------------------------------------------- indexing
 
-extern "C" __global__ void index_select(const float* t, const int* idx, float* out, u32 n, u32 cols) {
+template <typename T> __device__ void index_select_impl(const T* t, const int* idx, T* out, u32 n, u32 cols) {
     u32 i = gid();
     if (i >= n) return;
     u32 r = i / cols, c = i % cols;
     out[i] = t[(u64)idx[r] * cols + c];
 }
+#define MAKE_INDEX_SELECT(suf, T)                                                                \
+    extern "C" __global__ void index_select_##suf(const T* t, const int* idx, T* out, u32 n, u32 cols) { \
+        index_select_impl<T>(t, idx, out, n, cols);                                              \
+    }
+FOR_FLOATS(MAKE_INDEX_SELECT)
 
 extern "C" __global__ void index_add(const float* src, const int* idx, float* out, u32 n, u32 cols) {
     u32 i = gid();
@@ -346,7 +422,7 @@ struct ConvParams {
     u32 n, c, h, w, kh, kw, stride, padding, oh, ow;
 };
 
-extern "C" __global__ void im2col(const float* x, float* cols, ConvParams g) {
+template <typename T> __device__ void im2col_impl(const T* x, T* cols, const ConvParams& g) {
     u32 t = gid();
     u32 l = g.oh * g.ow;
     u32 total = g.n * g.c * g.kh * g.kw * l;
@@ -360,14 +436,18 @@ extern "C" __global__ void im2col(const float* x, float* cols, ConvParams g) {
     u32 n = r / (g.c * g.kh * g.kw);
     int iy = (int)(oy * g.stride + ki) - (int)g.padding;
     int ix = (int)(ox * g.stride + kj) - (int)g.padding;
-    float v = 0.0f;
+    T v = st<T>(0.0f);
     if (iy >= 0 && iy < (int)g.h && ix >= 0 && ix < (int)g.w) {
         v = x[((n * g.c + c) * g.h + (u32)iy) * g.w + (u32)ix];
     }
     cols[t] = v;
 }
+#define MAKE_IM2COL(suf, T) \
+    extern "C" __global__ void im2col_##suf(const T* x, T* cols, ConvParams g) { im2col_impl<T>(x, cols, g); }
+FOR_FLOATS(MAKE_IM2COL)
 
-extern "C" __global__ void col2im(const float* cols, float* x, ConvParams g) {
+// one thread per input pixel: gathers every column entry that read it
+template <typename T> __device__ void col2im_impl(const T* cols, T* x, const ConvParams& g) {
     u32 t = gid();
     u32 total = g.n * g.c * g.h * g.w;
     if (t >= total) return;
@@ -388,8 +468,11 @@ extern "C" __global__ void col2im(const float* cols, float* x, ConvParams g) {
             u32 ox = (u32)tx / g.stride;
             if (ox >= g.ow) continue;
             u32 r = n * (g.c * g.kh * g.kw) + (c * g.kh + ki) * g.kw + kj;
-            acc += cols[(u64)r * l + oy * g.ow + ox];
+            acc += ld(cols[(u64)r * l + oy * g.ow + ox]);
         }
     }
-    x[t] = acc;
+    x[t] = st<T>(acc);
 }
+#define MAKE_COL2IM(suf, T) \
+    extern "C" __global__ void col2im_##suf(const T* cols, T* x, ConvParams g) { col2im_impl<T>(cols, x, g); }
+FOR_FLOATS(MAKE_COL2IM)

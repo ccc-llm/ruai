@@ -97,7 +97,7 @@ fn dtypes() {
 }
 
 #[test]
-#[should_panic(expected = "only f32 tensors can require grad")]
+#[should_panic(expected = "only floating-point tensors can require grad")]
 fn int_tensors_cannot_require_grad() {
     Tensor::from_indices(&[1], &[1], CPU).requires_grad_();
 }

@@ -17,6 +17,8 @@
 pub mod cpu;
 #[cfg(feature = "cuda")]
 pub mod cuda;
+#[cfg(any(feature = "mps", feature = "cuda"))]
+mod kernel_names;
 #[cfg(feature = "mps")]
 pub mod mps;
 
@@ -27,15 +29,47 @@ use std::sync::Arc;
 /// Element type of a storage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DType {
-    /// 32-bit float: all differentiable math.
+    /// 32-bit float: the default for all differentiable math.
     F32,
+    /// IEEE half precision (5-bit exponent): mixed-precision compute.
+    F16,
+    /// bfloat16 (8-bit exponent, f32 range): mixed-precision compute.
+    BF16,
     /// 32-bit signed int: indices (embedding ids, class targets, argmax results).
     I32,
 }
 
 impl DType {
     pub fn size_in_bytes(&self) -> usize {
-        4
+        match self {
+            DType::F16 | DType::BF16 => 2,
+            DType::F32 | DType::I32 => 4,
+        }
+    }
+
+    pub fn is_float(&self) -> bool {
+        !matches!(self, DType::I32)
+    }
+
+    pub fn is_half(&self) -> bool {
+        matches!(self, DType::F16 | DType::BF16)
+    }
+
+    /// Result type of a binary op between dtypes `a` and `b` (`a_scalar` /
+    /// `b_scalar`: the operand is rank 0). Same dtype -> itself; int with
+    /// float -> the float; two floats -> F32, except that a rank-0 float
+    /// scalar adopts the other operand's dtype (so `half_tensor * 2.0` stays half).
+    pub fn promote(a: DType, a_scalar: bool, b: DType, b_scalar: bool) -> DType {
+        if a == b {
+            return a;
+        }
+        match (a.is_float(), b.is_float()) {
+            (true, false) => a,
+            (false, true) => b,
+            _ if a_scalar && !b_scalar => b,
+            _ if b_scalar && !a_scalar => a,
+            _ => DType::F32,
+        }
     }
 }
 
@@ -43,6 +77,8 @@ impl fmt::Display for DType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DType::F32 => write!(f, "f32"),
+            DType::F16 => write!(f, "f16"),
+            DType::BF16 => write!(f, "bf16"),
             DType::I32 => write!(f, "i32"),
         }
     }
@@ -52,6 +88,8 @@ impl fmt::Display for DType {
 #[derive(Clone)]
 pub enum CpuStorage {
     F32(Arc<Vec<f32>>),
+    F16(Arc<Vec<half::f16>>),
+    BF16(Arc<Vec<half::bf16>>),
     I32(Arc<Vec<i32>>),
 }
 
@@ -80,6 +118,8 @@ impl Storage {
     pub fn dtype(&self) -> DType {
         match self {
             Storage::Cpu(CpuStorage::F32(_)) => DType::F32,
+            Storage::Cpu(CpuStorage::F16(_)) => DType::F16,
+            Storage::Cpu(CpuStorage::BF16(_)) => DType::BF16,
             Storage::Cpu(CpuStorage::I32(_)) => DType::I32,
             #[cfg(feature = "cuda")]
             Storage::Cuda(s) => s.dtype,
@@ -91,6 +131,8 @@ impl Storage {
     pub fn len(&self) -> usize {
         match self {
             Storage::Cpu(CpuStorage::F32(v)) => v.len(),
+            Storage::Cpu(CpuStorage::F16(v)) => v.len(),
+            Storage::Cpu(CpuStorage::BF16(v)) => v.len(),
             Storage::Cpu(CpuStorage::I32(v)) => v.len(),
             #[cfg(feature = "cuda")]
             Storage::Cuda(s) => s.len,
@@ -126,6 +168,8 @@ impl Storage {
         match self.dtype() {
             DType::F32 => be.from_f32(self.to_vec()),
             DType::I32 => be.from_i32(self.to_vec_i32()),
+            // through f32 on the host (exact: every half value is an f32)
+            d => be.cast(&be.from_f32(self.to_vec()), d),
         }
     }
 }
@@ -237,8 +281,11 @@ fn keep_axis(shape: &[usize], axis: usize) -> Vec<usize> {
 /// The operations a device must provide.
 ///
 /// Shapes are passed explicitly; all inputs and outputs are contiguous.
-/// Unless stated otherwise, inputs and outputs are `F32`; index arguments are
-/// `I32` storages on the same device. Each method maps closely to a standard
+/// Float inputs may be `F32`, `F16` or `BF16` (all operands of one call share
+/// a dtype; tensor-level ops promote before calling) and outputs keep that
+/// dtype, except where noted. Half inputs are computed with f32 internally.
+/// Index arguments are `I32` storages on the same device. `adam_step`,
+/// `index_add` and `scatter_add` are only required for `F32`. Each method maps closely to a standard
 /// GPU kernel / library call (cuBLAS / MPSMatrixMultiplication for `matmul`,
 /// simple elementwise kernels for `unary`/`binary`, etc.).
 #[allow(clippy::wrong_self_convention)]
@@ -262,7 +309,8 @@ pub trait Backend: Send + Sync {
     // ---- elementwise ----
     fn unary(&self, op: UnaryOp, x: &Storage) -> Storage;
     /// Elementwise binary op with NumPy broadcasting into `out_shape`.
-    /// Comparison ops also accept I32 inputs (output is always F32).
+    /// Comparison ops (`Eq`/`Gt`/`Lt`) return a 0/1 mask in the inputs' float
+    /// dtype, and also accept `I32` inputs (then the mask is `F32`).
     fn binary(
         &self,
         op: BinaryOp,

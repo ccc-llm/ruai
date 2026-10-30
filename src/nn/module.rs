@@ -49,6 +49,18 @@ pub trait Module: Send + Sync {
         }
     }
 
+    /// Convert all floating-point parameters and buffers to `dtype` in place
+    /// (e.g. `F16` for half-precision inference). For mixed-precision
+    /// *training* keep the model in f32 and use [`crate::autocast`] instead.
+    fn to_dtype(&self, dtype: crate::DType) {
+        assert!(dtype.is_float(), "Module::to_dtype needs a floating-point dtype");
+        for (_, t) in self.state_dict() {
+            if t.dtype().is_float() && t.dtype() != dtype {
+                t.set_data(t.backend().cast(&t.storage(), dtype));
+            }
+        }
+    }
+
     fn zero_grad(&self) {
         for p in self.parameters() {
             p.zero_grad();

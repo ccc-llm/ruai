@@ -4,7 +4,7 @@
 use crate::backend::{BinaryOp, Conv2dGeom, DType, MatmulSpec, ReduceOp, UnaryOp};
 use crate::device::Device;
 use crate::shape::{broadcast_shape, norm_dim, numel};
-use crate::tensor::Tensor;
+use crate::tensor::{autocast_dtype, Tensor};
 
 fn need(t: &Tensor) -> bool {
     t.requires_grad()
@@ -14,8 +14,17 @@ fn same_device(a: &Tensor, b: &Tensor) {
     assert_eq!(a.device(), b.device(), "tensors are on different devices ({} vs {})", a.device(), b.device());
 }
 
-fn assert_f32(t: &Tensor, op: &str) {
-    assert_eq!(t.dtype(), DType::F32, "{op}: expected an f32 tensor, got {}", t.dtype());
+fn assert_float(t: &Tensor, op: &str) {
+    assert!(t.dtype().is_float(), "{op}: expected a floating-point tensor, got {}", t.dtype());
+}
+
+/// Cast both operands to their promoted dtype ([`DType::promote`]).
+fn promoted(a: &Tensor, b: &Tensor) -> (Tensor, Tensor) {
+    if a.dtype() == b.dtype() {
+        return (a.clone(), b.clone());
+    }
+    let d = DType::promote(a.dtype(), a.rank() == 0, b.dtype(), b.rank() == 0);
+    (a.to_dtype(d), b.to_dtype(d))
 }
 
 /// Anything usable as an index tensor: `&Tensor` (any dtype), `&[usize]`,
@@ -54,7 +63,7 @@ impl Tensor {
     // ------------------------------------------------------------------
 
     fn unary_raw(&self, op: UnaryOp) -> Tensor {
-        assert_f32(self, "unary op");
+        assert_float(self, "unary op");
         Tensor::from_storage(self.backend().unary(op, &self.storage()), self.shape().to_vec())
     }
 
@@ -128,6 +137,16 @@ impl Tensor {
 
     fn binary_raw(&self, op: BinaryOp, other: &Tensor) -> Tensor {
         same_device(self, other);
+        let (a, b) = promoted(self, other);
+        let (a, b) = if a.dtype() == DType::I32 && !matches!(op, BinaryOp::Eq | BinaryOp::Gt | BinaryOp::Lt) {
+            (a.to_dtype(DType::F32), b.to_dtype(DType::F32))
+        } else {
+            (a, b)
+        };
+        a.binary_raw_same(op, &b)
+    }
+
+    fn binary_raw_same(&self, op: BinaryOp, other: &Tensor) -> Tensor {
         let out_shape = broadcast_shape(self.shape(), other.shape());
         let s = self.backend().binary(op, &self.storage(), self.shape(), &other.storage(), other.shape(), &out_shape);
         Tensor::from_storage(s, out_shape)
@@ -137,8 +156,9 @@ impl Tensor {
     where
         F: Fn(&Tensor, &Tensor, &Tensor) -> (Option<Tensor>, Option<Tensor>) + Send + Sync + 'static,
     {
-        let out = self.binary_raw(op, other);
-        let (a, b) = (self.clone(), other.clone());
+        same_device(self, other);
+        let (a, b) = promoted(self, other);
+        let out = a.binary_raw(op, &b);
         Tensor::from_op(out.storage(), out.shape().to_vec(), vec![a.clone(), b.clone()], name, move |g| {
             let (ga, gb) = backward(g, &a, &b);
             vec![ga.map(|t| t.sum_to(a.shape())), gb.map(|t| t.sum_to(b.shape()))]
@@ -191,7 +211,8 @@ impl Tensor {
         same_device(cond, a);
         same_device(a, b);
         let shape = broadcast_shape(&broadcast_shape(cond.shape(), a.shape()), b.shape());
-        let c = cond.to_dtype(DType::F32).expand(&shape);
+        let (a, b) = promoted(a, b);
+        let c = cond.detach().to_dtype(a.dtype()).expand(&shape);
         let (ae, bexp) = (a.expand(&shape), b.expand(&shape));
         let s = a.backend().where_cond(&c.storage(), &ae.storage(), &bexp.storage());
         Tensor::from_op(s, shape, vec![ae, bexp], "where", move |g| {
@@ -473,9 +494,13 @@ impl Tensor {
     }
 
     /// Matrix product of the last two dims, batched over leading dims.
+    /// Inside [`crate::autocast`] both operands are cast to the autocast dtype.
     pub fn matmul(&self, other: &Tensor) -> Tensor {
-        let out = self.matmul_raw(other, false, false);
-        let (a, b) = (self.clone(), other.clone());
+        let (a, b) = match autocast_dtype() {
+            Some(d) if self.dtype().is_float() && other.dtype().is_float() => (self.to_dtype(d), other.to_dtype(d)),
+            _ => promoted(self, other),
+        };
+        let out = a.matmul_raw(&b, false, false);
         Tensor::from_op(out.storage(), out.shape().to_vec(), vec![a.clone(), b.clone()], "matmul", move |g| {
             let ga = need(&a).then(|| g.matmul_raw(&b, false, true).sum_to(a.shape()));
             let gb = need(&b).then(|| {
@@ -608,9 +633,27 @@ impl Tensor {
     // fused ops
     // ------------------------------------------------------------------
 
-    /// Softmax along `dim` (fused backend kernel).
+    /// Run a numerically sensitive op in f32 when `self` is half precision.
+    /// The result is cast back to the input dtype, except inside autocast
+    /// (where these ops deliberately produce f32).
+    fn in_f32(&self, f: impl FnOnce(&Tensor) -> Tensor) -> Tensor {
+        if !self.dtype().is_half() {
+            return f(self);
+        }
+        let y = f(&self.to_dtype(DType::F32));
+        if autocast_dtype().is_some() {
+            y
+        } else {
+            y.to_dtype(self.dtype())
+        }
+    }
+
+    /// Softmax along `dim` (fused backend kernel; f32 math for half inputs).
     pub fn softmax(&self, dim: isize) -> Tensor {
-        assert_f32(self, "softmax");
+        assert_float(self, "softmax");
+        if self.dtype().is_half() {
+            return self.in_f32(|x| x.softmax(dim));
+        }
         let ax = norm_dim(dim, self.rank());
         let shape = self.shape().to_vec();
         let s = self.backend().softmax(&self.storage(), &shape, ax);
@@ -621,9 +664,12 @@ impl Tensor {
         })
     }
 
-    /// Log-softmax along `dim` (fused backend kernel).
+    /// Log-softmax along `dim` (fused backend kernel; f32 math for half inputs).
     pub fn log_softmax(&self, dim: isize) -> Tensor {
-        assert_f32(self, "log_softmax");
+        assert_float(self, "log_softmax");
+        if self.dtype().is_half() {
+            return self.in_f32(|x| x.log_softmax(dim));
+        }
         let ax = norm_dim(dim, self.rank());
         let shape = self.shape().to_vec();
         let s = self.backend().log_softmax(&self.storage(), &shape, ax);
@@ -634,9 +680,13 @@ impl Tensor {
         })
     }
 
-    /// Normalize over the last dim to zero mean / unit variance (no affine).
+    /// Normalize over the last dim to zero mean / unit variance (no affine;
+    /// f32 math for half inputs).
     pub fn normalize_last(&self, eps: f32) -> Tensor {
-        assert_f32(self, "layer_norm");
+        assert_float(self, "layer_norm");
+        if self.dtype().is_half() {
+            return self.in_f32(|x| x.normalize_last(eps));
+        }
         let dim = self.dim(-1);
         let rows = self.numel() / dim.max(1);
         let (xh, rstd) = self.backend().layer_norm(&self.storage(), rows, dim, eps);

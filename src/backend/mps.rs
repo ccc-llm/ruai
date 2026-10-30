@@ -8,6 +8,7 @@
 //!   CPU never waits per op. Metal's automatic hazard tracking orders the work.
 //! * Kernel outputs come from a size-keyed buffer pool to avoid allocations.
 
+use super::kernel_names::{cast_kernel, copy_kernel, fk, kernel_names};
 use super::{AdamParams, Backend, BinaryOp, Conv2dGeom, DType, MatmulSpec, ReduceOp, Storage, UnaryOp};
 use crate::device::Device;
 use crate::shape::{broadcast_strides, numel, split_axis, strides};
@@ -34,29 +35,6 @@ type Pipeline = Retained<ProtocolObject<dyn MTLComputePipelineState>>;
 type GemmCache = HashMap<(bool, bool, usize, usize, usize), Retained<MPSMatrixMultiplication>>;
 
 const KERNELS: &str = include_str!("mps_kernels.metal");
-const KERNEL_NAMES: &[&str] = &[
-    "fill_u32",
-    "cast_f32_i32",
-    "cast_i32_f32",
-    "unary_f32",
-    "binary_f32",
-    "strided_copy",
-    "cat_copy",
-    "where_f32",
-    "reduce_strided",
-    "reduce_rows",
-    "softmax_rows",
-    "softmax_backward_rows",
-    "layer_norm_rows",
-    "layer_norm_backward_rows",
-    "adam_step",
-    "index_select",
-    "index_add",
-    "gather",
-    "scatter_add",
-    "im2col",
-    "col2im",
-];
 const MAX_RANK: usize = 8;
 /// Submit the command buffer after this many encoded ops.
 const OPS_PER_COMMIT: usize = 48;
@@ -168,7 +146,7 @@ impl Stream {
 pub struct MpsBackend {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
-    pipelines: HashMap<&'static str, Pipeline>,
+    pipelines: HashMap<String, Pipeline>,
     stream: Mutex<Stream>,
     pool: Mutex<Pool>,
     gemms: Mutex<GemmCache>,
@@ -349,11 +327,11 @@ impl MpsBackend {
         let library = device
             .newLibraryWithSource_options_error(&NSString::from_str(KERNELS), Some(&options))
             .unwrap_or_else(|e| panic!("failed to compile Metal kernels: {e:?}"));
-        let pipelines = KERNEL_NAMES
-            .iter()
-            .map(|&name| {
+        let pipelines = kernel_names()
+            .into_iter()
+            .map(|name| {
                 let f = library
-                    .newFunctionWithName(&NSString::from_str(name))
+                    .newFunctionWithName(&NSString::from_str(&name))
                     .unwrap_or_else(|| panic!("Metal kernel `{name}` not found"));
                 let p = device
                     .newComputePipelineStateWithFunction_error(&f)
@@ -373,7 +351,7 @@ impl MpsBackend {
 
     /// Uninitialized storage for `len` elements (from the pool when possible).
     fn alloc(&self, len: usize, dtype: DType) -> MpsStorage {
-        let bytes = len.max(1) * 4;
+        let bytes = len.max(1) * dtype.size_in_bytes();
         let buf = self.pool.lock().unwrap().take(bytes).unwrap_or_else(|| {
             self.device
                 .newBufferWithLength_options(bytes, MTLResourceOptions::StorageModeShared)
@@ -383,7 +361,7 @@ impl MpsBackend {
     }
 
     fn upload(&self, ptr: *const c_void, len: usize, dtype: DType) -> MpsStorage {
-        let bytes = len.max(1) * 4;
+        let bytes = len.max(1) * dtype.size_in_bytes();
         // a fresh buffer: pooled ones may still be in use by queued GPU work
         let buf = if len == 0 {
             self.device.newBufferWithLength_options(bytes, MTLResourceOptions::StorageModeShared)
@@ -415,7 +393,7 @@ impl MpsBackend {
         if n == 0 {
             return;
         }
-        let pso = &self.pipelines[kernel];
+        let pso = self.pipelines.get(kernel).unwrap_or_else(|| panic!("no Metal kernel `{kernel}`"));
         let mut stream = self.stream.lock().unwrap();
         let enc = stream.encoder(&self.queue);
         enc.setComputePipelineState(pso);
@@ -443,14 +421,37 @@ impl MpsBackend {
         }
     }
 
-    fn to_f32_storage(&self, s: &MpsStorage) -> MpsStorage {
-        if s.dtype == DType::F32 {
+    /// Convert a storage to `dtype` (no-op if it already is).
+    fn cast_storage(&self, s: &MpsStorage, dtype: DType) -> MpsStorage {
+        if s.dtype == dtype {
             return s.clone();
         }
-        let out = self.alloc(s.len, DType::F32);
+        let out = self.alloc(s.len, dtype);
         let n = u(s.len);
-        self.run("cast_i32_f32", &[Arg::Buf(s), Arg::Buf(&out), Arg::Bytes(bytes_of(&n))], Grid::Threads(s.len));
+        self.run(
+            &cast_kernel(s.dtype, dtype),
+            &[Arg::Buf(s), Arg::Buf(&out), Arg::Bytes(bytes_of(&n))],
+            Grid::Threads(s.len),
+        );
         out
+    }
+
+    fn to_f32_storage(&self, s: &MpsStorage) -> MpsStorage {
+        self.cast_storage(s, DType::F32)
+    }
+
+    /// Run an f32-only op on (possibly half) inputs: widen, run, round back.
+    fn via_f32(&self, dtype: DType, f: impl FnOnce() -> Storage) -> Storage {
+        let out = f();
+        if dtype.is_half() {
+            wrap(self.cast_storage(st(&out), dtype))
+        } else {
+            out
+        }
+    }
+
+    fn widen(&self, x: &Storage) -> Storage {
+        wrap(self.to_f32_storage(st(x)))
     }
 
     fn zeros(&self, len: usize) -> MpsStorage {
@@ -476,7 +477,7 @@ impl MpsBackend {
             shape: fill8(out_shape),
             strides: fill8(in_strides),
         };
-        self.run("strided_copy", &[Arg::Buf(x), Arg::Buf(&out), Arg::Bytes(bytes_of(&p))], Grid::Threads(n));
+        self.run(&copy_kernel("strided_copy", x.dtype), &[Arg::Buf(x), Arg::Buf(&out), Arg::Bytes(bytes_of(&p))], Grid::Threads(n));
         out
     }
 
@@ -502,14 +503,19 @@ impl MpsBackend {
 }
 
 fn matrix(s: &MpsStorage, rows: usize, cols: usize, batch: usize) -> Retained<MPSMatrix> {
+    let (es, dt) = match s.dtype {
+        DType::F32 => (4, MPSDataType::Float32),
+        DType::F16 => (2, MPSDataType::Float16),
+        d => panic!("MPS matmul: unsupported dtype {d}"),
+    };
     unsafe {
         let desc = MPSMatrixDescriptor::matrixDescriptorWithRows_columns_matrices_rowBytes_matrixBytes_dataType(
             rows,
             cols,
             batch,
-            cols * 4,
-            rows * cols * 4,
-            MPSDataType::Float32,
+            cols * es,
+            rows * cols * es,
+            dt,
         );
         MPSMatrix::initWithBuffer_descriptor(MPSMatrix::alloc(), s.buf.mtl(), &desc)
     }
@@ -537,6 +543,8 @@ impl Backend for MpsBackend {
         match s.dtype {
             DType::F32 => self.read::<f32>(s),
             DType::I32 => self.read::<i32>(s).into_iter().map(|v| v as f32).collect(),
+            DType::F16 => self.read::<half::f16>(s).into_iter().map(f32::from).collect(),
+            DType::BF16 => self.read::<half::bf16>(s).into_iter().map(f32::from).collect(),
         }
     }
 
@@ -544,7 +552,7 @@ impl Backend for MpsBackend {
         let s = st(x);
         match s.dtype {
             DType::I32 => self.read::<i32>(s),
-            DType::F32 => self.read::<f32>(s).into_iter().map(|v| v as i32).collect(),
+            _ => self.to_f32(x).into_iter().map(|v| v as i32).collect(),
         }
     }
 
@@ -553,10 +561,12 @@ impl Backend for MpsBackend {
         let bits = match dtype {
             DType::F32 => value.to_bits(),
             DType::I32 => (value as i32) as u32,
+            DType::F16 => half::f16::from_f32(value).to_bits() as u32,
+            DType::BF16 => half::bf16::from_f32(value).to_bits() as u32,
         };
         let n = u(len);
         self.run(
-            "fill_u32",
+            &copy_kernel("fill", dtype),
             &[Arg::Buf(&out), Arg::Bytes(bytes_of(&n)), Arg::Bytes(bytes_of(&bits))],
             Grid::Threads(len),
         );
@@ -568,20 +578,15 @@ impl Backend for MpsBackend {
         if s.dtype == dtype {
             return x.clone();
         }
-        let out = self.alloc(s.len, dtype);
-        let kernel = if dtype == DType::I32 { "cast_f32_i32" } else { "cast_i32_f32" };
-        let n = u(s.len);
-        self.run(kernel, &[Arg::Buf(s), Arg::Buf(&out), Arg::Bytes(bytes_of(&n))], Grid::Threads(s.len));
-        wrap(out)
+        wrap(self.cast_storage(s, dtype))
     }
 
     fn unary(&self, op: UnaryOp, x: &Storage) -> Storage {
         let s = st(x);
-        assert_eq!(s.dtype, DType::F32, "MPS unary op on {}", s.dtype);
-        let out = self.alloc(s.len, DType::F32);
+        let out = self.alloc(s.len, s.dtype);
         let (n, code) = (u(s.len), unary_code(op));
         self.run(
-            "unary_f32",
+            &fk("unary", s.dtype),
             &[Arg::Buf(s), Arg::Buf(&out), Arg::Bytes(bytes_of(&n)), Arg::Bytes(bytes_of(&code))],
             Grid::Threads(s.len),
         );
@@ -597,9 +602,11 @@ impl Backend for MpsBackend {
         b_shape: &[usize],
         out_shape: &[usize],
     ) -> Storage {
-        let (a, b) = (self.to_f32_storage(st(a)), self.to_f32_storage(st(b)));
+        // ints (comparisons) run in f32; otherwise both operands share a's dtype
+        let dt = if st(a).dtype == DType::I32 { DType::F32 } else { st(a).dtype };
+        let (a, b) = (self.cast_storage(st(a), dt), self.cast_storage(st(b), dt));
         let n = numel(out_shape);
-        let out = self.alloc(n, DType::F32);
+        let out = self.alloc(n, dt);
         let p = BinParams {
             n: u(n),
             rank: u(out_shape.len()),
@@ -610,7 +617,7 @@ impl Backend for MpsBackend {
             sb: fill8(&broadcast_strides(b_shape, out_shape)),
         };
         self.run(
-            "binary_f32",
+            &fk("binary", dt),
             &[Arg::Buf(&a), Arg::Buf(&b), Arg::Buf(&out), Arg::Bytes(bytes_of(&p))],
             Grid::Threads(n),
         );
@@ -622,12 +629,14 @@ impl Backend for MpsBackend {
     }
 
     fn where_cond(&self, cond: &Storage, a: &Storage, b: &Storage) -> Storage {
-        let c = self.to_f32_storage(st(cond));
         let (a, b) = (st(a), st(b));
-        let out = self.alloc(a.len, DType::F32);
+        let c = self.cast_storage(st(cond), a.dtype);
+        let b = self.cast_storage(b, a.dtype);
+        let b = &b;
+        let out = self.alloc(a.len, a.dtype);
         let n = u(a.len);
         self.run(
-            "where_f32",
+            &fk("where", a.dtype),
             &[Arg::Buf(&c), Arg::Buf(a), Arg::Buf(b), Arg::Buf(&out), Arg::Bytes(bytes_of(&n))],
             Grid::Threads(a.len),
         );
@@ -643,14 +652,14 @@ impl Backend for MpsBackend {
             ReduceOp::Min => 2,
             ReduceOp::ArgMax => 3,
         };
-        let dtype = if op == ReduceOp::ArgMax { DType::I32 } else { DType::F32 };
+        let dtype = if op == ReduceOp::ArgMax { DType::I32 } else { s.dtype };
         let out = self.alloc(outer * inner, dtype);
         let p = RedParams { outer: u(outer), len: u(len), inner: u(inner), op: code };
         let args = [Arg::Buf(s), Arg::Buf(&out), Arg::Bytes(bytes_of(&p))];
         if inner == 1 && op != ReduceOp::ArgMax {
-            self.run("reduce_rows", &args, Grid::Rows { rows: outer, tg: row_threads(len) });
+            self.run(&fk("reduce_rows", s.dtype), &args, Grid::Rows { rows: outer, tg: row_threads(len) });
         } else {
-            self.run("reduce_strided", &args, Grid::Threads(outer * inner));
+            self.run(&fk("reduce_strided", s.dtype), &args, Grid::Threads(outer * inner));
         }
         wrap(out)
     }
@@ -658,7 +667,12 @@ impl Backend for MpsBackend {
     fn matmul(&self, a: &Storage, b: &Storage, spec: MatmulSpec) -> Storage {
         let MatmulSpec { batch, m, k, n, trans_a, trans_b, a_batch_stride, b_batch_stride } = spec;
         if k == 0 {
-            return wrap(self.zeros(batch * m * n));
+            return self.via_f32(st(a).dtype, || wrap(self.zeros(batch * m * n)));
+        }
+        if st(a).dtype == DType::BF16 {
+            // MPSMatrixMultiplication has no bf16: run in f32
+            let (a32, b32) = (self.widen(a), self.widen(b));
+            return self.via_f32(DType::BF16, || self.matmul(&a32, &b32, spec));
         }
         // MPS needs a real batch stride: materialize broadcast operands.
         let bcast = |s: &MpsStorage, stride: usize, sz: usize| {
@@ -670,7 +684,8 @@ impl Backend for MpsBackend {
         };
         let a = bcast(st(a), a_batch_stride, m * k);
         let b = bcast(st(b), b_batch_stride, k * n);
-        let out = self.alloc(batch * m * n, DType::F32);
+        let b = self.cast_storage(&b, a.dtype);
+        let out = self.alloc(batch * m * n, a.dtype);
         let (ar, ac) = if trans_a { (k, m) } else { (m, k) };
         let (br, bc) = if trans_b { (n, k) } else { (k, n) };
         let (ma, mb, mc) = (matrix(&a, ar, ac, batch), matrix(&b, br, bc, batch), matrix(&out, m, n, batch));
@@ -712,7 +727,7 @@ impl Backend for MpsBackend {
             let blk_in = s[axis] * inner;
             let x = st(x);
             let p = CatParams { n: u(x.len), blk_in: u(blk_in), blk_out: u(blk_out), offset: u(offset) };
-            self.run("cat_copy", &[Arg::Buf(x), Arg::Buf(&out), Arg::Bytes(bytes_of(&p))], Grid::Threads(x.len));
+            self.run(&copy_kernel("cat_copy", x.dtype), &[Arg::Buf(x), Arg::Buf(&out), Arg::Bytes(bytes_of(&p))], Grid::Threads(x.len));
             offset += blk_in;
         }
         wrap(out)
@@ -721,10 +736,10 @@ impl Backend for MpsBackend {
     fn index_select(&self, table: &Storage, cols: usize, idx: &Storage) -> Storage {
         let (t, idx) = (st(table), st(idx));
         let n = idx.len * cols;
-        let out = self.alloc(n, DType::F32);
+        let out = self.alloc(n, t.dtype);
         let (nn, c) = (u(n), u(cols));
         self.run(
-            "index_select",
+            &fk("index_select", t.dtype),
             &[Arg::Buf(t), Arg::Buf(idx), Arg::Buf(&out), Arg::Bytes(bytes_of(&nn)), Arg::Bytes(bytes_of(&c))],
             Grid::Threads(n),
         );
@@ -732,6 +747,9 @@ impl Backend for MpsBackend {
     }
 
     fn index_add(&self, src: &Storage, rows: usize, cols: usize, idx: &Storage) -> Storage {
+        if st(src).dtype.is_half() {
+            return self.via_f32(st(src).dtype, || self.index_add(&self.widen(src), rows, cols, idx));
+        }
         let (s, idx) = (st(src), st(idx));
         let out = self.zeros(rows * cols);
         let (nn, c) = (u(s.len), u(cols));
@@ -744,6 +762,9 @@ impl Backend for MpsBackend {
     }
 
     fn gather(&self, x: &Storage, shape: &[usize], axis: usize, idx: &Storage, idx_len: usize) -> Storage {
+        if st(x).dtype.is_half() {
+            return self.via_f32(st(x).dtype, || self.gather(&self.widen(x), shape, axis, idx, idx_len));
+        }
         let (x, idx) = (st(x), st(idx));
         let (_, len, inner) = split_axis(shape, axis);
         let out = self.alloc(idx.len, DType::F32);
@@ -757,6 +778,9 @@ impl Backend for MpsBackend {
     }
 
     fn scatter_add(&self, src: &Storage, idx: &Storage, idx_len: usize, shape: &[usize], axis: usize) -> Storage {
+        if st(src).dtype.is_half() {
+            return self.via_f32(st(src).dtype, || self.scatter_add(&self.widen(src), idx, idx_len, shape, axis));
+        }
         let (s, idx) = (st(src), st(idx));
         let (_, len, inner) = split_axis(shape, axis);
         let out = self.zeros(numel(shape));
@@ -772,23 +796,26 @@ impl Backend for MpsBackend {
     fn im2col(&self, x: &Storage, g: Conv2dGeom) -> Storage {
         let (oh, ow) = g.out_hw();
         let n = g.n * g.c * g.kh * g.kw * oh * ow;
-        let out = self.alloc(n, DType::F32);
+        let out = self.alloc(n, st(x).dtype);
         let p = conv_params(g);
-        self.run("im2col", &[Arg::Buf(st(x)), Arg::Buf(&out), Arg::Bytes(bytes_of(&p))], Grid::Threads(n));
+        self.run(&fk("im2col", st(x).dtype), &[Arg::Buf(st(x)), Arg::Buf(&out), Arg::Bytes(bytes_of(&p))], Grid::Threads(n));
         wrap(out)
     }
 
     fn col2im(&self, cols: &Storage, g: Conv2dGeom) -> Storage {
         let n = g.n * g.c * g.h * g.w;
-        let out = self.alloc(n, DType::F32);
+        let out = self.alloc(n, st(cols).dtype);
         let p = conv_params(g);
-        self.run("col2im", &[Arg::Buf(st(cols)), Arg::Buf(&out), Arg::Bytes(bytes_of(&p))], Grid::Threads(n));
+        self.run(&fk("col2im", st(cols).dtype), &[Arg::Buf(st(cols)), Arg::Buf(&out), Arg::Bytes(bytes_of(&p))], Grid::Threads(n));
         wrap(out)
     }
 
     // ---- fused ops (last axis); other axes use the composed default ----
 
     fn softmax(&self, x: &Storage, shape: &[usize], axis: usize) -> Storage {
+        if st(x).dtype.is_half() {
+            return self.via_f32(st(x).dtype, || self.softmax(&self.widen(x), shape, axis));
+        }
         if axis + 1 != shape.len() {
             return super::reference::Unfused(backend()).softmax(x, shape, axis);
         }
@@ -796,6 +823,9 @@ impl Backend for MpsBackend {
     }
 
     fn log_softmax(&self, x: &Storage, shape: &[usize], axis: usize) -> Storage {
+        if st(x).dtype.is_half() {
+            return self.via_f32(st(x).dtype, || self.log_softmax(&self.widen(x), shape, axis));
+        }
         if axis + 1 != shape.len() {
             return super::reference::Unfused(backend()).log_softmax(x, shape, axis);
         }
@@ -803,6 +833,9 @@ impl Backend for MpsBackend {
     }
 
     fn softmax_backward(&self, y: &Storage, g: &Storage, shape: &[usize], axis: usize) -> Storage {
+        if st(y).dtype.is_half() {
+            return self.via_f32(st(y).dtype, || self.softmax_backward(&self.widen(y), &self.widen(g), shape, axis));
+        }
         if axis + 1 != shape.len() {
             return super::reference::Unfused(backend()).softmax_backward(y, g, shape, axis);
         }
@@ -810,6 +843,9 @@ impl Backend for MpsBackend {
     }
 
     fn log_softmax_backward(&self, y: &Storage, g: &Storage, shape: &[usize], axis: usize) -> Storage {
+        if st(y).dtype.is_half() {
+            return self.via_f32(st(y).dtype, || self.log_softmax_backward(&self.widen(y), &self.widen(g), shape, axis));
+        }
         if axis + 1 != shape.len() {
             return super::reference::Unfused(backend()).log_softmax_backward(y, g, shape, axis);
         }
@@ -817,6 +853,11 @@ impl Backend for MpsBackend {
     }
 
     fn layer_norm(&self, x: &Storage, rows: usize, dim: usize, eps: f32) -> (Storage, Storage) {
+        let d = st(x).dtype;
+        if d.is_half() {
+            let (xh, r) = self.layer_norm(&self.widen(x), rows, dim, eps);
+            return (wrap(self.cast_storage(st(&xh), d)), wrap(self.cast_storage(st(&r), d)));
+        }
         let xhat = self.alloc(rows * dim, DType::F32);
         let rstd = self.alloc(rows, DType::F32);
         let d = u(dim);
@@ -829,6 +870,10 @@ impl Backend for MpsBackend {
     }
 
     fn layer_norm_backward(&self, g: &Storage, xhat: &Storage, rstd: &Storage, rows: usize, dim: usize) -> Storage {
+        if st(g).dtype.is_half() {
+            let (g32, x32, r32) = (self.widen(g), self.widen(xhat), self.widen(rstd));
+            return self.via_f32(st(g).dtype, || self.layer_norm_backward(&g32, &x32, &r32, rows, dim));
+        }
         let out = self.alloc(rows * dim, DType::F32);
         let d = u(dim);
         self.run(

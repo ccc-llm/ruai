@@ -11,6 +11,7 @@
 //!   stream-ordered (`cuMemAllocAsync` / `cuMemFreeAsync`), so dropping a
 //!   storage while kernels still use it is safe. `to_f32`/`to_i32` synchronize.
 
+use super::kernel_names::{cast_kernel, copy_kernel, fk, kernel_names};
 use super::{AdamParams, Backend, BinaryOp, Conv2dGeom, DType, MatmulSpec, ReduceOp, Storage, UnaryOp};
 use crate::device::Device;
 use crate::shape::{broadcast_strides, numel, split_axis, strides};
@@ -21,35 +22,14 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 const KERNELS: &str = include_str!("cuda_kernels.cu");
-const KERNEL_NAMES: &[&str] = &[
-    "fill_u32",
-    "cast_f32_i32",
-    "cast_i32_f32",
-    "unary_f32",
-    "binary_f32",
-    "strided_copy",
-    "cat_copy",
-    "where_f32",
-    "reduce_strided",
-    "reduce_rows",
-    "softmax_rows",
-    "softmax_backward_rows",
-    "layer_norm_rows",
-    "layer_norm_backward_rows",
-    "adam_step",
-    "index_select",
-    "index_add",
-    "gather",
-    "scatter_add",
-    "im2col",
-    "col2im",
-];
 const MAX_RANK: usize = 8;
 const BLOCK: u32 = 256;
 
 #[derive(Clone)]
 enum Buf {
     F32(Arc<CudaSlice<f32>>),
+    F16(Arc<CudaSlice<half::f16>>),
+    BF16(Arc<CudaSlice<half::bf16>>),
     I32(Arc<CudaSlice<i32>>),
 }
 
@@ -66,7 +46,7 @@ pub struct CudaBackend {
     ordinal: usize,
     stream: Arc<CudaStream>,
     blas: Mutex<CudaBlas>,
-    funcs: HashMap<&'static str, CudaFunction>,
+    funcs: HashMap<String, CudaFunction>,
 }
 
 static BACKENDS: OnceLock<Mutex<HashMap<usize, &'static CudaBackend>>> = OnceLock::new();
@@ -245,15 +225,16 @@ fn binary_code(op: BinaryOp) -> u32 {
     }
 }
 
-/// Launch kernel `$name` with `$cfg`; each argument is a reference to a
-/// device pointer (`u64`), a scalar, or a parameter struct.
+/// Launch kernel `$name` (a `&str`) with `$cfg`; each argument is a
+/// reference to a device pointer (`u64`), a scalar, or a parameter struct.
 macro_rules! launch {
-    ($be:expr, $name:literal, $cfg:expr; $($arg:expr),* $(,)?) => {{
+    ($be:expr, $name:expr, $cfg:expr; $($arg:expr),* $(,)?) => {{
         let cfg: LaunchConfig = $cfg;
+        let name: &str = &$name;
         if cfg.grid_dim.0 > 0 {
-            let mut b = $be.stream.launch_builder($be.func($name));
+            let mut b = $be.stream.launch_builder($be.func(name));
             $( b.arg($arg); )*
-            unsafe { b.launch(cfg) }.unwrap_or_else(|e| panic!("CUDA kernel `{}` failed: {e:?}", $name));
+            unsafe { b.launch(cfg) }.unwrap_or_else(|e| panic!("CUDA kernel `{name}` failed: {e:?}"));
         }
     }};
 }
@@ -269,16 +250,19 @@ impl CudaBackend {
         let opts = CompileOptions { use_fast_math: Some(false), ..Default::default() };
         let ptx = compile_ptx_with_opts(KERNELS, opts).unwrap_or_else(|e| panic!("NVRTC failed to compile kernels: {e:?}"));
         let module = ctx.load_module(ptx).unwrap_or_else(|e| panic!("failed to load CUDA module: {e:?}"));
-        let funcs = KERNEL_NAMES
-            .iter()
-            .map(|&n| (n, module.load_function(n).unwrap_or_else(|e| panic!("CUDA kernel `{n}` not found: {e:?}"))))
+        let funcs = kernel_names()
+            .into_iter()
+            .map(|n| {
+                let f = module.load_function(&n).unwrap_or_else(|e| panic!("CUDA kernel `{n}` not found: {e:?}"));
+                (n, f)
+            })
             .collect();
         let blas = CudaBlas::new(stream.clone()).unwrap_or_else(|e| panic!("cuBLAS init failed: {e:?}"));
         CudaBackend { ordinal, stream, blas: Mutex::new(blas), funcs }
     }
 
     fn func(&self, name: &str) -> &CudaFunction {
-        &self.funcs[name]
+        self.funcs.get(name).unwrap_or_else(|| panic!("no CUDA kernel `{name}`"))
     }
 
     /// Uninitialized storage (stream-ordered allocation).
@@ -287,6 +271,8 @@ impl CudaBackend {
         let buf = unsafe {
             match dtype {
                 DType::F32 => Buf::F32(Arc::new(self.stream.alloc::<f32>(n).expect("CUDA alloc failed"))),
+                DType::F16 => Buf::F16(Arc::new(self.stream.alloc::<half::f16>(n).expect("CUDA alloc failed"))),
+                DType::BF16 => Buf::BF16(Arc::new(self.stream.alloc::<half::bf16>(n).expect("CUDA alloc failed"))),
                 DType::I32 => Buf::I32(Arc::new(self.stream.alloc::<i32>(n).expect("CUDA alloc failed"))),
             }
         };
@@ -296,18 +282,35 @@ impl CudaBackend {
     fn ptr(&self, s: &CudaStorage) -> u64 {
         match &s.buf {
             Buf::F32(b) => b.device_ptr(&self.stream).0,
+            Buf::F16(b) => b.device_ptr(&self.stream).0,
+            Buf::BF16(b) => b.device_ptr(&self.stream).0,
             Buf::I32(b) => b.device_ptr(&self.stream).0,
         }
     }
 
-    fn to_f32_storage(&self, s: &CudaStorage) -> CudaStorage {
-        if s.dtype == DType::F32 {
+    /// Convert a storage to `dtype` (no-op if it already is).
+    fn cast_storage(&self, s: &CudaStorage, dtype: DType) -> CudaStorage {
+        if s.dtype == dtype {
             return s.clone();
         }
-        let out = self.alloc(s.len, DType::F32);
+        let out = self.alloc(s.len, dtype);
         let (x, y, n) = (self.ptr(s), self.ptr(&out), u(s.len));
-        launch!(self, "cast_i32_f32", threads(s.len); &x, &y, &n);
+        launch!(self, cast_kernel(s.dtype, dtype), threads(s.len); &x, &y, &n);
         out
+    }
+
+    /// Run an f32-only op on (possibly half) inputs: widen, run, round back.
+    fn via_f32(&self, dtype: DType, f: impl FnOnce() -> Storage) -> Storage {
+        let out = f();
+        if dtype.is_half() {
+            wrap(self.cast_storage(st(&out), dtype))
+        } else {
+            out
+        }
+    }
+
+    fn widen(&self, x: &Storage) -> Storage {
+        wrap(self.cast_storage(st(x), DType::F32))
     }
 
     fn zeros(&self, len: usize) -> CudaStorage {
@@ -330,15 +333,8 @@ impl CudaBackend {
             strides: fill8(in_strides),
         };
         let (xp, op) = (self.ptr(x), self.ptr(&out));
-        launch!(self, "strided_copy", threads(n); &xp, &op, &p);
+        launch!(self, copy_kernel("strided_copy", x.dtype), threads(n); &xp, &op, &p);
         out
-    }
-
-    fn f32_slice<'a>(&self, s: &'a CudaStorage) -> &'a CudaSlice<f32> {
-        match &s.buf {
-            Buf::F32(b) => b,
-            Buf::I32(_) => panic!("CUDA matmul expects f32 inputs"),
-        }
     }
 
     fn softmax_rows(&self, x: &Storage, shape: &[usize], log: bool) -> Storage {
@@ -401,11 +397,12 @@ impl Backend for CudaBackend {
 
     fn to_f32(&self, x: &Storage) -> Vec<f32> {
         let s = st(x);
+        let dl = "CUDA download failed";
         let mut v: Vec<f32> = match &s.buf {
-            Buf::F32(b) => self.stream.clone_dtoh(b.as_ref()).expect("CUDA download failed"),
-            Buf::I32(b) => {
-                self.stream.clone_dtoh(b.as_ref()).expect("CUDA download failed").into_iter().map(|v| v as f32).collect()
-            }
+            Buf::F32(b) => self.stream.clone_dtoh(b.as_ref()).expect(dl),
+            Buf::F16(b) => self.stream.clone_dtoh(b.as_ref()).expect(dl).into_iter().map(f32::from).collect(),
+            Buf::BF16(b) => self.stream.clone_dtoh(b.as_ref()).expect(dl).into_iter().map(f32::from).collect(),
+            Buf::I32(b) => self.stream.clone_dtoh(b.as_ref()).expect(dl).into_iter().map(|v| v as f32).collect(),
         };
         v.truncate(s.len);
         v
@@ -415,9 +412,7 @@ impl Backend for CudaBackend {
         let s = st(x);
         let mut v: Vec<i32> = match &s.buf {
             Buf::I32(b) => self.stream.clone_dtoh(b.as_ref()).expect("CUDA download failed"),
-            Buf::F32(b) => {
-                self.stream.clone_dtoh(b.as_ref()).expect("CUDA download failed").into_iter().map(|v| v as i32).collect()
-            }
+            _ => return self.to_f32(x).into_iter().map(|v| v as i32).collect(),
         };
         v.truncate(s.len);
         v
@@ -428,9 +423,11 @@ impl Backend for CudaBackend {
         let bits = match dtype {
             DType::F32 => value.to_bits(),
             DType::I32 => (value as i32) as u32,
+            DType::F16 => half::f16::from_f32(value).to_bits() as u32,
+            DType::BF16 => half::bf16::from_f32(value).to_bits() as u32,
         };
         let (o, n) = (self.ptr(&out), u(len));
-        launch!(self, "fill_u32", threads(len); &o, &n, &bits);
+        launch!(self, copy_kernel("fill", dtype), threads(len); &o, &n, &bits);
         wrap(out)
     }
 
@@ -439,22 +436,14 @@ impl Backend for CudaBackend {
         if s.dtype == dtype {
             return x.clone();
         }
-        let out = self.alloc(s.len, dtype);
-        let (xp, yp, n) = (self.ptr(s), self.ptr(&out), u(s.len));
-        if dtype == DType::I32 {
-            launch!(self, "cast_f32_i32", threads(s.len); &xp, &yp, &n);
-        } else {
-            launch!(self, "cast_i32_f32", threads(s.len); &xp, &yp, &n);
-        }
-        wrap(out)
+        wrap(self.cast_storage(s, dtype))
     }
 
     fn unary(&self, op: UnaryOp, x: &Storage) -> Storage {
         let s = st(x);
-        assert_eq!(s.dtype, DType::F32, "CUDA unary op on {}", s.dtype);
-        let out = self.alloc(s.len, DType::F32);
+        let out = self.alloc(s.len, s.dtype);
         let (xp, yp, n, code) = (self.ptr(s), self.ptr(&out), u(s.len), unary_code(op));
-        launch!(self, "unary_f32", threads(s.len); &xp, &yp, &n, &code);
+        launch!(self, fk("unary", s.dtype), threads(s.len); &xp, &yp, &n, &code);
         wrap(out)
     }
 
@@ -467,9 +456,11 @@ impl Backend for CudaBackend {
         b_shape: &[usize],
         out_shape: &[usize],
     ) -> Storage {
-        let (a, b) = (self.to_f32_storage(st(a)), self.to_f32_storage(st(b)));
+        // ints (comparisons) run in f32; otherwise both operands share a's dtype
+        let dt = if st(a).dtype == DType::I32 { DType::F32 } else { st(a).dtype };
+        let (a, b) = (self.cast_storage(st(a), dt), self.cast_storage(st(b), dt));
         let n = numel(out_shape);
-        let out = self.alloc(n, DType::F32);
+        let out = self.alloc(n, dt);
         let p = BinParams {
             n: u(n),
             rank: u(out_shape.len()),
@@ -480,7 +471,7 @@ impl Backend for CudaBackend {
             sb: fill8(&broadcast_strides(b_shape, out_shape)),
         };
         let (ap, bp, op_) = (self.ptr(&a), self.ptr(&b), self.ptr(&out));
-        launch!(self, "binary_f32", threads(n); &ap, &bp, &op_, &p);
+        launch!(self, fk("binary", dt), threads(n); &ap, &bp, &op_, &p);
         wrap(out)
     }
 
@@ -489,11 +480,11 @@ impl Backend for CudaBackend {
     }
 
     fn where_cond(&self, cond: &Storage, a: &Storage, b: &Storage) -> Storage {
-        let c = self.to_f32_storage(st(cond));
-        let (a, b) = (st(a), st(b));
-        let out = self.alloc(a.len, DType::F32);
-        let (cp, ap, bp, op, n) = (self.ptr(&c), self.ptr(a), self.ptr(b), self.ptr(&out), u(a.len));
-        launch!(self, "where_f32", threads(a.len); &cp, &ap, &bp, &op, &n);
+        let a = st(a);
+        let (c, b) = (self.cast_storage(st(cond), a.dtype), self.cast_storage(st(b), a.dtype));
+        let out = self.alloc(a.len, a.dtype);
+        let (cp, ap, bp, op, n) = (self.ptr(&c), self.ptr(a), self.ptr(&b), self.ptr(&out), u(a.len));
+        launch!(self, fk("where", a.dtype), threads(a.len); &cp, &ap, &bp, &op, &n);
         wrap(out)
     }
 
@@ -506,54 +497,69 @@ impl Backend for CudaBackend {
             ReduceOp::Min => 2,
             ReduceOp::ArgMax => 3,
         };
-        let dtype = if op == ReduceOp::ArgMax { DType::I32 } else { DType::F32 };
+        let dtype = if op == ReduceOp::ArgMax { DType::I32 } else { s.dtype };
         let out = self.alloc(outer * inner, dtype);
         let p = RedParams { outer: u(outer), len: u(len), inner: u(inner), op: code };
         let (xp, yp) = (self.ptr(s), self.ptr(&out));
         if inner == 1 && op != ReduceOp::ArgMax {
-            launch!(self, "reduce_rows", rows(outer, len); &xp, &yp, &p);
+            launch!(self, fk("reduce_rows", s.dtype), rows(outer, len); &xp, &yp, &p);
         } else {
-            launch!(self, "reduce_strided", threads(outer * inner); &xp, &yp, &p);
+            launch!(self, fk("reduce_strided", s.dtype), threads(outer * inner); &xp, &yp, &p);
         }
         wrap(out)
     }
 
     fn matmul(&self, a: &Storage, b: &Storage, spec: MatmulSpec) -> Storage {
         let MatmulSpec { batch, m, k, n, trans_a, trans_b, a_batch_stride, b_batch_stride } = spec;
+        let dt = st(a).dtype;
         if k == 0 || m == 0 || n == 0 {
-            return wrap(self.zeros(batch * m * n));
+            return self.via_f32(dt, || wrap(self.zeros(batch * m * n)));
         }
-        let (a, b) = (st(a), st(b));
-        let mut c = unsafe { self.stream.alloc::<f32>(batch * m * n) }.expect("CUDA alloc failed");
+        let a = st(a);
+        let b = self.cast_storage(st(b), dt);
         // Row-major C (m x n) = op(A) op(B) is column-major Cᵀ (n x m) = op(B)ᵀ op(A)ᵀ:
         // pass B as cuBLAS's first operand and A as its second.
         let op = |t: bool| if t { cublasOperation_t::CUBLAS_OP_T } else { cublasOperation_t::CUBLAS_OP_N };
-        let cfg = StridedBatchedConfig {
-            gemm: GemmConfig {
-                transa: op(trans_b),
-                transb: op(trans_a),
-                m: n as i32,
-                n: m as i32,
-                k: k as i32,
-                alpha: 1.0f32,
-                lda: if trans_b { k } else { n } as i32,
-                ldb: if trans_a { m } else { k } as i32,
-                beta: 0.0f32,
-                ldc: n as i32,
-            },
-            batch_size: batch as i32,
-            stride_a: if b_batch_stride == 0 { 0 } else { (k * n) as i64 },
-            stride_b: if a_batch_stride == 0 { 0 } else { (m * k) as i64 },
-            stride_c: (m * n) as i64,
-        };
-        unsafe {
-            self.blas
-                .lock()
-                .unwrap()
-                .gemm_strided_batched(cfg, self.f32_slice(b), self.f32_slice(a), &mut c)
-                .unwrap_or_else(|e| panic!("cuBLAS sgemm failed: {e:?}"));
+        macro_rules! gemm {
+            ($T:ty, $one:expr, $zero:expr, $variant:ident) => {{
+                let cfg = StridedBatchedConfig {
+                    gemm: GemmConfig {
+                        transa: op(trans_b),
+                        transb: op(trans_a),
+                        m: n as i32,
+                        n: m as i32,
+                        k: k as i32,
+                        alpha: $one,
+                        lda: if trans_b { k } else { n } as i32,
+                        ldb: if trans_a { m } else { k } as i32,
+                        beta: $zero,
+                        ldc: n as i32,
+                    },
+                    batch_size: batch as i32,
+                    stride_a: if b_batch_stride == 0 { 0 } else { (k * n) as i64 },
+                    stride_b: if a_batch_stride == 0 { 0 } else { (m * k) as i64 },
+                    stride_c: (m * n) as i64,
+                };
+                let (Buf::$variant(sa), Buf::$variant(sb)) = (&a.buf, &b.buf) else { unreachable!() };
+                let mut c = unsafe { self.stream.alloc::<$T>(batch * m * n) }.expect("CUDA alloc failed");
+                // cuBLAS accumulates in f32 for every type (CUBLAS_COMPUTE_32F)
+                unsafe {
+                    self.blas
+                        .lock()
+                        .unwrap()
+                        .gemm_strided_batched(cfg, sb.as_ref(), sa.as_ref(), &mut c)
+                        .unwrap_or_else(|e| panic!("cuBLAS gemm failed: {e:?}"));
+                }
+                Buf::$variant(Arc::new(c))
+            }};
         }
-        wrap(CudaStorage { buf: Buf::F32(Arc::new(c)), ordinal: self.ordinal, len: batch * m * n, dtype: DType::F32 })
+        let buf = match dt {
+            DType::F32 => gemm!(f32, 1.0f32, 0.0f32, F32),
+            DType::F16 => gemm!(half::f16, half::f16::ONE, half::f16::ZERO, F16),
+            DType::BF16 => gemm!(half::bf16, half::bf16::ONE, half::bf16::ZERO, BF16),
+            DType::I32 => panic!("CUDA matmul needs float inputs"),
+        };
+        wrap(CudaStorage { buf, ordinal: self.ordinal, len: batch * m * n, dtype: dt })
     }
 
     fn permute(&self, x: &Storage, shape: &[usize], perm: &[usize]) -> Storage {
@@ -580,7 +586,7 @@ impl Backend for CudaBackend {
             let x = st(x);
             let p = CatParams { n: u(x.len), blk_in: u(blk_in), blk_out: u(blk_out), offset: u(offset) };
             let xp = self.ptr(x);
-            launch!(self, "cat_copy", threads(x.len); &xp, &op, &p);
+            launch!(self, copy_kernel("cat_copy", x.dtype), threads(x.len); &xp, &op, &p);
             offset += blk_in;
         }
         wrap(out)
@@ -589,13 +595,16 @@ impl Backend for CudaBackend {
     fn index_select(&self, table: &Storage, cols: usize, idx: &Storage) -> Storage {
         let (t, idx) = (st(table), st(idx));
         let n = idx.len * cols;
-        let out = self.alloc(n, DType::F32);
+        let out = self.alloc(n, t.dtype);
         let (tp, ip, op, nn, c) = (self.ptr(t), self.ptr(idx), self.ptr(&out), u(n), u(cols));
-        launch!(self, "index_select", threads(n); &tp, &ip, &op, &nn, &c);
+        launch!(self, fk("index_select", t.dtype), threads(n); &tp, &ip, &op, &nn, &c);
         wrap(out)
     }
 
     fn index_add(&self, src: &Storage, rows_: usize, cols: usize, idx: &Storage) -> Storage {
+        if st(src).dtype.is_half() {
+            return self.via_f32(st(src).dtype, || self.index_add(&self.widen(src), rows_, cols, idx));
+        }
         let (s, idx) = (st(src), st(idx));
         let out = self.zeros(rows_ * cols);
         let (sp, ip, op, nn, c) = (self.ptr(s), self.ptr(idx), self.ptr(&out), u(s.len), u(cols));
@@ -604,6 +613,9 @@ impl Backend for CudaBackend {
     }
 
     fn gather(&self, x: &Storage, shape: &[usize], axis: usize, idx: &Storage, idx_len: usize) -> Storage {
+        if st(x).dtype.is_half() {
+            return self.via_f32(st(x).dtype, || self.gather(&self.widen(x), shape, axis, idx, idx_len));
+        }
         let (x, idx) = (st(x), st(idx));
         let (_, len, inner) = split_axis(shape, axis);
         let out = self.alloc(idx.len, DType::F32);
@@ -614,6 +626,9 @@ impl Backend for CudaBackend {
     }
 
     fn scatter_add(&self, src: &Storage, idx: &Storage, idx_len: usize, shape: &[usize], axis: usize) -> Storage {
+        if st(src).dtype.is_half() {
+            return self.via_f32(st(src).dtype, || self.scatter_add(&self.widen(src), idx, idx_len, shape, axis));
+        }
         let (s, idx) = (st(src), st(idx));
         let (_, len, inner) = split_axis(shape, axis);
         let out = self.zeros(numel(shape));
@@ -626,25 +641,28 @@ impl Backend for CudaBackend {
     fn im2col(&self, x: &Storage, g: Conv2dGeom) -> Storage {
         let (oh, ow) = g.out_hw();
         let n = g.n * g.c * g.kh * g.kw * oh * ow;
-        let out = self.alloc(n, DType::F32);
+        let out = self.alloc(n, st(x).dtype);
         let p = conv_params(g);
         let (xp, op) = (self.ptr(st(x)), self.ptr(&out));
-        launch!(self, "im2col", threads(n); &xp, &op, &p);
+        launch!(self, fk("im2col", st(x).dtype), threads(n); &xp, &op, &p);
         wrap(out)
     }
 
     fn col2im(&self, cols: &Storage, g: Conv2dGeom) -> Storage {
         let n = g.n * g.c * g.h * g.w;
-        let out = self.alloc(n, DType::F32);
+        let out = self.alloc(n, st(cols).dtype);
         let p = conv_params(g);
         let (cp, op) = (self.ptr(st(cols)), self.ptr(&out));
-        launch!(self, "col2im", threads(n); &cp, &op, &p);
+        launch!(self, fk("col2im", st(cols).dtype), threads(n); &cp, &op, &p);
         wrap(out)
     }
 
     // ---- fused ops (last axis); other axes use the composed default ----
 
     fn softmax(&self, x: &Storage, shape: &[usize], axis: usize) -> Storage {
+        if st(x).dtype.is_half() {
+            return self.via_f32(st(x).dtype, || self.softmax(&self.widen(x), shape, axis));
+        }
         if axis + 1 != shape.len() {
             return super::reference::Unfused(backend(self.ordinal)).softmax(x, shape, axis);
         }
@@ -652,6 +670,9 @@ impl Backend for CudaBackend {
     }
 
     fn log_softmax(&self, x: &Storage, shape: &[usize], axis: usize) -> Storage {
+        if st(x).dtype.is_half() {
+            return self.via_f32(st(x).dtype, || self.log_softmax(&self.widen(x), shape, axis));
+        }
         if axis + 1 != shape.len() {
             return super::reference::Unfused(backend(self.ordinal)).log_softmax(x, shape, axis);
         }
@@ -659,6 +680,9 @@ impl Backend for CudaBackend {
     }
 
     fn softmax_backward(&self, y: &Storage, g: &Storage, shape: &[usize], axis: usize) -> Storage {
+        if st(y).dtype.is_half() {
+            return self.via_f32(st(y).dtype, || self.softmax_backward(&self.widen(y), &self.widen(g), shape, axis));
+        }
         if axis + 1 != shape.len() {
             return super::reference::Unfused(backend(self.ordinal)).softmax_backward(y, g, shape, axis);
         }
@@ -666,6 +690,9 @@ impl Backend for CudaBackend {
     }
 
     fn log_softmax_backward(&self, y: &Storage, g: &Storage, shape: &[usize], axis: usize) -> Storage {
+        if st(y).dtype.is_half() {
+            return self.via_f32(st(y).dtype, || self.log_softmax_backward(&self.widen(y), &self.widen(g), shape, axis));
+        }
         if axis + 1 != shape.len() {
             return super::reference::Unfused(backend(self.ordinal)).log_softmax_backward(y, g, shape, axis);
         }
@@ -673,6 +700,11 @@ impl Backend for CudaBackend {
     }
 
     fn layer_norm(&self, x: &Storage, r: usize, dim: usize, eps: f32) -> (Storage, Storage) {
+        let d = st(x).dtype;
+        if d.is_half() {
+            let (xh, rs) = self.layer_norm(&self.widen(x), r, dim, eps);
+            return (wrap(self.cast_storage(st(&xh), d)), wrap(self.cast_storage(st(&rs), d)));
+        }
         let xhat = self.alloc(r * dim, DType::F32);
         let rstd = self.alloc(r, DType::F32);
         let (xp, hp, rp, d) = (self.ptr(st(x)), self.ptr(&xhat), self.ptr(&rstd), u(dim));
@@ -681,6 +713,10 @@ impl Backend for CudaBackend {
     }
 
     fn layer_norm_backward(&self, g: &Storage, xhat: &Storage, rstd: &Storage, r: usize, dim: usize) -> Storage {
+        if st(g).dtype.is_half() {
+            let (g32, x32, r32) = (self.widen(g), self.widen(xhat), self.widen(rstd));
+            return self.via_f32(st(g).dtype, || self.layer_norm_backward(&g32, &x32, &r32, r, dim));
+        }
         let out = self.alloc(r * dim, DType::F32);
         let (gp, hp, rp, op, d) = (self.ptr(st(g)), self.ptr(st(xhat)), self.ptr(st(rstd)), self.ptr(&out), u(dim));
         launch!(self, "layer_norm_backward_rows", rows(r, dim); &gp, &hp, &rp, &op, &d);

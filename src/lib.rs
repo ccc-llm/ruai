@@ -8,6 +8,7 @@
 //! * [`functional`] — softmax, cross-entropy, conv2d, pooling, attention, ...
 //! * [`optim`] — SGD, Adam, AdamW, gradient clipping, LR schedulers ([`optim::lr`])
 //! * [`serialize`] — save / load weights (safetensors, PyTorch/HF compatible)
+//! * [`amp`] — mixed precision: `autocast` (F16/BF16) and `GradScaler`
 //! * [`checkpoint`] — resumable training checkpoints (model + optimizer + RNG)
 //! * [`data`] — `Dataset` / `DataLoader` with multi-threaded prefetching
 //! * [`metrics`] — running averages, accuracy, throughput
@@ -22,6 +23,7 @@
 //! assert_eq!(x.grad().unwrap().to_vec(), vec![2.0, 4.0, 6.0]);
 //! ```
 
+pub mod amp;
 pub mod backend;
 pub mod checkpoint;
 pub mod data;
@@ -39,7 +41,7 @@ pub mod tensor;
 pub use backend::DType;
 pub use device::Device;
 pub use ops::IntoIndices;
-pub use tensor::{is_grad_enabled, no_grad, NoGradGuard, Tensor};
+pub use tensor::{autocast, autocast_dtype, is_grad_enabled, no_grad, NoGradGuard, Tensor};
 
 /// Commonly used items: `use rustnn::prelude::*;`
 pub mod prelude {
@@ -47,5 +49,5 @@ pub mod prelude {
     pub use crate::nn::{self, Module};
     pub use crate::data::{DataLoader, Dataset};
     pub use crate::optim::{self, lr::LrScheduler, Optimizer};
-    pub use crate::{no_grad, DType, Device, IntoIndices, Tensor};
+    pub use crate::{autocast, no_grad, DType, Device, IntoIndices, Tensor};
 }
