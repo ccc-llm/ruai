@@ -6,9 +6,9 @@
 use super::layers::{Conv2d, LayerNorm, Linear};
 use super::module::{prefixed, Module};
 use super::transformer::TransformerBlock;
-use crate::device::Device;
-use crate::functional as F;
-use crate::tensor::Tensor;
+use crate::nn::device::Device;
+use crate::nn::functional as F;
+use crate::nn::tensor::Tensor;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Vision Transformer hyperparameters.

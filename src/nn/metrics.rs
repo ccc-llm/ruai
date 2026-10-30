@@ -1,7 +1,7 @@
 //! Small helpers for training loops: running averages, accuracy, throughput.
 
-use crate::ops::IntoIndices;
-use crate::tensor::Tensor;
+use crate::nn::ops::IntoIndices;
+use crate::nn::tensor::Tensor;
 use std::time::Instant;
 
 /// Weighted running mean (e.g. average loss over an epoch).

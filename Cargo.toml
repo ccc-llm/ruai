@@ -1,8 +1,8 @@
 [package]
 name = "ruai"
-version = "2.0.1"
+version = "3.0.0"
 edition = "2021"
-description = "A small PyTorch-like neural network engine in Rust (autograd, CNN/ResNet/ViT, Transformer/GPT/Llama, seq2seq)"
+description = "A Swiss-army AI toolkit in Rust: a PyTorch-like engine (autograd, GPU, GPT-2/Llama), and a git-style `ruai` command"
 license = "MIT"
 repository = "https://github.com/ccc-llm/ruai"
 readme = "README.md"
@@ -11,16 +11,17 @@ categories = ["science", "algorithms"]
 exclude = ["/scripts", "/runs", "/data", "*.safetensors"]
 
 [dependencies]
-rayon = "1.10"
-matrixmultiply = "0.3"
-half = "2"
+# --- nn: the deep learning engine
+rayon = { version = "1.10", optional = true }
+matrixmultiply = { version = "0.3", optional = true }
+half = { version = "2", optional = true }
 # Hugging Face reference implementation of the safetensors format
-safetensors = "0.8"
-# vocab.json of BPE tokenizers (already a dependency of safetensors)
-serde_json = "1"
+safetensors = { version = "0.8", optional = true }
+# vocab.json / tokenizer.json / config.json
+serde_json = { version = "1", optional = true }
 # tokenizer.json: pre-tokenizer regexes (with lookahead) and Unicode normalizers
-fancy-regex = "0.20"
-unicode-normalization = "0.1"
+fancy-regex = { version = "0.20", optional = true }
+unicode-normalization = { version = "0.1", optional = true }
 
 # CUDA: loaded at runtime (dynamic-loading), so it builds without the CUDA toolkit
 cudarc = { version = "0.19", optional = true, default-features = false, features = ["std", "driver", "nvrtc", "cublas", "f16", "dynamic-loading", "cuda-12080"] }
@@ -32,12 +33,20 @@ objc2-metal = { version = "0.3", optional = true }
 objc2-metal-performance-shaders = { version = "0.3", optional = true }
 
 [features]
-default = []
-# GPU backends: Apple Metal (mps) and NVIDIA (cuda)
-cuda = ["dep:cudarc"]
-mps = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-metal", "dep:objc2-metal-performance-shaders"]
+default = ["nn"]
+# The deep learning engine (ruai::nn, also re-exported at the crate root)
+nn = ["dep:rayon", "dep:matrixmultiply", "dep:half", "dep:safetensors", "dep:serde_json", "dep:fancy-regex", "dep:unicode-normalization"]
+# GPU backends for nn: Apple Metal (mps) and NVIDIA (cuda)
+cuda = ["nn", "dep:cudarc"]
+mps = ["nn", "dep:objc2", "dep:objc2-foundation", "dep:objc2-metal", "dep:objc2-metal-performance-shaders"]
 # Use Apple Accelerate (AMX) for CPU matmul on macOS
-accelerate = []
+accelerate = ["nn"]
+
+# the `ruai` command (git-style subcommands)
+[[bin]]
+name = "ruai"
+path = "src/main.rs"
+doc = false
 
 [profile.release]
 opt-level = 3

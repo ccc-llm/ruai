@@ -6,7 +6,7 @@
 //! (`model.layers.0.self_attn.q_proj.weight`, ...). Hugging Face stores
 //! `nn.Linear` weights as `[out, in]` while [`Linear`] uses `[in, out]`, so
 //! [`Llama::from_pretrained`] / [`Llama::save_pretrained`] transpose the
-//! projection matrices; [`crate::serialize::save`] / [`crate::serialize::load`]
+//! projection matrices; [`crate::nn::serialize::save`] / [`crate::nn::serialize::load`]
 //! keep this crate's own layout.
 //!
 //! ```no_run
@@ -20,11 +20,11 @@
 use super::layers::{Embedding, Linear, RMSNorm, SwiGLU};
 use super::module::{prefixed, Module};
 use super::transformer::{KvCache, LayerKv};
-use crate::functional as F;
-use crate::generation::Sampler;
-use crate::serialize;
-use crate::tensor::Tensor;
-use crate::Device;
+use crate::nn::functional as F;
+use crate::nn::generation::Sampler;
+use crate::nn::serialize;
+use crate::nn::tensor::Tensor;
+use crate::nn::Device;
 use serde_json::Value;
 use std::io;
 use std::path::Path;
@@ -445,7 +445,7 @@ impl Llama {
         assert!(start + t <= max, "context {} exceeds max_position_embeddings {max}", start + t);
         let (cos, sin) = F::rope_cos_sin(&self.inv_freq, start, t, tokens.device());
         let mut x = self.embed_tokens.forward(tokens);
-        let checkpoint = cache.is_none() && self.gradient_checkpointing.load(Ordering::Relaxed) && crate::is_grad_enabled();
+        let checkpoint = cache.is_none() && self.gradient_checkpointing.load(Ordering::Relaxed) && crate::nn::is_grad_enabled();
         for (i, layer) in self.layers.iter().enumerate() {
             x = if checkpoint {
                 let l = layer.clone();
@@ -473,7 +473,7 @@ impl Llama {
     pub fn generate_with(&self, prompt: &[usize], n: usize, sampler: &mut Sampler, on_token: impl FnMut(usize) -> bool) -> Vec<usize> {
         let dev = self.embed_tokens.weight.device();
         let max = self.config.max_position_embeddings;
-        crate::generation::generate_cached(prompt, n, max, dev, sampler, |t, c| self.forward_cached(t, c), on_token)
+        crate::nn::generation::generate_cached(prompt, n, max, dev, sampler, |t, c| self.forward_cached(t, c), on_token)
     }
 
     /// Recompute each decoder layer's activations during the backward pass

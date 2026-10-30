@@ -19,11 +19,11 @@
 use super::layers::{Embedding, LayerNorm, Linear};
 use super::module::{prefixed, Module};
 use super::transformer::{KvCache, LayerKv};
-use crate::functional as F;
-use crate::generation::Sampler;
-use crate::serialize;
-use crate::tensor::Tensor;
-use crate::Device;
+use crate::nn::functional as F;
+use crate::nn::generation::Sampler;
+use crate::nn::serialize;
+use crate::nn::tensor::Tensor;
+use crate::nn::Device;
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -224,7 +224,7 @@ impl GPT2 {
         assert!(start + t <= self.config.n_positions, "context {} exceeds n_positions {}", start + t, self.config.n_positions);
         let pos = Tensor::from_indices(&(start..start + t).collect::<Vec<_>>(), &[t], tokens.device());
         let mut x = self.wte.forward(tokens) + self.wpe.forward(&pos);
-        let checkpoint = cache.is_none() && self.gradient_checkpointing.load(Ordering::Relaxed) && crate::is_grad_enabled();
+        let checkpoint = cache.is_none() && self.gradient_checkpointing.load(Ordering::Relaxed) && crate::nn::is_grad_enabled();
         for (i, blk) in self.blocks.iter().enumerate() {
             x = if checkpoint {
                 let b = blk.clone();
@@ -258,7 +258,7 @@ impl GPT2 {
     ) -> Vec<usize> {
         let dev = self.wte.weight.device();
         let max = self.config.n_positions;
-        crate::generation::generate_cached(prompt, n, max, dev, sampler, |t, c| self.forward_cached(t, c), &mut on_token)
+        crate::nn::generation::generate_cached(prompt, n, max, dev, sampler, |t, c| self.forward_cached(t, c), &mut on_token)
     }
 
     /// Recompute each block's activations during the backward pass instead

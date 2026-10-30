@@ -9,10 +9,10 @@
 
 use super::layers::{BatchNorm2d, Conv2d, Linear};
 use super::module::{prefixed, Module};
-use crate::device::Device;
-use crate::functional as F;
-use crate::serialize;
-use crate::tensor::Tensor;
+use crate::nn::device::Device;
+use crate::nn::functional as F;
+use crate::nn::serialize;
+use crate::nn::tensor::Tensor;
 use std::io;
 use std::path::Path;
 

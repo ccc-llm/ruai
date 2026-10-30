@@ -16,11 +16,11 @@
 //! scaler.step(&mut opt);              // skips the step if gradients overflowed
 //! ```
 
-pub use crate::tensor::{autocast, autocast_dtype, AutocastGuard};
+pub use crate::nn::tensor::{autocast, autocast_dtype, AutocastGuard};
 
-use crate::optim::Optimizer;
-use crate::serialize::Metadata;
-use crate::tensor::{no_grad, Tensor};
+use crate::nn::optim::Optimizer;
+use crate::nn::serialize::Metadata;
+use crate::nn::tensor::{no_grad, Tensor};
 
 /// Dynamic loss scaling (like `torch.cuda.amp.GradScaler`).
 ///
@@ -99,7 +99,7 @@ impl GradScaler {
             for p in opt.params() {
                 if let Some(g) = p.grad() {
                     let g = g * inv;
-                    let s = g.sum_all().to_dtype(crate::DType::F32);
+                    let s = g.sum_all().to_dtype(crate::nn::DType::F32);
                     total = Some(match total {
                         Some(t) => t + s,
                         None => s,

@@ -1,9 +1,9 @@
 //! The `Tensor` type and the reverse-mode autograd engine.
 
-use crate::backend::{backend_for, Backend, DType, Storage};
-use crate::device::Device;
-use crate::rand;
-use crate::shape::numel;
+use crate::nn::backend::{backend_for, Backend, DType, Storage};
+use crate::nn::device::Device;
+use crate::nn::rand;
+use crate::nn::shape::numel;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -120,7 +120,7 @@ impl Drop for AutocastGuard {
 /// matmul / linear / conv run in `dtype` (F16 or BF16) while softmax,
 /// layer/batch norm and losses run in f32. Parameters stay f32 ("master
 /// weights") and receive f32 gradients. Pair with
-/// [`crate::amp::GradScaler`] when using F16.
+/// [`crate::nn::amp::GradScaler`] when using F16.
 pub fn autocast<T>(dtype: DType, f: impl FnOnce() -> T) -> T {
     let _g = AutocastGuard::new(Some(dtype));
     f()
@@ -371,7 +371,7 @@ impl Tensor {
 
     /// Size of dimension `d` (negative indexes from the end).
     pub fn dim(&self, d: isize) -> usize {
-        self.0.shape[crate::shape::norm_dim(d, self.rank())]
+        self.0.shape[crate::nn::shape::norm_dim(d, self.rank())]
     }
 
     /// The underlying storage (a cheap reference-counted clone).
@@ -499,7 +499,7 @@ impl Tensor {
     }
 
     /// Replace the data in place, allowing a dtype change (same number of
-    /// elements); used by [`crate::nn::Module::to_dtype`].
+    /// elements); used by [`crate::nn::modules::Module::to_dtype`].
     pub fn set_data(&self, s: Storage) {
         assert_eq!(s.len(), self.numel(), "set_data: size mismatch");
         *self.0.data.write().unwrap() = Data::new(s, &self.0.shape);

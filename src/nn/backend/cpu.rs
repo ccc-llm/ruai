@@ -10,8 +10,8 @@
 use super::{
     reference::Unfused, AdamParams, AttentionSpec, Backend, BinaryOp, Conv2dGeom, CpuStorage, DType, MatmulSpec, ReduceOp, Storage, UnaryOp,
 };
-use crate::device::Device;
-use crate::shape::{broadcast_strides, numel, split_axis, strides};
+use crate::nn::device::Device;
+use crate::nn::shape::{broadcast_strides, numel, split_axis, strides};
 use half::slice::HalfFloatSliceExt;
 use half::vec::HalfFloatVecExt;
 use half::{bf16, f16};

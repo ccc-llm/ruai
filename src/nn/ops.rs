@@ -1,10 +1,10 @@
 //! Differentiable tensor operations. Each op computes its forward result with
 //! backend primitives and registers a backward closure built from other ops.
 
-use crate::backend::{BinaryOp, Conv2dGeom, DType, MatmulSpec, ReduceOp, UnaryOp};
-use crate::device::Device;
-use crate::shape::{broadcast_shape, norm_dim, numel};
-use crate::tensor::{autocast_dtype, Tensor};
+use crate::nn::backend::{BinaryOp, Conv2dGeom, DType, MatmulSpec, ReduceOp, UnaryOp};
+use crate::nn::device::Device;
+use crate::nn::shape::{broadcast_shape, norm_dim, numel};
+use crate::nn::tensor::{autocast_dtype, Tensor};
 
 fn need(t: &Tensor) -> bool {
     t.requires_grad()
@@ -14,7 +14,7 @@ fn need(t: &Tensor) -> bool {
 /// own graph (`create_graph`), so they must use differentiable ops instead of
 /// raw kernels.
 fn graph() -> bool {
-    crate::tensor::is_grad_enabled()
+    crate::nn::tensor::is_grad_enabled()
 }
 
 fn same_device(a: &Tensor, b: &Tensor) {
@@ -450,8 +450,8 @@ impl Tensor {
         let in_shape = self.shape().to_vec();
         let back = move |g: &Tensor| vec![Some(g.reshape(&in_shape))];
         let (_, st, off) = self.strided_parts();
-        if crate::tensor::is_row_major(self.shape(), &st) {
-            Tensor::view_op(self, shape.to_vec(), crate::tensor::contiguous_strides(shape), off, "reshape", back)
+        if crate::nn::tensor::is_row_major(self.shape(), &st) {
+            Tensor::view_op(self, shape.to_vec(), crate::nn::tensor::contiguous_strides(shape), off, "reshape", back)
         } else {
             Tensor::from_op(self.storage(), shape.to_vec(), vec![self.clone()], "reshape", back)
         }
@@ -542,7 +542,7 @@ impl Tensor {
     /// batch stride)` when its offset is 0, its last two dims are row-major
     /// (or column-major = `transposed`) and its leading dims collapse to one
     /// stride (0 = broadcast). `None` means it must be materialized.
-    pub(crate) fn gemm_operand(&self) -> Option<(crate::backend::Storage, bool, usize)> {
+    pub(crate) fn gemm_operand(&self) -> Option<(crate::nn::backend::Storage, bool, usize)> {
         let (s, st, off) = self.strided_parts();
         let r = self.rank();
         if off != 0 || r < 2 {
@@ -661,7 +661,7 @@ impl Tensor {
     }
 
     /// Matrix product of the last two dims, batched over leading dims.
-    /// Inside [`crate::autocast`] both operands are cast to the autocast dtype.
+    /// Inside [`crate::nn::autocast`] both operands are cast to the autocast dtype.
     pub fn matmul(&self, other: &Tensor) -> Tensor {
         let (a, b) = self.matmul_operands(other);
         let out = a.matmul_raw(&b, false, false);
@@ -711,7 +711,7 @@ impl Tensor {
 
     /// Group-wise int4 weight-only matmul `self @ dequant(q, scales)`:
     /// `self` `[..., k]` (float), `q` `[k / 2, n]` (`I8`, two 4-bit values
-    /// per byte, see [`crate::backend::Backend::dequant_int4`]), `scales`
+    /// per byte, see [`crate::nn::backend::Backend::dequant_int4`]), `scales`
     /// `[k / group, n]` (`F32`). Differentiable with respect to `self` only.
     pub fn matmul_int4(&self, q: &Tensor, scales: &Tensor) -> Tensor {
         assert_float(self, "matmul_int4");

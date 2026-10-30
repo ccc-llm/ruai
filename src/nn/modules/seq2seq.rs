@@ -7,9 +7,9 @@
 use super::layers::{Embedding, FeedForward, LayerNorm, Linear};
 use super::module::{prefixed, Module};
 use super::transformer::{KvCache, LayerKv, MultiHeadAttention, TransformerBlock};
-use crate::device::Device;
-use crate::functional as F;
-use crate::tensor::Tensor;
+use crate::nn::device::Device;
+use crate::nn::functional as F;
+use crate::nn::tensor::Tensor;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Encoder-decoder hyperparameters.
@@ -219,14 +219,14 @@ impl Seq2Seq {
     pub fn greedy(&self, src: &[usize], bos: usize, eos: Option<usize>, max_new: usize) -> Vec<usize> {
         let dev = self.head.weight.device();
         let max_new = max_new.min(self.config.max_len);
-        crate::no_grad(|| {
+        crate::nn::no_grad(|| {
             let memory = self.encode(&Tensor::from_indices(src, &[1, src.len()], dev), None);
             let mut cache = KvCache::new(self.decoder.len());
             let mut out = Vec::new();
             let mut last = bos;
             for _ in 0..max_new {
                 let logits = self.decode_cached(&Tensor::from_indices(&[last], &[1, 1], dev), &memory, None, &mut cache);
-                last = crate::generation::argmax(&logits.to_vec());
+                last = crate::nn::generation::argmax(&logits.to_vec());
                 out.push(last);
                 if Some(last) == eos {
                     break;

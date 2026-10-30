@@ -26,11 +26,11 @@ impl Device {
         match self {
             Device::Cpu => true,
             #[cfg(feature = "cuda")]
-            Device::Cuda(i) => crate::backend::cuda::is_available(*i),
+            Device::Cuda(i) => crate::nn::backend::cuda::is_available(*i),
             #[cfg(not(feature = "cuda"))]
             Device::Cuda(_) => false,
             #[cfg(feature = "mps")]
-            Device::Mps => crate::backend::mps::is_available(),
+            Device::Mps => crate::nn::backend::mps::is_available(),
             #[cfg(not(feature = "mps"))]
             Device::Mps => false,
         }
@@ -40,7 +40,7 @@ impl Device {
 impl Device {
     /// Wait for all queued work on this device (useful for timing GPU code).
     pub fn synchronize(&self) {
-        crate::backend::backend_for(*self).synchronize();
+        crate::nn::backend::backend_for(*self).synchronize();
     }
 
     /// The fastest available device: MPS, then CUDA, then CPU.

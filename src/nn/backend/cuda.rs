@@ -13,8 +13,8 @@
 
 use super::kernel_names::{cast_kernel, copy_kernel, fk, kernel_names};
 use super::{AdamParams, Backend, BinaryOp, Conv2dGeom, DType, MatmulSpec, ReduceOp, Storage, UnaryOp};
-use crate::device::Device;
-use crate::shape::{broadcast_strides, numel, split_axis, strides};
+use crate::nn::device::Device;
+use crate::nn::shape::{broadcast_strides, numel, split_axis, strides};
 use cudarc::cublas::{sys::cublasOperation_t, CudaBlas, Gemm, GemmConfig, StridedBatchedConfig};
 use cudarc::driver::{CudaContext, CudaFunction, CudaSlice, CudaStream, DevicePtr, DeviceRepr, LaunchConfig, PushKernelArg};
 use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};

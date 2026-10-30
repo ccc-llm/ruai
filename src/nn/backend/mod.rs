@@ -22,7 +22,7 @@ mod kernel_names;
 #[cfg(feature = "mps")]
 pub mod mps;
 
-use crate::device::Device;
+use crate::nn::device::Device;
 use std::fmt;
 use std::sync::Arc;
 

@@ -1,5 +1,5 @@
-use crate::device::Device;
-use crate::tensor::Tensor;
+use crate::nn::device::Device;
+use crate::nn::tensor::Tensor;
 
 /// A neural-network building block (like `torch.nn.Module`).
 ///
@@ -29,7 +29,7 @@ pub trait Module: Send + Sync {
     }
 
     /// Parameters that currently require gradients (what an optimizer should
-    /// get after [`Module::freeze`] / [`crate::nn::Linear::add_lora`]).
+    /// get after [`Module::freeze`] / [`crate::nn::modules::Linear::add_lora`]).
     fn trainable_parameters(&self) -> Vec<Tensor> {
         self.parameters().into_iter().filter(Tensor::requires_grad).collect()
     }
@@ -71,8 +71,8 @@ pub trait Module: Send + Sync {
 
     /// Convert all floating-point parameters and buffers to `dtype` in place
     /// (e.g. `F16` for half-precision inference). For mixed-precision
-    /// *training* keep the model in f32 and use [`crate::autocast`] instead.
-    fn to_dtype(&self, dtype: crate::DType) {
+    /// *training* keep the model in f32 and use [`crate::nn::autocast`] instead.
+    fn to_dtype(&self, dtype: crate::nn::DType) {
         assert!(dtype.is_float(), "Module::to_dtype needs a floating-point dtype");
         for (_, t) in self.state_dict() {
             if t.dtype().is_float() && t.dtype() != dtype {
@@ -95,7 +95,7 @@ pub trait Module: Send + Sync {
 }
 
 /// Only the LoRA adapter tensors (`*.lora_a`, `*.lora_b`) of a model, e.g. to
-/// save a small fine-tuning result with [`crate::serialize::save_tensors`]
+/// save a small fine-tuning result with [`crate::nn::serialize::save_tensors`]
 /// and load it later with `load_state_dict(.., strict = false)`.
 pub fn lora_state_dict(model: &dyn Module) -> Vec<(String, Tensor)> {
     model.named_parameters().into_iter().filter(|(n, _)| n.ends_with(".lora_a") || n.ends_with(".lora_b")).collect()

@@ -10,8 +10,8 @@
 
 use super::kernel_names::{cast_kernel, copy_kernel, fk, kernel_names};
 use super::{AdamParams, Backend, BinaryOp, Conv2dGeom, DType, MatmulSpec, ReduceOp, Storage, UnaryOp};
-use crate::device::Device;
-use crate::shape::{broadcast_strides, numel, split_axis, strides};
+use crate::nn::device::Device;
+use crate::nn::shape::{broadcast_strides, numel, split_axis, strides};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::AnyThread;

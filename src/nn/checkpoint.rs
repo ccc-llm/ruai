@@ -16,10 +16,10 @@
 //! assert_eq!(state.step, 1000);
 //! ```
 
-use crate::nn::Module;
-use crate::optim::Optimizer;
-use crate::serialize::{self, Metadata};
-use crate::tensor::Tensor;
+use crate::nn::modules::Module;
+use crate::nn::optim::Optimizer;
+use crate::nn::serialize::{self, Metadata};
+use crate::nn::tensor::Tensor;
 use std::io;
 use std::path::Path;
 
@@ -53,7 +53,7 @@ pub fn save(path: impl AsRef<Path>, model: &dyn Module, opt: &dyn Optimizer, sta
     meta.insert("optimizer".into(), opt.name().into());
     meta.insert("step".into(), state.step.to_string());
     meta.insert("epoch".into(), state.epoch.to_string());
-    meta.insert("rng_state".into(), crate::rand::state().to_string());
+    meta.insert("rng_state".into(), crate::nn::rand::state().to_string());
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)?;
     }
@@ -91,7 +91,7 @@ pub fn load(path: impl AsRef<Path>, model: &dyn Module, opt: &mut dyn Optimizer)
     };
     let step = num(&mut meta, "step")?;
     let epoch = num(&mut meta, "epoch")?;
-    crate::rand::set_state(num(&mut meta, "rng_state")?);
+    crate::nn::rand::set_state(num(&mut meta, "rng_state")?);
     meta.remove("format");
     Ok(TrainState { step, epoch, extra: meta })
 }

@@ -14,7 +14,7 @@
 //! assert!(x.grad().is_none(), ".grad is untouched");
 //! ```
 
-use crate::tensor::{run_backward, Tensor};
+use crate::nn::tensor::{run_backward, Tensor};
 
 /// Gradients of `output` (seeded with ones) with respect to each of `inputs`
 /// (`None` where an input does not influence `output`). With `create_graph`

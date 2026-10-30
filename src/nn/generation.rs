@@ -1,6 +1,6 @@
 //! Token sampling for autoregressive generation.
 
-use crate::rand::Rng;
+use crate::nn::rand::Rng;
 
 /// Index of the largest logit.
 pub fn argmax(logits: &[f32]) -> usize {
@@ -84,22 +84,22 @@ pub fn generate_cached(
     prompt: &[usize],
     n: usize,
     max_len: usize,
-    device: crate::Device,
+    device: crate::nn::Device,
     sampler: &mut Sampler,
-    mut step: impl FnMut(&crate::Tensor, &mut crate::nn::KvCache) -> crate::Tensor,
+    mut step: impl FnMut(&crate::nn::Tensor, &mut crate::nn::modules::KvCache) -> crate::nn::Tensor,
     mut on_token: impl FnMut(usize) -> bool,
 ) -> Vec<usize> {
     assert!(!prompt.is_empty(), "prompt must not be empty");
     let mut ids = prompt.to_vec();
-    let mut cache = crate::nn::KvCache::default();
-    crate::no_grad(|| {
+    let mut cache = crate::nn::modules::KvCache::default();
+    crate::nn::no_grad(|| {
         let mut pending = ids[ids.len().saturating_sub(max_len)..].to_vec();
         for _ in 0..n {
             if cache.len() + pending.len() > max_len {
                 cache.clear();
                 pending = ids[ids.len() - max_len..].to_vec();
             }
-            let logits = step(&crate::Tensor::from_indices(&pending, &[1, pending.len()], device), &mut cache);
+            let logits = step(&crate::nn::Tensor::from_indices(&pending, &[1, pending.len()], device), &mut cache);
             let v = logits.dim(-1);
             let next = sampler.sample(&logits.narrow(1, pending.len() - 1, 1).reshape(&[v]).to_vec());
             ids.push(next);

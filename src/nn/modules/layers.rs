@@ -1,7 +1,7 @@
 use super::module::{prefixed, Module};
-use crate::device::Device;
-use crate::functional as F;
-use crate::tensor::{no_grad, Tensor};
+use crate::nn::device::Device;
+use crate::nn::functional as F;
+use crate::nn::tensor::{no_grad, Tensor};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Uniform(-bound, bound) parameter, the PyTorch default for Linear/Conv.

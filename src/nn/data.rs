@@ -21,9 +21,9 @@
 //! assert_eq!(loader.len(), 4); // 3 + 3 + 3 + 1
 //! ```
 
-use crate::rand::Rng;
-use crate::tensor::Tensor;
-use crate::Device;
+use crate::nn::rand::Rng;
+use crate::nn::tensor::Tensor;
+use crate::nn::Device;
 use std::sync::mpsc::{sync_channel, Receiver};
 use std::sync::Arc;
 use std::thread::JoinHandle;

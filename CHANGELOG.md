@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.0.0
+
+ruai becomes a Swiss-army toolkit: one crate whose parts are cargo features, and a git-style
+`ruai` command.
+
+- The engine moved to `src/nn/` (`ruai::nn`, feature `nn`, on by default) and is re-exported
+  at the crate root, so v2 paths (`ruai::Tensor`, `ruai::nn::Linear`,
+  `ruai::nn::llama::Llama`, `ruai::prelude`) keep working. The former `nn` module of layers
+  is now `ruai::nn::modules`. The engine's dependencies are optional; the crate builds with
+  `--no-default-features`.
+- The `ruai` command: `ruai nn devices`, `ruai nn info PATH` (model summary from the
+  safetensors header), `ruai nn generate --model DIR` (GPT-2 or Llama-family models with
+  their tokenizer, int8 / int4, sampling options); `ruai help`, `ruai --version`; any other
+  `ruai NAME` runs `ruai-NAME` from `PATH`, passing its exit code through.
+
 ## 2.0.1
 
 Verified against real pretrained weights (GPT-2 small and SmolLM2-135M from Hugging Face).

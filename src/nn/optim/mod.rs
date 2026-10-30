@@ -2,8 +2,8 @@
 //! and written back with `set_storage`, so they run on whatever device the
 //! parameters live on.
 
-use crate::backend::{AdamParams, DType, Storage};
-use crate::tensor::{no_grad, Tensor};
+use crate::nn::backend::{AdamParams, DType, Storage};
+use crate::nn::tensor::{no_grad, Tensor};
 use std::collections::HashMap;
 use std::io;
 
@@ -99,7 +99,7 @@ impl Optimizer for SGD {
         "sgd"
     }
     fn state_dict(&self) -> Vec<(String, Tensor)> {
-        let mut out = vec![("lr".to_string(), Tensor::scalar(self.lr, crate::Device::Cpu))];
+        let mut out = vec![("lr".to_string(), Tensor::scalar(self.lr, crate::nn::Device::Cpu))];
         for (i, v) in self.velocity.iter().enumerate() {
             if let Some(v) = v {
                 out.push((format!("velocity.{i}"), v.clone()));
@@ -248,7 +248,7 @@ impl Optimizer for Adam {
         }
     }
     fn state_dict(&self) -> Vec<(String, Tensor)> {
-        let cpu = crate::Device::Cpu;
+        let cpu = crate::nn::Device::Cpu;
         let mut out = vec![
             ("lr".to_string(), Tensor::scalar(self.lr, cpu)),
             ("step".to_string(), Tensor::from_vec_i32(vec![self.t], &[], cpu)),

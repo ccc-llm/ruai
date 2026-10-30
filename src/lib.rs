@@ -1,25 +1,15 @@
 //! # ruai
 //!
-//! A small PyTorch-like deep learning engine:
+//! A Swiss-army toolkit for AI in Rust, built as one crate whose parts are
+//! cargo features (all on by default):
 //!
-//! * [`autograd`] — functional gradients and second derivatives (`create_graph`)
-//! * [`Tensor`] — n-dimensional arrays (F32 / F16 / BF16 / I32 / I8) on CPU,
-//!   Apple GPU (`mps` feature) or NVIDIA GPU (`cuda` feature), with
-//!   reverse-mode autograd
-//! * [`nn`] — layers (Linear, Conv2d, BatchNorm2d, LayerNorm, RMSNorm,
-//!   Embedding, MultiHeadAttention, TransformerBlock, SwiGLU, GPT, ...)
-//! * [`functional`] — softmax, cross-entropy, conv2d, pooling, attention, ...
-//! * [`optim`] — SGD, Adam, AdamW, gradient clipping, LR schedulers ([`optim::lr`])
-//! * [`serialize`] — save / load weights (safetensors, PyTorch/HF compatible)
-//! * [`amp`] — mixed precision: `autocast` (F16/BF16) and `GradScaler`
-//! * [`checkpoint`] — resumable training checkpoints (model + optimizer + RNG)
-//! * [`nn::gpt2`] / [`tokenizer`] / [`generation`] — pretrained GPT-2, BPE, sampling
-//! * [`nn::llama`] — Llama-family decoder (RMSNorm, RoPE, SwiGLU, GQA), Hugging Face compatible
-//! * [`nn::resnet`] / [`nn::vit`] / [`nn::seq2seq`] — ResNet, Vision Transformer, encoder-decoder Transformer
-//! * [`data`] — `Dataset` / `DataLoader` with multi-threaded prefetching
-//! * [`metrics`] — running averages, accuracy, throughput
-//! * [`backend`] — the device abstraction: every op is built from the
-//!   primitives of [`backend::Backend`] (CPU, MPS and CUDA implement them)
+//! * [`nn`] (feature `nn`) — a PyTorch-like deep learning engine: tensors on
+//!   CPU / Apple GPU / NVIDIA GPU, autograd, layers, optimizers, GPT-2 /
+//!   Llama / ResNet / ViT, quantization, safetensors. Its items are also
+//!   re-exported here, so `ruai::Tensor` is `ruai::nn::Tensor`.
+//!
+//! The `ruai` command line tool dispatches to the parts like `git`:
+//! `ruai nn generate ...`; an unknown `ruai NAME` runs `ruai-NAME` from `PATH`.
 //!
 //! ```
 //! use ruai::{Tensor, Device};
@@ -28,59 +18,10 @@
 //! y.backward();
 //! assert_eq!(x.grad().unwrap().to_vec(), vec![2.0, 4.0, 6.0]);
 //! ```
-//!
-//! A training step looks like PyTorch:
-//!
-//! ```
-//! use ruai::prelude::*;
-//! use ruai::optim::Adam;
-//!
-//! let model = nn::Sequential::new()
-//!     .add(nn::Linear::new(4, 16, Device::Cpu))
-//!     .add(nn::ReLU)
-//!     .add(nn::Linear::new(16, 3, Device::Cpu));
-//! let mut opt = Adam::new(model.parameters(), 1e-2);
-//! let x = Tensor::randn(&[8, 4], Device::Cpu);
-//! let y = [0usize, 1, 2, 0, 1, 2, 0, 1];
-//! for _ in 0..5 {
-//!     opt.zero_grad();
-//!     let loss = F::cross_entropy(&model.forward(&x), &y, 0.0);
-//!     loss.backward();
-//!     opt.step();
-//! }
-//! ```
 
 #![warn(missing_docs)]
 
-pub mod amp;
-pub mod autograd;
-pub mod backend;
-pub mod checkpoint;
-pub mod data;
-pub mod device;
-pub mod functional;
-pub mod generation;
-pub mod metrics;
+#[cfg(feature = "nn")]
 pub mod nn;
-pub mod ops;
-pub mod optim;
-pub mod rand;
-pub mod serialize;
-pub mod shape;
-pub mod tensor;
-pub mod tokenizer;
-
-pub use backend::DType;
-pub use device::Device;
-pub use ops::IntoIndices;
-pub use tensor::{autocast, autocast_dtype, enable_grad, is_grad_enabled, no_grad, NoGradGuard, Tensor};
-
-/// Commonly used items: `use ruai::prelude::*;`
-pub mod prelude {
-    pub use crate::functional as F;
-    pub use crate::nn::{self, Module};
-    pub use crate::data::{DataLoader, Dataset};
-    pub use crate::generation::Sampler;
-    pub use crate::optim::{self, lr::LrScheduler, Optimizer};
-    pub use crate::{autocast, no_grad, DType, Device, IntoIndices, Tensor};
-}
+#[cfg(feature = "nn")]
+pub use nn::*;

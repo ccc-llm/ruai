@@ -1,10 +1,10 @@
 use super::layers::{FeedForward, LayerNorm, Linear};
 use super::module::{prefixed, Module};
-use crate::device::Device;
-use crate::functional as F;
-use crate::generation::Sampler;
-use crate::backend::Storage;
-use crate::tensor::{contiguous_strides, Tensor};
+use crate::nn::device::Device;
+use crate::nn::functional as F;
+use crate::nn::generation::Sampler;
+use crate::nn::backend::Storage;
+use crate::nn::tensor::{contiguous_strides, Tensor};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A `[B, H, capacity, D]` buffer holding the first `len` positions of a
@@ -104,7 +104,7 @@ impl LayerKv {
 
     /// Append new keys/values `[B, H, T_new, D/H]`; returns all of them.
     pub fn append(&mut self, k: Tensor, v: Tensor) -> (Tensor, Tensor) {
-        if crate::is_grad_enabled() && (k.requires_grad() || v.requires_grad()) {
+        if crate::nn::is_grad_enabled() && (k.requires_grad() || v.requires_grad()) {
             let (k, v) = match (self.keys(), self.values()) {
                 (Some(pk), Some(pv)) => (Tensor::cat(&[&pk, &k], 2), Tensor::cat(&[&pv, &v], 2)),
                 _ => (k, v),
@@ -414,7 +414,7 @@ impl GPT {
         assert!(t <= self.max_len, "sequence length {t} > max_len {}", self.max_len);
         let mut x = self.embed(tokens, 0);
         let mask = F::causal_mask(t, x.device());
-        let checkpoint = self.gradient_checkpointing.load(Ordering::Relaxed) && crate::is_grad_enabled();
+        let checkpoint = self.gradient_checkpointing.load(Ordering::Relaxed) && crate::nn::is_grad_enabled();
         for blk in &self.blocks {
             x = if checkpoint {
                 let b = blk.clone();
@@ -461,21 +461,21 @@ impl GPT {
     /// [`GPT::generate_uncached`]. Returns the prompt followed by the new tokens.
     pub fn generate(&self, prompt: &[usize], n: usize, sampler: &mut Sampler) -> Vec<usize> {
         let dev = self.head.weight.device();
-        crate::generation::generate_cached(prompt, n, self.max_len, dev, sampler, |t, c| self.forward_cached(t, c), |_| true)
+        crate::nn::generation::generate_cached(prompt, n, self.max_len, dev, sampler, |t, c| self.forward_cached(t, c), |_| true)
     }
 
     /// Like [`GPT::generate`] but recomputes the whole context every step
     /// (no KV cache); for reference and testing.
     pub fn generate_uncached(&self, prompt: &[usize], n: usize) -> Vec<usize> {
         let mut ids = prompt.to_vec();
-        crate::no_grad(|| {
+        crate::nn::no_grad(|| {
             for _ in 0..n {
                 let start = ids.len().saturating_sub(self.max_len);
                 let ctx = &ids[start..];
                 let logits = self.forward_ids(ctx, 1, ctx.len());
                 let v = logits.dim(-1);
                 let last = logits.reshape(&[ctx.len(), v]).to_vec()[(ctx.len() - 1) * v..].to_vec();
-                ids.push(crate::generation::argmax(&last));
+                ids.push(crate::nn::generation::argmax(&last));
             }
         });
         ids

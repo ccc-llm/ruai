@@ -2,13 +2,31 @@
 
 [![CI](https://github.com/ccc-llm/ruai/actions/workflows/ci.yml/badge.svg)](https://github.com/ccc-llm/ruai/actions/workflows/ci.yml)
 
-一個用 Rust 寫的、類似 PyTorch 的神經網路引擎：動態計算圖 + 反向自動微分，支援訓練與推理，內建 CNN、ResNet、ViT、Transformer（GPT / GPT-2 / Llama）與 encoder-decoder。支援 CPU（rayon 多執行緒，macOS 可選用 Accelerate）、Apple GPU（Metal / MPS）與 NVIDIA GPU（CUDA）。
+用 Rust 寫的 AI 瑞士刀：一個 crate、一個 `ruai` 指令，各部分是 cargo feature，像 git 一樣用子指令呼叫。
+
+| 部分 | 指令 | 內容 | 狀態 |
+|---|---|---|---|
+| `ruai::nn`（feature `nn`） | `ruai nn ...` | 類似 PyTorch 的神經網路引擎：動態計算圖 + 自動微分（含二階）、CPU / Apple GPU（MPS）/ NVIDIA GPU（CUDA）、CNN、ResNet、ViT、GPT / GPT-2 / Llama、量化、safetensors | ✅ |
+| `ruai::world` | `ruai world ...` | 類似 gymnasium 的環境 | v3.1 |
+| `ruai::py` | `ruai py ...` | py0：受限、強型別的 Python，翻成 Rust 執行（由 py2rs 併入），附 Python 標準函式庫與 numpy / ml / world / nn 套件 | v3.2–v3.7 |
+| agent | `ruai agent ...` | 以 py0 改寫的 agge：LLM agent 團隊與 graph 工作流程 | v3.4 |
+
+```bash
+cargo install ruai                    # 或在 checkout 中：cargo build --release
+ruai nn devices                       # 可用的運算裝置
+ruai nn info data/smollm2-135m        # 模型摘要（只讀 safetensors 標頭）
+ruai nn generate --model data/gpt2 --prompt "The dog" -n 18
+ruai nn generate --model data/smollm2-135m --device mps --int8 --prompt "Gravity is"
+ruai NAME ...                         # 其他名稱會執行 PATH 上的 ruai-NAME（像 git）
+```
+
+函式庫裡引擎在 `ruai::nn`，也 re-export 在根目錄（`ruai::Tensor` 等同 `ruai::nn::Tensor`，`ruai::nn::Linear`、`ruai::nn::llama::Llama` 等 v2 路徑照舊可用）。只要部分功能時可關掉預設 features：`ruai = { version = "3", default-features = false, features = [...] }`。
 
 ## 安裝
 
 ```toml
 [dependencies]
-ruai = "1.0"   # 或 git 版本：ruai = { git = "https://github.com/ccc-llm/ruai" }
+ruai = "3"     # 或 git 版本：ruai = { git = "https://github.com/ccc-llm/ruai" }
 # GPU：features = ["mps"]（Apple）或 ["cuda"]（NVIDIA）；macOS CPU 加速：["accelerate"]
 ```
 
@@ -261,6 +279,9 @@ autocast 規則（同 PyTorch）：matmul / Linear / Conv 以半精度執行；s
 
 ```
 src/
+├── main.rs, cli/    `ruai` 指令（子指令派送、ruai nn）
+└── nn/              神經網路引擎（feature nn）
+nn/
 ├── backend/
 │   ├── mod.rs     Backend trait：約 15 個「原語」，所有裝置只需實作這些
 │   ├── cpu.rs     CPU 實作（rayon 平行化）
@@ -271,7 +292,7 @@ src/
 ├── tensor.rs      Tensor 結構、計算圖節點、backward()
 ├── ops.rs         可微分運算：forward 呼叫 backend，backward 由其他運算組成
 ├── functional.rs  組合運算（softmax、conv2d、attention …）
-├── nn/            Module trait 與各種層、Transformer、GPT、GPT-2、Llama、ResNet、ViT、Seq2Seq
+├── modules/       Module trait 與各種層、Transformer、GPT、GPT-2、Llama、ResNet、ViT、Seq2Seq
 ├── optim/         優化器（mod.rs）與學習率排程（lr.rs）
 ├── data.rs        Dataset / DataLoader
 ├── checkpoint.rs  可接續訓練的 checkpoint
@@ -412,6 +433,13 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v1.4 | 分組 int4 權重量化（CPU / MPS / CUDA 融合 kernel，可在其上訓練 LoRA） | ✅ |
 | v1.5 | 融合 attention（CPU：FlashAttention 式分塊；其他後端：分塊 GEMM，記憶體有上限）、MPS 量化 matvec 加速 | ✅ |
 | v2.0 | 不複製的 strided view、預先配置的 KV cache（解碼 CPU 約 1.4 倍、MPS 約 6 倍）、二階導數（`create_graph`、`autograd::grad`） | ✅ |
+| v3.0 | 單一 crate + features、引擎移到 `src/nn/`、git 式 `ruai` 指令（`ruai nn devices / info / generate`、外部 `ruai-NAME`） | ✅ |
+| v3.1 | `world`：類似 gymnasium 的環境（CartPole、MountainCar、Pendulum、Acrobot、FrozenLake…）、`ruai world` | |
+| v3.2 | `py`：併入 py2rs，`ruai py run / check / emit / build / test` 執行 py0 | |
+| v3.3 | py0 套件機制、以 Rust 實作的 Python 標準函式庫 | |
+| v3.4 | `ruai agent`：以 py0 改寫 agge | |
+| v3.5–3.7 | py0 的 numpy、ml（sklearn 子集）、gymnasium 與 nn 套件 | |
+| v4.0 | 穩定版、英文文件 | |
 
 ## 目前限制
 

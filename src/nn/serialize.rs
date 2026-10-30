@@ -6,11 +6,11 @@
 //! and read as-is; `F64` loads as `F32`, and `I64`, `I16`, `U8`, `U16`, `U32`,
 //! `BOOL` load as `I32`. Files in the legacy `RSNN` format (v0.1-v0.4) can still be loaded.
 
-use crate::backend::DType;
-use crate::nn::Module;
-use crate::shape::numel;
-use crate::tensor::Tensor;
-use crate::Device;
+use crate::nn::backend::DType;
+use crate::nn::modules::Module;
+use crate::nn::shape::numel;
+use crate::nn::tensor::Tensor;
+use crate::nn::Device;
 use safetensors::tensor::{Dtype as StDtype, SafeTensors, TensorView};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read};

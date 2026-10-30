@@ -26,6 +26,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --release
       - run: cargo clippy --all-targets
+      # every part is a feature: the crate must also build with none of them
+      - run: cargo check --lib --no-default-features
       # CUDA libraries are loaded at runtime, so the backend builds without a GPU
       - run: cargo check --all-targets --features cuda
       - run: cargo clippy --all-targets --features cuda
