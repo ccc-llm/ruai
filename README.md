@@ -6,7 +6,7 @@
 
 ```toml
 [dependencies]
-ruai = "1.0"   # 或 git 版本：ruai = { git = "https://github.com/ccc-llm/rust-nn" }
+ruai = "1.0"   # 或 git 版本：ruai = { git = "https://github.com/ccc-llm/ruai" }
 # GPU：features = ["mps"]（Apple）或 ["cuda"]（NVIDIA）；macOS CPU 加速：["accelerate"]
 ```
 
