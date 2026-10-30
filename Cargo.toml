@@ -1,6 +1,6 @@
 [package]
 name = "ruai"
-version = "3.0.0"
+version = "3.1.0"
 edition = "2021"
 description = "A Swiss-army AI toolkit in Rust: a PyTorch-like engine (autograd, GPU, GPT-2/Llama), and a git-style `ruai` command"
 license = "MIT"
@@ -33,9 +33,11 @@ objc2-metal = { version = "0.3", optional = true }
 objc2-metal-performance-shaders = { version = "0.3", optional = true }
 
 [features]
-default = ["nn"]
+default = ["nn", "world"]
 # The deep learning engine (ruai::nn, also re-exported at the crate root)
 nn = ["dep:rayon", "dep:matrixmultiply", "dep:half", "dep:safetensors", "dep:serde_json", "dep:fancy-regex", "dep:unicode-normalization"]
+# Reinforcement-learning environments with the Gymnasium API (no dependencies)
+world = []
 # GPU backends for nn: Apple Metal (mps) and NVIDIA (cuda)
 cuda = ["nn", "dep:cudarc"]
 mps = ["nn", "dep:objc2", "dep:objc2-foundation", "dep:objc2-metal", "dep:objc2-metal-performance-shaders"]
@@ -57,3 +59,7 @@ opt-level = 1
 
 [profile.test]
 opt-level = 2
+
+[dev-dependencies]
+# tests compare floats read from Python's JSON output exactly
+serde_json = { version = "1", features = ["float_roundtrip"] }

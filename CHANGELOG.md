@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.1.0
+
+- `ruai::world` (feature `world`, no dependencies): reinforcement-learning environments with
+  the Gymnasium 1.x API (`make`, `reset(seed)`, `step`, `Space::seed / sample / contains`,
+  `TimeLimit`, `RecordEpisodeStatistics`, `SyncVectorEnv` with next-step autoreset):
+  CartPole-v1, MountainCar-v0, Pendulum-v1, Acrobot-v1, FrozenLake-v1, FrozenLake8x8-v1
+  (with Gymnasium's `ansi` rendering). Seeded episodes match `gymnasium.make(id)` bit for bit
+  (tests/world.rs compares 4 seeds x 400 steps of every environment, the vector env and
+  the rendering against Gymnasium when it is installed).
+- `ruai::rng`: NumPy's `SeedSequence`, `PCG64` and `Generator.random / uniform / integers`,
+  bit-identical to NumPy (including its fused multiply-add on aarch64).
+- `ruai world list`, `ruai world run ID [--episodes N] [--seed S] [--render]`.
+- `examples/cartpole.rs`: REINFORCE with a `ruai::nn` policy solves CartPole-v1.
+
 ## 3.0.0
 
 ruai becomes a Swiss-army toolkit: one crate whose parts are cargo features, and a git-style

@@ -7,7 +7,7 @@
 | 部分 | 指令 | 內容 | 狀態 |
 |---|---|---|---|
 | `ruai::nn`（feature `nn`） | `ruai nn ...` | 類似 PyTorch 的神經網路引擎：動態計算圖 + 自動微分（含二階）、CPU / Apple GPU（MPS）/ NVIDIA GPU（CUDA）、CNN、ResNet、ViT、GPT / GPT-2 / Llama、量化、safetensors | ✅ |
-| `ruai::world` | `ruai world ...` | 類似 gymnasium 的環境 | v3.1 |
+| `ruai::world`（feature `world`） | `ruai world ...` | gymnasium 1.x 的 API 與環境（CartPole、MountainCar、Pendulum、Acrobot、FrozenLake），相同 seed 下與 gymnasium 逐位元相同 | ✅ |
 | `ruai::py` | `ruai py ...` | py0：受限、強型別的 Python，翻成 Rust 執行（由 py2rs 併入），附 Python 標準函式庫與 numpy / ml / world / nn 套件 | v3.2–v3.7 |
 | agent | `ruai agent ...` | 以 py0 改寫的 agge：LLM agent 團隊與 graph 工作流程 | v3.4 |
 
@@ -17,6 +17,8 @@ ruai nn devices                       # 可用的運算裝置
 ruai nn info data/smollm2-135m        # 模型摘要（只讀 safetensors 標頭）
 ruai nn generate --model data/gpt2 --prompt "The dog" -n 18
 ruai nn generate --model data/smollm2-135m --device mps --int8 --prompt "Gravity is"
+ruai world list                       # 內建環境與其空間
+ruai world run CartPole-v1 --episodes 3 --seed 1
 ruai NAME ...                         # 其他名稱會執行 PATH 上的 ruai-NAME（像 git）
 ```
 
@@ -177,6 +179,24 @@ println!("{}", tok.decode(&ids, true));                         // true：略過
 `HfTokenizer` 支援 BPE 模型（GPT-2、Llama 2/3、TinyLlama、SmolLM、Qwen …）的 normalizer、pre-tokenizer（ByteLevel、含 lookahead 的 Split regex、Metaspace、Digits …）、byte fallback、added / special token、post-processor 範本與 decoder；不支援的元件（WordPiece、Unigram 等）載入時會回報錯誤。
 
 > ✅ 已以 SmolLM2-135M 的官方權重驗證（`./scripts/download_smollm.sh` 後 `cargo test --release --test llama --test tokenizer`）：`tokenizer.json` 分詞結果正確，logits 與另外以純 PyTorch 依 Hugging Face `LlamaForCausalLM` 寫成的獨立實作相差不到 3e-4（每個位置的 argmax 都相同，CPU 與 MPS）；GPT-2 的 `tokenizer.json` 與 `vocab.json` + `merges.txt` 逐 token 相同。實測（Apple M3，40 個 token）：CPU f32 / int8 / int4 = 36 / 53 / 61 tokens/s，MPS = 29 / 92 / 99 tokens/s（30 層的小模型在 MPS 上受每個 op 的派送開銷限制）。尚未驗證：Llama 3 的 `rope_scaling`、Llama 2 的 SentencePiece 式 `tokenizer.json`。
+
+### 強化學習環境（world）
+
+```rust
+use ruai::world::{self, Value};
+
+let mut env = world::make("CartPole-v1")?;            // 同 gymnasium.make：含 TimeLimit(500)
+env.action_space_mut().seed(1);
+let (mut obs, _) = env.reset(Some(42));               // 同 env.reset(seed=42)
+loop {
+    let a = env.action_space_mut().sample();          // Value::Int / Value::Floats
+    let s = env.step(&a);                             // obs, reward, terminated, truncated, info
+    if s.terminated || s.truncated { break }
+    obs = s.obs;
+}
+```
+
+環境的動力學、浮點運算順序與亂數（`ruai::rng`：NumPy 的 `SeedSequence` + `PCG64`）都與 gymnasium 1.x 相同，所以相同 seed 會得到逐位元相同的觀測值、獎勵與結束旗標（`tests/world.rs` 在裝有 gymnasium 時逐步比對）。另有 `RecordEpisodeStatistics`、`SyncVectorEnv`（gymnasium 1.x 的 next-step autoreset）。`cargo run --release --example cartpole` 用 `ruai::nn` 的策略網路以 REINFORCE 解 CartPole（約 40 次更新）。
 
 ### 微調：LoRA 與 gradient checkpointing
 
@@ -411,6 +431,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - `tests/attention.rs`：融合 attention 與組合式在各種 mask（無、causal、padding、每個 head、完整、單列）、`dv ≠ d`、半精度、autocast 下一致，梯度一致，任意分塊大小結果相同，長序列大 logits 數值穩定；`tests/devices.rs` 另含 GPU 與 CPU 的 attention 對照
 - `tests/views.rs` / `tests/kvcache.rs`：view 不複製且與主機計算一致、view 是快照、matmul 直接讀轉置與 strided view、各 dtype；KV cache 容量加倍、回傳 view、先前的 view 與 clone 不受之後寫入影響、梯度可經 cache 回傳、100 步解碼與完整前向一致
 - `tests/second_order.rs`：逐元素、各種 matmul、softmax / log_softmax / cross-entropy、layer / RMS norm、embedding + gather、conv2d、融合 attention、gradient checkpointing 的 Hessian-向量積與有限差分一致；`backward_create_graph` 與 `autograd::grad` 的語意；gradient penalty 傳到參數的梯度與數值微分一致
+- `tests/world.rs`：6 個環境 × 4 個 seed × 400 步（含 autoreset）與 gymnasium 逐步、逐位元比對，向量環境、FrozenLake 文字算繪、NumPy 亂數（含 2⁶³ 以上的 seed、各種 `integers` 範圍）
 - `tests/training.rs`：MLP 學會 XOR、CNN（含 BatchNorm）收斂、GPT 記住序列、存檔/載入 round-trip
 
 ## 版本規劃
@@ -434,7 +455,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v1.5 | 融合 attention（CPU：FlashAttention 式分塊；其他後端：分塊 GEMM，記憶體有上限）、MPS 量化 matvec 加速 | ✅ |
 | v2.0 | 不複製的 strided view、預先配置的 KV cache（解碼 CPU 約 1.4 倍、MPS 約 6 倍）、二階導數（`create_graph`、`autograd::grad`） | ✅ |
 | v3.0 | 單一 crate + features、引擎移到 `src/nn/`、git 式 `ruai` 指令（`ruai nn devices / info / generate`、外部 `ruai-NAME`） | ✅ |
-| v3.1 | `world`：類似 gymnasium 的環境（CartPole、MountainCar、Pendulum、Acrobot、FrozenLake…）、`ruai world` | |
+| v3.1 | `world`：gymnasium 1.x 的 API 與環境（逐位元相同）、NumPy 相容亂數 `ruai::rng`、`ruai world list / run`、REINFORCE 範例 | ✅ |
 | v3.2 | `py`：併入 py2rs，`ruai py run / check / emit / build / test` 執行 py0 | |
 | v3.3 | py0 套件機制、以 Rust 實作的 Python 標準函式庫 | |
 | v3.4 | `ruai agent`：以 py0 改寫 agge | |

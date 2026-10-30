@@ -128,3 +128,25 @@ fn nn_generate_real_gpt2() {
     // Hugging Face's own greedy continuation (test_lm_generate_gpt2)
     assert_eq!(text(&o), "The dog was found in a field near the intersection of West and West Streets.\n\nThe dog\n");
 }
+
+#[test]
+fn world_list_and_run() {
+    let o = ruai(&["world", "list"]);
+    assert!(o.status.success());
+    let out = text(&o);
+    for id in ["CartPole-v1", "MountainCar-v0", "Pendulum-v1", "Acrobot-v1", "FrozenLake-v1", "FrozenLake8x8-v1"] {
+        assert!(out.contains(id), "{id} missing from:\n{out}");
+    }
+    assert!(out.contains("Discrete(2)") && out.contains("Box[1]"));
+    // seeded runs are reproducible
+    let args = ["world", "run", "CartPole-v1", "--episodes", "4", "--seed", "3"];
+    let a = text(&ruai(&args));
+    assert_eq!(a, text(&ruai(&args)));
+    assert_eq!(a.lines().filter(|l| l.starts_with("episode ")).count(), 4);
+    assert!(a.contains("mean return over 4 episodes"));
+    let o = ruai(&["world", "run", "FrozenLake-v1", "--episodes", "1", "--render"]);
+    assert!(text(&o).contains("\x1b[41m"), "FrozenLake renders the agent's cell");
+    let o = ruai(&["world", "run", "NoSuchEnv-v0"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("unknown environment"));
+}

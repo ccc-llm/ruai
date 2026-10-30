@@ -7,6 +7,10 @@
 //!   CPU / Apple GPU / NVIDIA GPU, autograd, layers, optimizers, GPT-2 /
 //!   Llama / ResNet / ViT, quantization, safetensors. Its items are also
 //!   re-exported here, so `ruai::Tensor` is `ruai::nn::Tensor`.
+//! * [`world`] (feature `world`) — reinforcement-learning environments with
+//!   the Gymnasium API (CartPole, MountainCar, Pendulum, Acrobot,
+//!   FrozenLake), matching Gymnasium bit for bit for the same seed.
+//! * [`rng`] — NumPy-compatible random numbers (`SeedSequence`, `PCG64`).
 //!
 //! The `ruai` command line tool dispatches to the parts like `git`:
 //! `ruai nn generate ...`; an unknown `ruai NAME` runs `ruai-NAME` from `PATH`.
@@ -23,5 +27,8 @@
 
 #[cfg(feature = "nn")]
 pub mod nn;
+pub mod rng;
+#[cfg(feature = "world")]
+pub mod world;
 #[cfg(feature = "nn")]
 pub use nn::*;
