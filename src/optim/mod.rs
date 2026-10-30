@@ -4,6 +4,10 @@
 
 use crate::backend::{AdamParams, DType, Storage};
 use crate::tensor::{no_grad, Tensor};
+use std::collections::HashMap;
+use std::io;
+
+pub mod lr;
 
 pub trait Optimizer {
     /// Apply one update using the parameters' current `.grad()`.
@@ -11,6 +15,19 @@ pub trait Optimizer {
     fn params(&self) -> &[Tensor];
     fn lr(&self) -> f32;
     fn set_lr(&mut self, lr: f32);
+
+    /// Short identifier stored in checkpoints (e.g. `"adam"`).
+    fn name(&self) -> &'static str;
+
+    /// Internal state (moment buffers, step count, learning rate) as named
+    /// tensors. Per-parameter entries are keyed by the parameter's index in
+    /// `params()`, so the optimizer must be rebuilt over the same parameter
+    /// list before loading.
+    fn state_dict(&self) -> Vec<(String, Tensor)>;
+
+    /// Restore state produced by [`Optimizer::state_dict`] (tensors are moved
+    /// to each parameter's device).
+    fn load_state_dict(&mut self, state: &[(String, Tensor)]) -> io::Result<()>;
 
     fn zero_grad(&self) {
         for p in self.params() {
@@ -67,6 +84,66 @@ impl Optimizer for SGD {
     }
     fn set_lr(&mut self, lr: f32) {
         self.lr = lr;
+    }
+    fn name(&self) -> &'static str {
+        "sgd"
+    }
+    fn state_dict(&self) -> Vec<(String, Tensor)> {
+        let mut out = vec![("lr".to_string(), Tensor::scalar(self.lr, crate::Device::Cpu))];
+        for (i, v) in self.velocity.iter().enumerate() {
+            if let Some(v) = v {
+                out.push((format!("velocity.{i}"), v.clone()));
+            }
+        }
+        out
+    }
+    fn load_state_dict(&mut self, state: &[(String, Tensor)]) -> io::Result<()> {
+        let map = StateMap::new(state);
+        self.lr = map.scalar("lr")?;
+        for (i, p) in self.params.iter().enumerate() {
+            self.velocity[i] = map.per_param("velocity", i, p)?.map(|s| Tensor::from_storage(s, p.shape().to_vec()));
+        }
+        map.check_indices(&["velocity"], self.params.len())
+    }
+}
+
+/// Named-state lookup shared by the optimizers' `load_state_dict`.
+struct StateMap<'a>(HashMap<&'a str, &'a Tensor>);
+
+fn bad(msg: String) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, msg)
+}
+
+impl<'a> StateMap<'a> {
+    fn new(state: &'a [(String, Tensor)]) -> Self {
+        StateMap(state.iter().map(|(n, t)| (n.as_str(), t)).collect())
+    }
+
+    fn scalar(&self, key: &str) -> io::Result<f32> {
+        self.0.get(key).map(|t| t.to_vec()[0]).ok_or_else(|| bad(format!("optimizer state is missing '{key}'")))
+    }
+
+    /// `prefix.i` moved to `p`'s device, checked against `p`'s shape.
+    fn per_param(&self, prefix: &str, i: usize, p: &Tensor) -> io::Result<Option<Storage>> {
+        let Some(t) = self.0.get(format!("{prefix}.{i}").as_str()) else { return Ok(None) };
+        if t.shape() != p.shape() {
+            return Err(bad(format!("optimizer state '{prefix}.{i}' has shape {:?}, parameter has {:?}", t.shape(), p.shape())));
+        }
+        Ok(Some(t.storage().to_device(p.device())))
+    }
+
+    /// Reject per-parameter entries beyond the parameter list (a different model).
+    fn check_indices(&self, prefixes: &[&str], n: usize) -> io::Result<()> {
+        for key in self.0.keys() {
+            for pre in prefixes {
+                if let Some(i) = key.strip_prefix(pre).and_then(|r| r.strip_prefix('.')).and_then(|r| r.parse::<usize>().ok()) {
+                    if i >= n {
+                        return Err(bad(format!("optimizer state '{key}' refers to parameter {i}, but there are only {n}")));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -146,6 +223,38 @@ impl Optimizer for Adam {
     fn set_lr(&mut self, lr: f32) {
         self.lr = lr;
     }
+    fn name(&self) -> &'static str {
+        if self.decoupled_weight_decay {
+            "adamw"
+        } else {
+            "adam"
+        }
+    }
+    fn state_dict(&self) -> Vec<(String, Tensor)> {
+        let cpu = crate::Device::Cpu;
+        let mut out = vec![
+            ("lr".to_string(), Tensor::scalar(self.lr, cpu)),
+            ("step".to_string(), Tensor::from_vec_i32(vec![self.t], &[], cpu)),
+        ];
+        for (i, p) in self.params.iter().enumerate() {
+            for (key, s) in [("m", &self.m[i]), ("v", &self.v[i])] {
+                if let Some(s) = s {
+                    out.push((format!("{key}.{i}"), Tensor::from_storage(s.clone(), p.shape().to_vec())));
+                }
+            }
+        }
+        out
+    }
+    fn load_state_dict(&mut self, state: &[(String, Tensor)]) -> io::Result<()> {
+        let map = StateMap::new(state);
+        self.lr = map.scalar("lr")?;
+        self.t = map.scalar("step")? as i32;
+        for (i, p) in self.params.iter().enumerate() {
+            self.m[i] = map.per_param("m", i, p)?;
+            self.v[i] = map.per_param("v", i, p)?;
+        }
+        map.check_indices(&["m", "v"], self.params.len())
+    }
 }
 
 /// Scale all gradients so their global L2 norm is at most `max_norm`.
@@ -170,11 +279,9 @@ pub fn clip_grad_norm(params: &[Tensor], max_norm: f32) -> f32 {
     })
 }
 
-/// Cosine learning-rate schedule with linear warmup.
+/// Cosine learning-rate schedule with linear warmup
+/// (shorthand for [`lr::CosineLr`]).
 pub fn cosine_lr(step: usize, total: usize, warmup: usize, base_lr: f32, min_lr: f32) -> f32 {
-    if step < warmup {
-        return base_lr * (step + 1) as f32 / warmup as f32;
-    }
-    let progress = (step - warmup) as f32 / (total - warmup).max(1) as f32;
-    min_lr + 0.5 * (base_lr - min_lr) * (1.0 + (std::f32::consts::PI * progress.min(1.0)).cos())
+    use lr::LrScheduler;
+    lr::CosineLr { base_lr, min_lr, warmup, total }.lr_at(step)
 }

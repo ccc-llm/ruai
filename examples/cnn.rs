@@ -1,39 +1,32 @@
-//! CNN image classification.
+//! CNN image classification with a multi-threaded DataLoader, per-epoch
+//! checkpoints and resumable training.
 //!
 //! Uses MNIST if the raw IDX files are in `data/mnist/`
 //! (train-images-idx3-ubyte, train-labels-idx1-ubyte, t10k-images-idx3-ubyte,
 //! t10k-labels-idx1-ubyte); otherwise generates a synthetic shapes dataset.
 //!
 //!     cargo run --release --example cnn
+//!     cargo run --release --example cnn -- --resume        # continue from runs/cnn/last.safetensors
 //!     cargo run --release --features mps --example cnn -- --device mps
 
+use rustnn::checkpoint::{self, TrainState};
+use rustnn::data::{Batch, ClassificationData, DataLoader};
+use rustnn::metrics::{Accuracy, RunningMean, Throughput};
 use rustnn::nn::{self, Module, Sequential};
+use rustnn::optim::lr::{CosineLr, LrScheduler};
 use rustnn::optim::{Adam, Optimizer};
 use rustnn::prelude::*;
 use rustnn::{rand, serialize};
 use std::path::Path;
-use std::time::Instant;
 
-struct Dataset {
-    images: Vec<f32>, // [N, 1, S, S]
-    labels: Vec<usize>,
-    size: usize,
-    classes: usize,
-}
+const CKPT: &str = "runs/cnn/last.safetensors";
 
-impl Dataset {
-    fn len(&self) -> usize {
-        self.labels.len()
-    }
-
-    fn batch(&self, idx: &[usize], device: Device) -> (Tensor, Vec<usize>) {
-        let px = self.size * self.size;
-        let mut x = Vec::with_capacity(idx.len() * px);
-        for &i in idx {
-            x.extend_from_slice(&self.images[i * px..(i + 1) * px]);
-        }
-        let t = Tensor::from_vec(x, &[idx.len(), 1, self.size, self.size], device);
-        (t, idx.iter().map(|&i| self.labels[i]).collect())
+/// `--device cpu|mps|cuda|auto` (or the `RUSTNN_DEVICE` env var); defaults to CPU.
+fn device_arg() -> Device {
+    let args: Vec<String> = std::env::args().collect();
+    match args.iter().position(|a| a == "--device") {
+        Some(i) => args.get(i + 1).expect("--device needs a value").parse().unwrap(),
+        None => Device::from_env(),
     }
 }
 
@@ -43,21 +36,16 @@ fn read_idx(path: &Path) -> std::io::Result<Vec<u8>> {
     Ok(bytes[4 + 4 * ndim..].to_vec())
 }
 
-fn load_mnist(dir: &Path, prefix: &str, limit: usize) -> Option<Dataset> {
+fn load_mnist(dir: &Path, prefix: &str) -> Option<ClassificationData> {
     let imgs = read_idx(&dir.join(format!("{prefix}-images-idx3-ubyte"))).ok()?;
     let labels = read_idx(&dir.join(format!("{prefix}-labels-idx1-ubyte"))).ok()?;
-    let n = labels.len().min(limit);
-    Some(Dataset {
-        images: imgs[..n * 784].iter().map(|&p| (p as f32 / 255.0 - 0.1307) / 0.3081).collect(),
-        labels: labels[..n].iter().map(|&l| l as usize).collect(),
-        size: 28,
-        classes: 10,
-    })
+    let features = imgs.iter().map(|&p| (p as f32 / 255.0 - 0.1307) / 0.3081).collect();
+    Some(ClassificationData::new(features, labels.iter().map(|&l| l as usize).collect(), &[1, 28, 28]))
 }
 
 /// 16x16 images of 4 shape classes at random positions, with noise:
 /// 0 = horizontal bar, 1 = vertical bar, 2 = diagonal, 3 = hollow box.
-fn synthetic(n: usize) -> Dataset {
+fn synthetic(n: usize) -> ClassificationData {
     let s = 16;
     let mut images = vec![0.0; n * s * s];
     let mut labels = Vec::with_capacity(n);
@@ -84,7 +72,7 @@ fn synthetic(n: usize) -> Dataset {
         }
         labels.push(c);
     }
-    Dataset { images, labels, size: s, classes: 4 }
+    ClassificationData::new(images, labels, &[1, s, s])
 }
 
 fn build_model(size: usize, classes: usize, device: Device) -> Sequential {
@@ -105,79 +93,95 @@ fn build_model(size: usize, classes: usize, device: Device) -> Sequential {
         .add(nn::Linear::new(64, classes, device))
 }
 
-fn evaluate(model: &Sequential, data: &Dataset, device: Device) -> f32 {
+/// `[B, C*H*W]` batch inputs back to images.
+fn images(b: &Batch, size: usize) -> Tensor {
+    b.inputs.reshape(&[b.inputs.shape()[0], 1, size, size])
+}
+
+fn evaluate(model: &Sequential, loader: &DataLoader<ClassificationData, Batch>, size: usize) -> f32 {
     model.eval();
-    let mut correct = 0.0;
+    let mut acc = Accuracy::new();
     no_grad(|| {
-        for chunk in (0..data.len()).collect::<Vec<_>>().chunks(256) {
-            let (x, y) = data.batch(chunk, device);
-            correct += F::accuracy(&model.forward(&x), &y) * chunk.len() as f32;
+        for b in loader.iter() {
+            acc.update(&model.forward(&images(&b, size)), &b.targets);
         }
     });
     model.train();
-    correct / data.len() as f32
-}
-
-/// `--device cpu|mps|auto` (or the `RUSTNN_DEVICE` env var); defaults to CPU.
-fn device_arg() -> Device {
-    let args: Vec<String> = std::env::args().collect();
-    match args.iter().position(|a| a == "--device") {
-        Some(i) => args.get(i + 1).expect("--device needs a value").parse().unwrap(),
-        None => Device::from_env(),
-    }
+    acc.value()
 }
 
 fn main() {
     rand::manual_seed(0);
     let device = device_arg();
+    let resume = std::env::args().any(|a| a == "--resume");
     println!("device: {device}");
     let dir = Path::new("data/mnist");
-    let (train, test, epochs) = match (load_mnist(dir, "train", 60000), load_mnist(dir, "t10k", 10000)) {
+    let (train, test, classes, epochs) = match (load_mnist(dir, "train"), load_mnist(dir, "t10k")) {
         (Some(a), Some(b)) => {
-            println!("Using MNIST: {} train / {} test", a.len(), b.len());
-            (a, b, 2)
+            println!("Using MNIST: {} train / {} test", a.labels.len(), b.labels.len());
+            (a, b, 10, 2)
         }
         _ => {
             println!("MNIST not found in data/mnist, using synthetic shapes dataset");
-            (synthetic(4000), synthetic(800), 4)
+            (synthetic(4000), synthetic(800), 4, 4)
         }
     };
+    let size = train.sample_shape[1];
 
-    let model = build_model(train.size, train.classes, device);
+    // batches are assembled on 2 background threads while the model trains
+    let train_loader = DataLoader::new(train, 64, ClassificationData::collate(device))
+        .shuffle(true)
+        .drop_last(true)
+        .seed(1)
+        .num_workers(2);
+    let test_loader = DataLoader::new(test, 256, ClassificationData::collate(device));
+
+    let model = build_model(size, classes, device);
     println!("model parameters: {}", model.num_parameters());
     let mut opt = Adam::new(model.parameters(), 2e-3);
-    let batch = 64;
+    let total_steps = epochs * train_loader.len();
+    let sched = CosineLr { base_lr: 2e-3, min_lr: 1e-4, warmup: 20, total: total_steps };
 
-    for epoch in 0..epochs {
-        let t0 = Instant::now();
-        let mut order: Vec<usize> = (0..train.len()).collect();
-        rand::shuffle(&mut order);
-        let mut total = 0.0;
-        let steps = order.len() / batch;
-        for (step, idx) in order.chunks_exact(batch).enumerate() {
-            let (x, y) = train.batch(idx, device);
+    let mut state = TrainState::default();
+    if resume && Path::new(CKPT).exists() {
+        state = checkpoint::load(CKPT, &model, &mut opt).expect("load checkpoint");
+        println!("resumed from {CKPT}: epoch {}, step {}", state.epoch, state.step);
+    }
+
+    while (state.epoch as usize) < epochs {
+        let mut loss_avg = RunningMean::new();
+        let mut speed = Throughput::new();
+        for (i, b) in train_loader.epoch(state.epoch).enumerate() {
+            sched.apply(&mut opt, state.step as usize);
             opt.zero_grad();
-            let loss = F::cross_entropy(&model.forward(&x), &y, 0.0);
+            let loss = F::cross_entropy(&model.forward(&images(&b, size)), &b.targets, 0.0);
             loss.backward();
             opt.step();
-            total += loss.item();
-            if (step + 1) % 100 == 0 {
-                println!("  epoch {} step {}/{} loss {:.4}", epoch + 1, step + 1, steps, total / (step + 1) as f32);
+            state.step += 1;
+            loss_avg.add(loss.item());
+            speed.add(b.targets.numel());
+            if (i + 1) % 100 == 0 {
+                println!("  epoch {} step {}/{} loss {:.4}", state.epoch + 1, i + 1, train_loader.len(), loss_avg.mean());
             }
         }
+        state.epoch += 1;
+        let acc = evaluate(&model, &test_loader, size);
+        state.extra.insert("test_acc".into(), format!("{acc:.4}"));
+        checkpoint::save(CKPT, &model, &opt, &state).expect("save checkpoint");
         println!(
-            "epoch {}: train loss {:.4}, test acc {:.2}%  ({:.1}s)",
-            epoch + 1,
-            total / steps as f32,
-            100.0 * evaluate(&model, &test, device),
-            t0.elapsed().as_secs_f32()
+            "epoch {}: train loss {:.4}, test acc {:.2}%, {:.0} img/s, lr {:.5}  (checkpoint: {CKPT})",
+            state.epoch,
+            loss_avg.mean(),
+            100.0 * acc,
+            speed.per_sec(),
+            opt.lr()
         );
     }
 
-    // save, reload into a fresh model, and run inference
-    let path = "cnn.rsnn";
+    // export inference weights (safetensors: loadable from PyTorch / HF too), reload, evaluate
+    let path = "cnn.safetensors";
     serialize::save(path, &model).expect("save");
-    let restored = build_model(train.size, train.classes, device);
+    let restored = build_model(size, classes, device);
     serialize::load(path, &restored).expect("load");
-    println!("reloaded model test acc: {:.2}% (weights in {path})", 100.0 * evaluate(&restored, &test, device));
+    println!("reloaded model test acc: {:.2}% (weights in {path})", 100.0 * evaluate(&restored, &test_loader, size));
 }

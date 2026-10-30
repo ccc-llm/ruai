@@ -26,3 +26,5 @@ rustc-ice-*.txt
 # model weights / datasets
 *.rsnn
 data/
+runs/
+*.safetensors

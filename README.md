@@ -6,8 +6,10 @@
 
 ```bash
 cargo test                              # 梯度數值檢查 + 端到端訓練測試
-cargo run --release --example cnn       # CNN 影像分類（有 MNIST 就用 MNIST）
+cargo run --release --example cnn       # CNN 影像分類（有 MNIST 就用 MNIST），每個 epoch 存 checkpoint
+cargo run --release --example cnn -- --resume          # 從 runs/cnn/last.safetensors 接續訓練
 cargo run --release --example gpt       # 字元級 GPT：訓練 → 存檔 → 載入 → 生成
+cargo run --release --example gpt -- --accum 4         # 梯度累積（每步 4 個 micro-batch）
 cargo run --release --example bench     # 效能基準測試
 
 # macOS：用 Apple Accelerate (AMX) 做矩陣乘法，大型模型約快 2 倍
@@ -52,10 +54,37 @@ opt.step();
 model.eval();
 let pred = no_grad(|| model.forward(&x).argmax(-1, false));
 
-// 存檔 / 載入
-rustnn::serialize::save("model.rsnn", &model)?;
-rustnn::serialize::load("model.rsnn", &model)?;
+// 存檔 / 載入（safetensors，可與 PyTorch / Hugging Face 互通）
+rustnn::serialize::save("model.safetensors", &model)?;
+rustnn::serialize::load("model.safetensors", &model)?;
 ```
+
+### 資料載入、排程與 checkpoint
+
+```rust
+use rustnn::data::{ClassificationData, DataLoader};
+use rustnn::optim::lr::{CosineLr, LrScheduler};
+use rustnn::checkpoint::{self, TrainState};
+
+let loader = DataLoader::new(train_data, 64, ClassificationData::collate(dev))
+    .shuffle(true).drop_last(true).num_workers(2);    // 背景執行緒預先組 batch
+let sched = CosineLr { base_lr: 1e-3, min_lr: 1e-4, warmup: 100, total: 10_000 };
+let mut state = TrainState::default();               // 或 checkpoint::load(...) 接續
+
+for epoch in state.epoch..epochs {
+    for batch in loader.epoch(epoch) {                // 每個 epoch 的打亂順序是確定的
+        sched.apply(&mut opt, state.step as usize);
+        opt.zero_grad();
+        F::cross_entropy(&model.forward(&batch.inputs), &batch.targets, 0.0).backward();
+        opt.step();
+        state.step += 1;
+    }
+    state.epoch += 1;
+    checkpoint::save("runs/last.safetensors", &model, &opt, &state)?;  // 模型 + 優化器 + RNG
+}
+```
+
+梯度累積：`.grad` 會在多次 `backward()` 間累加，把每個 micro-batch 的 loss 乘上 `1/k` 後各自 `backward()`，再 `step()` 一次即可（`tests/io.rs` 驗證與整批結果相同）。
 
 ## 功能
 
@@ -68,7 +97,11 @@ rustnn::serialize::load("model.rsnn", &model)?;
 | functional | `softmax`、`log_softmax`、`cross_entropy`（含 label smoothing）、`mse_loss`、`bce_with_logits`、`conv2d`、`max/avg_pool2d`、`layer_norm`、`dropout`、`scaled_dot_product_attention`、`causal_mask`、正弦位置編碼 |
 | nn | `Linear`、`Conv2d`、`MaxPool2d`、`AvgPool2d`、`BatchNorm2d`、`LayerNorm`、`Embedding`、`Dropout`、`Flatten`、`ReLU/GELU/Tanh/Sigmoid`、`Sequential`、`FeedForward`、`MultiHeadAttention`（自注意力 / 交叉注意力）、`TransformerBlock`（Pre-LN，可選 causal）、`GPT` |
 | optim | `SGD`（momentum、weight decay）、`Adam`、`AdamW`（融合 kernel，一個參數一次走訪）、`clip_grad_norm`、`cosine_lr`（含 warmup） |
-| 其他 | 模型存檔/載入（含 BatchNorm running stats）、`train()/eval()` 模式、可設定種子的亂數 |
+| 資料 | `Dataset` trait、`DataLoader`（多執行緒預取、每 epoch 確定性打亂、`drop_last`、自訂 collate、提早中斷不卡住、worker panic 會傳遞）、`VecDataset`、`ClassificationData`、`Subset`、`random_split` |
+| 存檔 | **safetensors**（Hugging Face 官方實作）：寫 F32/I32，讀 F32/F16/BF16/F64/I64/I32/I16/I8/U8/U16/U32/BOOL；`load_state_dict`（strict 或回報 missing / unexpected）；仍可讀 v0.1–v0.4 的 RSNN 格式 |
+| checkpoint | 模型 + 優化器狀態（Adam 的 m/v/step、SGD 的 velocity）+ step/epoch + 全域 RNG 狀態 + 自訂 metadata，寫入時先寫暫存檔再改名；**接續訓練與不中斷訓練結果逐位元相同** |
+| 排程 / 指標 | `ConstantLr`、`StepLr`、`ExponentialLr`、`CosineLr`、`LinearLr`（皆含 warmup，純函式故可從任意 step 接續）；`RunningMean`、`Ema`、`Accuracy`、`Throughput` |
+| 其他 | `train()/eval()` 模式、可設定種子的亂數（`rand::Rng` 獨立串流）|
 
 ## 架構
 
@@ -85,8 +118,11 @@ src/
 ├── ops.rs         可微分運算：forward 呼叫 backend，backward 由其他運算組成
 ├── functional.rs  組合運算（softmax、conv2d、attention …）
 ├── nn/            Module trait 與各種層、Transformer、GPT
-├── optim.rs       優化器
-└── serialize.rs   權重存檔格式
+├── optim/         優化器（mod.rs）與學習率排程（lr.rs）
+├── data.rs        Dataset / DataLoader
+├── checkpoint.rs  可接續訓練的 checkpoint
+├── metrics.rs     訓練指標
+└── serialize.rs   safetensors 讀寫、load_state_dict
 ```
 
 **核心設計：一切都建立在少量 backend 原語上。** `Backend` trait 分兩層：
@@ -155,6 +191,8 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - `tests/gradcheck.rs`：對每個可微分運算（廣播、matmul 各種 batch 形式、conv、pool、softmax、layer norm、attention …）做中央差分的數值梯度檢查，並驗證 causal mask 不會偷看未來
 - `tests/backend.rs`：融合 kernel 與預設組合實作一致、matmul（含轉置、平行切塊）對照樸素實作、dtype 行為、新運算的數值
 - `tests/devices.rs`：跨裝置一致性——每個原語（含邊界尺寸、廣播、各種轉置/batch stride 的 matmul、各種 stride/padding 的 conv、重複索引的 scatter）在每個可用 GPU 後端上的結果都要與 CPU 相符
+- `tests/io.rs`：依 safetensors 規格**手工組出的檔案**（不經被測實作）測試多種 dtype 與 metadata、輸出檔的 header/資料區逐位元組檢查、舊格式、`load_state_dict` 報告；AdamW 與 SGD-momentum 的 checkpoint 接續後參數**逐位元相同**（含 dropout 的 RNG）；梯度累積等於整批
+- `tests/data.rs`：DataLoader 順序、打亂是排列且可重現、不同 worker 數結果相同、確實平行、提早中斷、worker panic、collate；排程數值；指標
 - `tests/training.rs`：MLP 學會 XOR、CNN（含 BatchNorm）收斂、GPT 記住序列、存檔/載入 round-trip
 
 ## 版本規劃
@@ -165,7 +203,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v0.2 | DType（I32 索引）、cat/gather/where 等新運算、融合原語、快速 GEMM、Accelerate | ✅ |
 | v0.3 | MPS（Apple Metal）後端、跨裝置測試框架、`--device` 選擇 | ✅ |
 | v0.4 | CUDA 後端（cuBLAS + NVRTC）、多卡 | ✅（待實機驗證） |
-| v0.5 | DataLoader、完整 checkpoint（含優化器狀態）、safetensors | |
+| v0.5 | DataLoader、完整 checkpoint（含優化器狀態與 RNG）、safetensors、LR 排程、梯度累積、指標 | ✅ |
 | v0.6 | f16 / bf16、混合精度訓練 | |
 | v0.7 | KV cache、載入 GPT-2 官方權重、int8 量化 | |
 | v0.8 | ResNet、ViT、encoder-decoder、RMSNorm/RoPE/SwiGLU | |

@@ -6,8 +6,11 @@
 //! * [`nn`] — layers (Linear, Conv2d, BatchNorm2d, LayerNorm, Embedding,
 //!   MultiHeadAttention, TransformerBlock, GPT, ...)
 //! * [`functional`] — softmax, cross-entropy, conv2d, pooling, attention, ...
-//! * [`optim`] — SGD, Adam, AdamW, gradient clipping, LR schedules
-//! * [`serialize`] — save / load model weights
+//! * [`optim`] — SGD, Adam, AdamW, gradient clipping, LR schedulers ([`optim::lr`])
+//! * [`serialize`] — save / load weights (safetensors, PyTorch/HF compatible)
+//! * [`checkpoint`] — resumable training checkpoints (model + optimizer + RNG)
+//! * [`data`] — `Dataset` / `DataLoader` with multi-threaded prefetching
+//! * [`metrics`] — running averages, accuracy, throughput
 //! * [`backend`] — the device abstraction (CPU today; CUDA and MPS plug in
 //!   by implementing [`backend::Backend`])
 //!
@@ -20,8 +23,11 @@
 //! ```
 
 pub mod backend;
+pub mod checkpoint;
+pub mod data;
 pub mod device;
 pub mod functional;
+pub mod metrics;
 pub mod nn;
 pub mod ops;
 pub mod optim;
@@ -39,6 +45,7 @@ pub use tensor::{is_grad_enabled, no_grad, NoGradGuard, Tensor};
 pub mod prelude {
     pub use crate::functional as F;
     pub use crate::nn::{self, Module};
-    pub use crate::optim::{self, Optimizer};
+    pub use crate::data::{DataLoader, Dataset};
+    pub use crate::optim::{self, lr::LrScheduler, Optimizer};
     pub use crate::{no_grad, DType, Device, IntoIndices, Tensor};
 }
