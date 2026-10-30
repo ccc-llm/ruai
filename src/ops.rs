@@ -1,7 +1,7 @@
 //! Differentiable tensor operations. Each op computes its forward result with
 //! backend primitives and registers a backward closure built from other ops.
 
-use crate::backend::{BinaryOp, Conv2dGeom, MatmulSpec, ReduceOp, UnaryOp};
+use crate::backend::{BinaryOp, Conv2dGeom, DType, MatmulSpec, ReduceOp, UnaryOp};
 use crate::device::Device;
 use crate::shape::{broadcast_shape, norm_dim, numel};
 use crate::tensor::Tensor;
@@ -14,12 +14,47 @@ fn same_device(a: &Tensor, b: &Tensor) {
     assert_eq!(a.device(), b.device(), "tensors are on different devices ({} vs {})", a.device(), b.device());
 }
 
+fn assert_f32(t: &Tensor, op: &str) {
+    assert_eq!(t.dtype(), DType::F32, "{op}: expected an f32 tensor, got {}", t.dtype());
+}
+
+/// Anything usable as an index tensor: `&Tensor` (any dtype), `&[usize]`,
+/// `&Vec<usize>`, `&[usize; N]`. Converted to an `I32` tensor on `device`.
+pub trait IntoIndices {
+    fn into_indices(self, device: Device) -> Tensor;
+}
+
+impl IntoIndices for &Tensor {
+    fn into_indices(self, device: Device) -> Tensor {
+        self.to_dtype(DType::I32).to(device)
+    }
+}
+
+impl IntoIndices for &[usize] {
+    fn into_indices(self, device: Device) -> Tensor {
+        Tensor::from_indices(self, &[self.len()], device)
+    }
+}
+
+impl IntoIndices for &Vec<usize> {
+    fn into_indices(self, device: Device) -> Tensor {
+        self.as_slice().into_indices(device)
+    }
+}
+
+impl<const N: usize> IntoIndices for &[usize; N] {
+    fn into_indices(self, device: Device) -> Tensor {
+        self.as_slice().into_indices(device)
+    }
+}
+
 impl Tensor {
     // ------------------------------------------------------------------
     // elementwise unary
     // ------------------------------------------------------------------
 
     fn unary_raw(&self, op: UnaryOp) -> Tensor {
+        assert_f32(self, "unary op");
         Tensor::from_storage(self.backend().unary(op, &self.storage()), self.shape().to_vec())
     }
 
@@ -136,6 +171,42 @@ impl Tensor {
             let mask = a.binary_raw(BinaryOp::Lt, b); // 1 where b wins
             (need(a).then(|| g * &(mask.neg() + 1.0)), need(b).then(|| g * &mask))
         })
+    }
+
+    /// Elementwise minimum; the gradient goes to the smaller input.
+    pub fn minimum(&self, other: &Tensor) -> Tensor {
+        self.binary_op(BinaryOp::Minimum, other, "minimum", |g, a, b| {
+            let mask = a.binary_raw(BinaryOp::Gt, b); // 1 where b wins
+            (need(a).then(|| g * &(mask.neg() + 1.0)), need(b).then(|| g * &mask))
+        })
+    }
+
+    /// Clamp into `[min, max]`.
+    pub fn clamp(&self, min: f32, max: f32) -> Tensor {
+        self.maximum(&self.scalar_like(min)).minimum(&self.scalar_like(max))
+    }
+
+    /// `cond != 0 ? a : b` with broadcasting (differentiable in `a` and `b`).
+    pub fn where_cond(cond: &Tensor, a: &Tensor, b: &Tensor) -> Tensor {
+        same_device(cond, a);
+        same_device(a, b);
+        let shape = broadcast_shape(&broadcast_shape(cond.shape(), a.shape()), b.shape());
+        let c = cond.to_dtype(DType::F32).expand(&shape);
+        let (ae, bexp) = (a.expand(&shape), b.expand(&shape));
+        let s = a.backend().where_cond(&c.storage(), &ae.storage(), &bexp.storage());
+        Tensor::from_op(s, shape, vec![ae, bexp], "where", move |g| {
+            let z = Tensor::zeros_like(g);
+            let pick = |x: &Tensor, y: &Tensor| {
+                let s = g.backend().where_cond(&c.storage(), &x.storage(), &y.storage());
+                Tensor::from_storage(s, g.shape().to_vec())
+            };
+            vec![Some(pick(g, &z)), Some(pick(&z, g))]
+        })
+    }
+
+    /// Replace elements where `mask != 0` with `value`.
+    pub fn masked_fill(&self, mask: &Tensor, value: f32) -> Tensor {
+        Tensor::where_cond(mask, &self.scalar_like(value), self)
     }
 
     /// `self ^ p` for a constant exponent.
@@ -426,15 +497,154 @@ impl Tensor {
     // indexing
     // ------------------------------------------------------------------
 
-    /// Gather rows of a 2D tensor: `[rows, cols]` -> `[idx.len(), cols]`.
-    pub fn index_select(&self, idx: &[usize]) -> Tensor {
+    /// Gather rows of a 2D table: `[rows, cols]` -> `[n, cols]` (embedding lookup).
+    pub fn index_select(&self, idx: impl IntoIndices) -> Tensor {
         assert_eq!(self.rank(), 2, "index_select expects a 2D table");
+        let idx = idx.into_indices(self.device());
         let (rows, cols) = (self.shape()[0], self.shape()[1]);
-        let s = self.backend().index_select(&self.storage(), cols, idx);
-        let idx = idx.to_vec();
-        Tensor::from_op(s, vec![idx.len(), cols], vec![self.clone()], "index_select", move |g| {
-            let s = g.backend().index_add(&g.storage(), rows, cols, &idx);
+        let s = self.backend().index_select(&self.storage(), cols, &idx.storage());
+        let n = idx.numel();
+        Tensor::from_op(s, vec![n, cols], vec![self.clone()], "index_select", move |g| {
+            let s = g.backend().index_add(&g.storage(), rows, cols, &idx.storage());
             vec![Some(Tensor::from_storage(s, vec![rows, cols]))]
+        })
+    }
+
+    /// `out[.., j, ..] = self[.., idx[.., j, ..], ..]` along `dim`; `idx` has the
+    /// same shape as `self` except along `dim` (like `torch.gather`).
+    pub fn gather(&self, dim: isize, idx: &Tensor) -> Tensor {
+        let ax = norm_dim(dim, self.rank());
+        let idx = idx.into_indices(self.device());
+        assert_eq!(idx.rank(), self.rank(), "gather: index rank must match input rank");
+        for (d, (&a, &b)) in self.shape().iter().zip(idx.shape()).enumerate() {
+            assert!(d == ax || a == b, "gather: index shape {:?} incompatible with {:?}", idx.shape(), self.shape());
+        }
+        let idx_len = idx.shape()[ax];
+        let s = self.backend().gather(&self.storage(), self.shape(), ax, &idx.storage(), idx_len);
+        let in_shape = self.shape().to_vec();
+        let out_shape = idx.shape().to_vec();
+        Tensor::from_op(s, out_shape, vec![self.clone()], "gather", move |g| {
+            let s = g.backend().scatter_add(&g.storage(), &idx.storage(), idx_len, &in_shape, ax);
+            vec![Some(Tensor::from_storage(s, in_shape.clone()))]
+        })
+    }
+
+    /// Elements `start..start+len` along `dim` (copy).
+    pub fn narrow(&self, dim: isize, start: usize, len: usize) -> Tensor {
+        let ax = norm_dim(dim, self.rank());
+        let size = self.shape()[ax];
+        assert!(start + len <= size, "narrow: {start}+{len} out of range for size {size}");
+        if start == 0 && len == size {
+            return self.clone();
+        }
+        let s = self.backend().narrow(&self.storage(), self.shape(), ax, start, len);
+        let mut out_shape = self.shape().to_vec();
+        out_shape[ax] = len;
+        let in_shape = self.shape().to_vec();
+        Tensor::from_op(s, out_shape, vec![self.clone()], "narrow", move |g| {
+            // pad the gradient back with zeros on both sides
+            let mut parts = Vec::new();
+            let mut zshape = in_shape.clone();
+            if start > 0 {
+                zshape[ax] = start;
+                parts.push(Tensor::zeros(&zshape, g.device()));
+            }
+            parts.push(g.clone());
+            if start + len < size {
+                zshape[ax] = size - start - len;
+                parts.push(Tensor::zeros(&zshape, g.device()));
+            }
+            vec![Some(Tensor::cat(&parts.iter().collect::<Vec<_>>(), ax as isize))]
+        })
+    }
+
+    /// Index `i` along `dim`, removing that dim.
+    pub fn select(&self, dim: isize, i: usize) -> Tensor {
+        self.narrow(dim, i, 1).squeeze(dim)
+    }
+
+    /// Concatenate along `dim` (like `torch.cat`).
+    pub fn cat(xs: &[&Tensor], dim: isize) -> Tensor {
+        assert!(!xs.is_empty(), "cat: empty list");
+        let ax = norm_dim(dim, xs[0].rank());
+        for x in xs {
+            same_device(xs[0], x);
+            assert_eq!(x.rank(), xs[0].rank(), "cat: rank mismatch");
+            for d in 0..x.rank() {
+                assert!(d == ax || x.shape()[d] == xs[0].shape()[d], "cat: shapes {:?} vs {:?}", x.shape(), xs[0].shape());
+            }
+        }
+        if xs.len() == 1 {
+            return xs[0].clone();
+        }
+        let storages: Vec<_> = xs.iter().map(|x| x.storage()).collect();
+        let srefs: Vec<_> = storages.iter().collect();
+        let shapes: Vec<&[usize]> = xs.iter().map(|x| x.shape()).collect();
+        let s = xs[0].backend().cat(&srefs, &shapes, ax);
+        let mut out_shape = xs[0].shape().to_vec();
+        out_shape[ax] = xs.iter().map(|x| x.shape()[ax]).sum();
+        let sizes: Vec<usize> = xs.iter().map(|x| x.shape()[ax]).collect();
+        let parents: Vec<Tensor> = xs.iter().map(|&x| x.clone()).collect();
+        Tensor::from_op(s, out_shape, parents, "cat", move |g| {
+            let mut off = 0;
+            sizes
+                .iter()
+                .map(|&n| {
+                    let part = g.narrow(ax as isize, off, n);
+                    off += n;
+                    Some(part)
+                })
+                .collect()
+        })
+    }
+
+    /// Stack along a new dim (like `torch.stack`).
+    pub fn stack(xs: &[&Tensor], dim: isize) -> Tensor {
+        let us: Vec<Tensor> = xs.iter().map(|x| x.unsqueeze(dim)).collect();
+        Tensor::cat(&us.iter().collect::<Vec<_>>(), dim)
+    }
+
+    // ------------------------------------------------------------------
+    // fused ops
+    // ------------------------------------------------------------------
+
+    /// Softmax along `dim` (fused backend kernel).
+    pub fn softmax(&self, dim: isize) -> Tensor {
+        assert_f32(self, "softmax");
+        let ax = norm_dim(dim, self.rank());
+        let shape = self.shape().to_vec();
+        let s = self.backend().softmax(&self.storage(), &shape, ax);
+        let y = Tensor::from_storage(s.clone(), shape.clone());
+        Tensor::from_op(s, shape.clone(), vec![self.clone()], "softmax", move |g| {
+            let s = g.backend().softmax_backward(&y.storage(), &g.storage(), &shape, ax);
+            vec![Some(Tensor::from_storage(s, shape.clone()))]
+        })
+    }
+
+    /// Log-softmax along `dim` (fused backend kernel).
+    pub fn log_softmax(&self, dim: isize) -> Tensor {
+        assert_f32(self, "log_softmax");
+        let ax = norm_dim(dim, self.rank());
+        let shape = self.shape().to_vec();
+        let s = self.backend().log_softmax(&self.storage(), &shape, ax);
+        let y = Tensor::from_storage(s.clone(), shape.clone());
+        Tensor::from_op(s, shape.clone(), vec![self.clone()], "log_softmax", move |g| {
+            let s = g.backend().log_softmax_backward(&y.storage(), &g.storage(), &shape, ax);
+            vec![Some(Tensor::from_storage(s, shape.clone()))]
+        })
+    }
+
+    /// Normalize over the last dim to zero mean / unit variance (no affine).
+    pub fn normalize_last(&self, eps: f32) -> Tensor {
+        assert_f32(self, "layer_norm");
+        let dim = self.dim(-1);
+        let rows = self.numel() / dim.max(1);
+        let (xh, rstd) = self.backend().layer_norm(&self.storage(), rows, dim, eps);
+        let shape = self.shape().to_vec();
+        let xhat = Tensor::from_storage(xh.clone(), shape.clone());
+        Tensor::from_op(xh, shape.clone(), vec![self.clone()], "layer_norm", move |g| {
+            let s = g.backend().layer_norm_backward(&g.storage(), &xhat.storage(), &rstd, rows, dim);
+            vec![Some(Tensor::from_storage(s, shape.clone()))]
         })
     }
 

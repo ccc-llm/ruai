@@ -1,6 +1,6 @@
 //! The `Tensor` type and the reverse-mode autograd engine.
 
-use crate::backend::{backend_for, Backend, Storage};
+use crate::backend::{backend_for, Backend, DType, Storage};
 use crate::device::Device;
 use crate::rand;
 use crate::shape::numel;
@@ -112,7 +112,18 @@ impl Tensor {
 
     pub fn from_vec(data: Vec<f32>, shape: &[usize], device: Device) -> Tensor {
         assert_eq!(data.len(), numel(shape), "data length {} != numel of {shape:?}", data.len());
-        Self::from_storage(backend_for(device).from_vec(data), shape.to_vec())
+        Self::from_storage(backend_for(device).from_f32(data), shape.to_vec())
+    }
+
+    /// An `I32` tensor (e.g. token ids, class targets).
+    pub fn from_vec_i32(data: Vec<i32>, shape: &[usize], device: Device) -> Tensor {
+        assert_eq!(data.len(), numel(shape), "data length {} != numel of {shape:?}", data.len());
+        Self::from_storage(backend_for(device).from_i32(data), shape.to_vec())
+    }
+
+    /// An `I32` index tensor from `usize` indices.
+    pub fn from_indices(idx: &[usize], shape: &[usize], device: Device) -> Tensor {
+        Self::from_vec_i32(idx.iter().map(|&i| i as i32).collect(), shape, device)
     }
 
     pub fn from_slice(data: &[f32], shape: &[usize]) -> Tensor {
@@ -125,7 +136,7 @@ impl Tensor {
     }
 
     pub fn full(shape: &[usize], value: f32, device: Device) -> Tensor {
-        Self::from_storage(backend_for(device).full(numel(shape), value), shape.to_vec())
+        Self::from_storage(backend_for(device).full(numel(shape), value, DType::F32), shape.to_vec())
     }
 
     pub fn zeros(shape: &[usize], device: Device) -> Tensor {
@@ -166,6 +177,7 @@ impl Tensor {
     }
 
     pub fn set_requires_grad(&self, v: bool) {
+        assert!(!v || self.dtype() == DType::F32, "only f32 tensors can require grad");
         assert!(self.0.node.is_none() || v, "cannot disable grad on a non-leaf tensor");
         self.0.requires_grad.store(v, Ordering::Relaxed);
     }
@@ -207,6 +219,18 @@ impl Tensor {
         backend_for(self.device())
     }
 
+    pub fn dtype(&self) -> DType {
+        self.0.storage.read().unwrap().dtype()
+    }
+
+    /// Convert to another dtype (not differentiable).
+    pub fn to_dtype(&self, dtype: DType) -> Tensor {
+        if self.dtype() == dtype {
+            return self.clone();
+        }
+        Tensor::from_storage(self.backend().cast(&self.storage(), dtype), self.shape().to_vec())
+    }
+
     pub fn requires_grad(&self) -> bool {
         self.0.requires_grad.load(Ordering::Relaxed)
     }
@@ -220,8 +244,14 @@ impl Tensor {
         self.0.node.as_ref().map(|n| n.name)
     }
 
+    /// Copy the data to the host as `f32` (integer tensors are converted).
     pub fn to_vec(&self) -> Vec<f32> {
         self.storage().to_vec()
+    }
+
+    /// Copy the data to the host as `i32`.
+    pub fn to_vec_i32(&self) -> Vec<i32> {
+        self.storage().to_vec_i32()
     }
 
     /// Value of a single-element tensor.
@@ -247,6 +277,7 @@ impl Tensor {
     /// modules between devices). The shape must not change.
     pub fn set_storage(&self, s: Storage) {
         assert_eq!(s.len(), self.numel(), "set_storage: size mismatch");
+        assert_eq!(s.dtype(), self.dtype(), "set_storage: dtype mismatch");
         *self.0.storage.write().unwrap() = s;
     }
 
@@ -346,8 +377,9 @@ impl fmt::Debug for Tensor {
         let more = if v.len() > 8 { ", ..." } else { "" };
         write!(
             f,
-            "Tensor(shape={:?}, device={}, data=[{}{}]{})",
+            "Tensor(shape={:?}, dtype={}, device={}, data=[{}{}]{})",
             self.shape(),
+            self.dtype(),
             self.device(),
             shown.join(", "),
             more,

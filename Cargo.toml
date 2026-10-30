@@ -1,6 +1,6 @@
 [package]
 name = "rust-nn"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "A small PyTorch-like neural network engine in Rust (autograd + CNN + Transformer)"
 license = "MIT"
@@ -10,12 +10,15 @@ name = "rustnn"
 
 [dependencies]
 rayon = "1.10"
+matrixmultiply = "0.3"
 
 [features]
 default = []
 # GPU backends (skeletons for now; see src/backend/cuda.rs and src/backend/mps.rs)
 cuda = []
 mps = []
+# Use Apple Accelerate (AMX) for CPU matmul on macOS
+accelerate = []
 
 [profile.release]
 opt-level = 3

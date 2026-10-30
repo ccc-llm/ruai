@@ -2,6 +2,7 @@
 //! and written back with `set_storage`, so they run on whatever device the
 //! parameters live on.
 
+use crate::backend::{AdamParams, DType, Storage};
 use crate::tensor::{no_grad, Tensor};
 
 pub trait Optimizer {
@@ -78,8 +79,8 @@ pub struct Adam {
     pub eps: f32,
     pub weight_decay: f32,
     pub decoupled_weight_decay: bool,
-    m: Vec<Option<Tensor>>,
-    v: Vec<Option<Tensor>>,
+    m: Vec<Option<Storage>>,
+    v: Vec<Option<Storage>>,
     t: i32,
 }
 
@@ -112,34 +113,29 @@ impl Adam {
 impl Optimizer for Adam {
     fn step(&mut self) {
         self.t += 1;
-        let (b1, b2) = (self.beta1, self.beta2);
-        let bc1 = 1.0 - b1.powi(self.t);
-        let bc2 = 1.0 - b2.powi(self.t);
-        no_grad(|| {
-            for i in 0..self.params.len() {
-                let p = &self.params[i];
-                let Some(mut g) = p.grad() else { continue };
-                if self.weight_decay != 0.0 && !self.decoupled_weight_decay {
-                    g = g + p * self.weight_decay;
-                }
-                let m = match self.m[i].take() {
-                    Some(m) => m * b1 + &g * (1.0 - b1),
-                    None => &g * (1.0 - b1),
-                };
-                let v = match self.v[i].take() {
-                    Some(v) => v * b2 + &(&g * &g) * (1.0 - b2),
-                    None => &(&g * &g) * (1.0 - b2),
-                };
-                let update = (&m * (1.0 / bc1)) / ((&v * (1.0 / bc2)).sqrt() + self.eps);
-                let mut new_p = p - update * self.lr;
-                if self.weight_decay != 0.0 && self.decoupled_weight_decay {
-                    new_p = new_p - p * (self.lr * self.weight_decay);
-                }
-                p.set_storage(new_p.storage());
-                self.m[i] = Some(m);
-                self.v[i] = Some(v);
-            }
-        });
+        let h = AdamParams {
+            lr: self.lr,
+            beta1: self.beta1,
+            beta2: self.beta2,
+            eps: self.eps,
+            weight_decay: self.weight_decay,
+            decoupled: self.decoupled_weight_decay,
+            bias_correction1: 1.0 - self.beta1.powi(self.t),
+            bias_correction2: 1.0 - self.beta2.powi(self.t),
+        };
+        for i in 0..self.params.len() {
+            let p = &self.params[i];
+            let Some(g) = p.grad() else { continue };
+            let be = p.backend();
+            let zeros = || be.full(p.numel(), 0.0, DType::F32);
+            let m = self.m[i].take().unwrap_or_else(zeros);
+            let v = self.v[i].take().unwrap_or_else(zeros);
+            // one fused kernel per parameter
+            let (np, nm, nv) = be.adam_step(&p.storage(), &g.storage(), &m, &v, h);
+            p.set_storage(np);
+            self.m[i] = Some(nm);
+            self.v[i] = Some(nv);
+        }
     }
     fn params(&self) -> &[Tensor] {
         &self.params

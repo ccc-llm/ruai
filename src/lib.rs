@@ -23,14 +23,16 @@ pub mod backend;
 pub mod device;
 pub mod functional;
 pub mod nn;
-mod ops;
+pub mod ops;
 pub mod optim;
 pub mod rand;
 pub mod serialize;
 pub mod shape;
 pub mod tensor;
 
+pub use backend::DType;
 pub use device::Device;
+pub use ops::IntoIndices;
 pub use tensor::{is_grad_enabled, no_grad, NoGradGuard, Tensor};
 
 /// Commonly used items: `use rustnn::prelude::*;`
@@ -38,5 +40,5 @@ pub mod prelude {
     pub use crate::functional as F;
     pub use crate::nn::{self, Module};
     pub use crate::optim::{self, Optimizer};
-    pub use crate::{no_grad, Device, Tensor};
+    pub use crate::{no_grad, DType, Device, IntoIndices, Tensor};
 }

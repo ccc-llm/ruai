@@ -1,6 +1,9 @@
-//! CPU backend: plain `Vec<f32>` storage, parallelized with rayon.
+//! CPU backend: host `Vec` storage, parallelized with rayon. Matmul uses the
+//! pure-Rust `matrixmultiply` GEMM (or Apple Accelerate with `--features accelerate`).
 
-use super::{Backend, BinaryOp, Conv2dGeom, MatmulSpec, ReduceOp, Storage, UnaryOp};
+use super::{
+    reference::Unfused, AdamParams, Backend, BinaryOp, Conv2dGeom, CpuStorage, DType, MatmulSpec, ReduceOp, Storage, UnaryOp,
+};
 use crate::device::Device;
 use crate::shape::{broadcast_strides, numel, split_axis, strides};
 use rayon::prelude::*;
@@ -8,25 +11,47 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 /// Below this many elements, work is done on the calling thread.
-const PAR_THRESHOLD: usize = 1 << 14;
+const PAR_THRESHOLD: usize = 1 << 15;
 
 pub struct CpuBackend;
 
-fn data(s: &Storage) -> &[f32] {
+fn f32s(s: &Storage) -> &[f32] {
     match s {
-        Storage::Cpu(v) => v.as_slice(),
+        Storage::Cpu(CpuStorage::F32(v)) => v.as_slice(),
+        #[allow(unreachable_patterns)]
+        _ => panic!("CPU backend expected an f32 CPU storage, got {} on {}", s.dtype(), s.device()),
+    }
+}
+
+fn i32s(s: &Storage) -> &[i32] {
+    match s {
+        Storage::Cpu(CpuStorage::I32(v)) => v.as_slice(),
+        #[allow(unreachable_patterns)]
+        _ => panic!("CPU backend expected an i32 CPU storage (indices), got {} on {}", s.dtype(), s.device()),
+    }
+}
+
+/// View any CPU storage as f32 (converting integers).
+fn as_f32(s: &Storage) -> Cow<'_, [f32]> {
+    match s {
+        Storage::Cpu(CpuStorage::F32(v)) => Cow::Borrowed(v.as_slice()),
+        Storage::Cpu(CpuStorage::I32(v)) => Cow::Owned(v.iter().map(|&x| x as f32).collect()),
         #[allow(unreachable_patterns)]
         _ => panic!("CPU backend received a non-CPU storage ({})", s.device()),
     }
 }
 
 fn wrap(v: Vec<f32>) -> Storage {
-    Storage::Cpu(Arc::new(v))
+    Storage::Cpu(CpuStorage::F32(Arc::new(v)))
+}
+
+fn wrap_i32(v: Vec<i32>) -> Storage {
+    Storage::Cpu(CpuStorage::I32(Arc::new(v)))
 }
 
 fn map_into<F: Fn(f32) -> f32 + Sync + Send>(x: &[f32], f: F) -> Vec<f32> {
     if x.len() >= PAR_THRESHOLD {
-        x.par_iter().map(|&v| f(v)).collect()
+        x.par_iter().with_min_len(PAR_THRESHOLD / 4).map(|&v| f(v)).collect()
     } else {
         x.iter().map(|&v| f(v)).collect()
     }
@@ -38,11 +63,8 @@ fn for_rows<F: Fn(usize, &mut [f32]) + Sync + Send>(out: &mut [f32], inner: usiz
         return;
     }
     if out.len() >= PAR_THRESHOLD {
-        let min_rows = (PAR_THRESHOLD / inner).max(1);
-        out.par_chunks_mut(inner)
-            .with_min_len(min_rows)
-            .enumerate()
-            .for_each(|(r, row)| f(r, row));
+        let min_rows = (PAR_THRESHOLD / 4 / inner).max(1);
+        out.par_chunks_mut(inner).with_min_len(min_rows).enumerate().for_each(|(r, row)| f(r, row));
     } else {
         out.chunks_mut(inner).enumerate().for_each(|(r, row)| f(r, row));
     }
@@ -76,7 +98,7 @@ fn broadcast_apply<F: Fn(f32, f32) -> f32 + Sync + Send>(
     }
     if a_shape == b_shape {
         return if n >= PAR_THRESHOLD {
-            a.par_iter().zip(b.par_iter()).map(|(&x, &y)| f(x, y)).collect()
+            a.par_iter().zip(b.par_iter()).with_min_len(PAR_THRESHOLD / 4).map(|(&x, &y)| f(x, y)).collect()
         } else {
             a.iter().zip(b).map(|(&x, &y)| f(x, y)).collect()
         };
@@ -97,40 +119,128 @@ fn broadcast_apply<F: Fn(f32, f32) -> f32 + Sync + Send>(
     let mut out = vec![0.0; n];
     for_rows(&mut out, inner, |r, row| {
         let (oa, ob) = row_offsets(r, out_shape, &sa, &sb);
-        for (j, o) in row.iter_mut().enumerate() {
-            *o = f(a[oa + j * ia], b[ob + j * ib]);
+        match (ia, ib) {
+            (1, 1) => {
+                for ((o, &x), &y) in row.iter_mut().zip(&a[oa..oa + inner]).zip(&b[ob..ob + inner]) {
+                    *o = f(x, y);
+                }
+            }
+            (1, 0) => {
+                let y = b[ob];
+                for (o, &x) in row.iter_mut().zip(&a[oa..oa + inner]) {
+                    *o = f(x, y);
+                }
+            }
+            (0, 1) => {
+                let x = a[oa];
+                for (o, &y) in row.iter_mut().zip(&b[ob..ob + inner]) {
+                    *o = f(x, y);
+                }
+            }
+            _ => {
+                for (j, o) in row.iter_mut().enumerate() {
+                    *o = f(a[oa + j * ia], b[ob + j * ib]);
+                }
+            }
         }
     });
     out
 }
 
+/// tanh via a single exp (noticeably faster than libm `tanhf`).
+#[inline]
+fn fast_tanh(u: f32) -> f32 {
+    let u = u.clamp(-15.0, 15.0);
+    1.0 - 2.0 / ((2.0 * u).exp() + 1.0)
+}
+
 #[inline]
 fn gelu(x: f32) -> f32 {
     const S: f32 = 0.797_884_6; // sqrt(2/pi)
-    0.5 * x * (1.0 + (S * (x + 0.044715 * x * x * x)).tanh())
+    0.5 * x * (1.0 + fast_tanh(S * (x + 0.044715 * x * x * x)))
 }
 
 #[inline]
 fn gelu_grad(x: f32) -> f32 {
     const S: f32 = 0.797_884_6;
     let u = S * (x + 0.044715 * x * x * x);
-    let t = u.tanh();
+    let t = fast_tanh(u);
     0.5 * (1.0 + t) + 0.5 * x * (1.0 - t * t) * S * (1.0 + 3.0 * 0.044715 * x * x)
 }
 
-/// Transpose each `[rows, cols]` block of `x` into `[cols, rows]`.
-fn transpose_blocks(x: &[f32], blocks: usize, rows: usize, cols: usize) -> Vec<f32> {
-    let mut out = vec![0.0; blocks * rows * cols];
-    let sz = rows * cols;
-    out.par_chunks_mut(sz.max(1)).enumerate().for_each(|(bi, ob)| {
-        let ib = &x[bi * sz..(bi + 1) * sz];
-        for r in 0..rows {
-            for c in 0..cols {
-                ob[c * rows + r] = ib[r * cols + c];
-            }
-        }
-    });
+fn narrow_t<T: Copy>(x: &[T], shape: &[usize], axis: usize, start: usize, len: usize) -> Vec<T> {
+    let (outer, l, inner) = split_axis(shape, axis);
+    let mut out = Vec::with_capacity(outer * len * inner);
+    for o in 0..outer {
+        out.extend_from_slice(&x[(o * l + start) * inner..(o * l + start + len) * inner]);
+    }
     out
+}
+
+fn cat_t<T: Copy>(xs: &[&[T]], shapes: &[&[usize]], axis: usize) -> Vec<T> {
+    let (outer, _, inner) = split_axis(shapes[0], axis);
+    let total: usize = xs.iter().map(|x| x.len()).sum();
+    let mut out = Vec::with_capacity(total);
+    for o in 0..outer {
+        for (x, s) in xs.iter().zip(shapes) {
+            let blk = s[axis] * inner;
+            out.extend_from_slice(&x[o * blk..(o + 1) * blk]);
+        }
+    }
+    out
+}
+
+/// Single-threaded GEMM on one block: `C (m x n, row stride rsc) = A @ B`
+/// with arbitrary element strides for A and B.
+#[allow(clippy::too_many_arguments)]
+#[cfg(not(feature = "accelerate"))]
+fn gemm(m: usize, k: usize, n: usize, a: &[f32], rsa: usize, csa: usize, b: &[f32], rsb: usize, csb: usize, c: &mut [f32]) {
+    // Safety: callers guarantee the slices cover the strided extents.
+    unsafe {
+        matrixmultiply::sgemm(
+            m,
+            k,
+            n,
+            1.0,
+            a.as_ptr(),
+            rsa as isize,
+            csa as isize,
+            b.as_ptr(),
+            rsb as isize,
+            csb as isize,
+            0.0,
+            c.as_mut_ptr(),
+            n as isize,
+            1,
+        );
+    }
+}
+
+#[cfg(feature = "accelerate")]
+mod accelerate {
+    #[link(name = "Accelerate", kind = "framework")]
+    extern "C" {
+        #[allow(clippy::too_many_arguments)]
+        pub fn cblas_sgemm(
+            order: i32,
+            trans_a: i32,
+            trans_b: i32,
+            m: i32,
+            n: i32,
+            k: i32,
+            alpha: f32,
+            a: *const f32,
+            lda: i32,
+            b: *const f32,
+            ldb: i32,
+            beta: f32,
+            c: *mut f32,
+            ldc: i32,
+        );
+    }
+    pub const ROW_MAJOR: i32 = 101;
+    pub const NO_TRANS: i32 = 111;
+    pub const TRANS: i32 = 112;
 }
 
 impl Backend for CpuBackend {
@@ -138,20 +248,44 @@ impl Backend for CpuBackend {
         Device::Cpu
     }
 
-    fn from_vec(&self, data: Vec<f32>) -> Storage {
+    fn from_f32(&self, data: Vec<f32>) -> Storage {
         wrap(data)
     }
 
-    fn to_vec(&self, x: &Storage) -> Vec<f32> {
-        data(x).to_vec()
+    fn from_i32(&self, data: Vec<i32>) -> Storage {
+        wrap_i32(data)
     }
 
-    fn full(&self, len: usize, value: f32) -> Storage {
-        wrap(vec![value; len])
+    fn to_f32(&self, x: &Storage) -> Vec<f32> {
+        as_f32(x).into_owned()
+    }
+
+    fn to_i32(&self, x: &Storage) -> Vec<i32> {
+        match x {
+            Storage::Cpu(CpuStorage::I32(v)) => v.to_vec(),
+            _ => f32s(x).iter().map(|&v| v as i32).collect(),
+        }
+    }
+
+    fn full(&self, len: usize, value: f32, dtype: DType) -> Storage {
+        match dtype {
+            DType::F32 => wrap(vec![value; len]),
+            DType::I32 => wrap_i32(vec![value as i32; len]),
+        }
+    }
+
+    fn cast(&self, x: &Storage, dtype: DType) -> Storage {
+        if x.dtype() == dtype {
+            return x.clone();
+        }
+        match dtype {
+            DType::F32 => wrap(self.to_f32(x)),
+            DType::I32 => wrap_i32(self.to_i32(x)),
+        }
     }
 
     fn unary(&self, op: UnaryOp, x: &Storage) -> Storage {
-        let x = data(x);
+        let x = f32s(x);
         let out = match op {
             UnaryOp::Neg => map_into(x, |v| -v),
             UnaryOp::Exp => map_into(x, f32::exp),
@@ -179,7 +313,8 @@ impl Backend for CpuBackend {
         b_shape: &[usize],
         out_shape: &[usize],
     ) -> Storage {
-        let (a, b) = (data(a), data(b));
+        let (a, b) = (as_f32(a), as_f32(b));
+        let (a, b) = (a.as_ref(), b.as_ref());
         let (s1, s2) = (a_shape, b_shape);
         let out = match op {
             BinaryOp::Add => broadcast_apply(|x, y| x + y, a, s1, b, s2, out_shape),
@@ -197,7 +332,7 @@ impl Backend for CpuBackend {
     }
 
     fn expand(&self, x: &Storage, shape: &[usize], out_shape: &[usize]) -> Storage {
-        let x = data(x);
+        let x = f32s(x);
         let n = numel(out_shape);
         if shape == out_shape {
             return wrap(x.to_vec());
@@ -212,24 +347,37 @@ impl Backend for CpuBackend {
         let mut out = vec![0.0; n];
         for_rows(&mut out, inner, |r, row| {
             let (ox, _) = row_offsets(r, out_shape, &sx, &sx);
-            for (j, o) in row.iter_mut().enumerate() {
-                *o = x[ox + j * ix];
+            if ix == 1 {
+                row.copy_from_slice(&x[ox..ox + inner]);
+            } else {
+                for (j, o) in row.iter_mut().enumerate() {
+                    *o = x[ox + j * ix];
+                }
             }
         });
         wrap(out)
     }
 
+    fn where_cond(&self, cond: &Storage, a: &Storage, b: &Storage) -> Storage {
+        let (c, a, b) = (as_f32(cond), f32s(a), f32s(b));
+        wrap(c.iter().zip(a).zip(b).map(|((&c, &x), &y)| if c != 0.0 { x } else { y }).collect())
+    }
+
     fn reduce(&self, op: ReduceOp, x: &Storage, shape: &[usize], axis: usize) -> Storage {
-        let x = data(x);
+        let x = f32s(x);
         let (outer, len, inner) = split_axis(shape, axis);
         let mut out = vec![0.0; outer * inner];
         if out.is_empty() {
-            return wrap(out);
+            return if op == ReduceOp::ArgMax { wrap_i32(vec![]) } else { wrap(out) };
         }
         let reduce_block = |o: usize, dst: &mut [f32]| {
             let base = o * len * inner;
             match op {
                 ReduceOp::Sum => {
+                    if inner == 1 {
+                        dst[0] = x[base..base + len].iter().sum();
+                        return;
+                    }
                     dst.fill(0.0);
                     for l in 0..len {
                         let src = &x[base + l * inner..base + (l + 1) * inner];
@@ -239,12 +387,12 @@ impl Backend for CpuBackend {
                     }
                 }
                 ReduceOp::Max | ReduceOp::Min => {
-                    let init = if op == ReduceOp::Max { f32::NEG_INFINITY } else { f32::INFINITY };
-                    dst.fill(init);
+                    let is_max = op == ReduceOp::Max;
+                    dst.fill(if is_max { f32::NEG_INFINITY } else { f32::INFINITY });
                     for l in 0..len {
                         let src = &x[base + l * inner..base + (l + 1) * inner];
                         for (d, &s) in dst.iter_mut().zip(src) {
-                            *d = if op == ReduceOp::Max { d.max(s) } else { d.min(s) };
+                            *d = if is_max { d.max(s) } else { d.min(s) };
                         }
                     }
                 }
@@ -266,66 +414,90 @@ impl Backend for CpuBackend {
         };
         if x.len() >= PAR_THRESHOLD {
             out.par_chunks_mut(inner)
-                .with_min_len((PAR_THRESHOLD / (len * inner).max(1)).max(1))
+                .with_min_len((PAR_THRESHOLD / 4 / (len * inner).max(1)).max(1))
                 .enumerate()
                 .for_each(|(o, d)| reduce_block(o, d));
         } else {
             out.chunks_mut(inner).enumerate().for_each(|(o, d)| reduce_block(o, d));
         }
-        wrap(out)
+        if op == ReduceOp::ArgMax {
+            wrap_i32(out.into_iter().map(|v| v as i32).collect())
+        } else {
+            wrap(out)
+        }
     }
 
     fn matmul(&self, a: &Storage, b: &Storage, spec: MatmulSpec) -> Storage {
         let MatmulSpec { batch, m, k, n, trans_a, trans_b, a_batch_stride, b_batch_stride } = spec;
-        let (a, b) = (data(a), data(b));
-        let a_blocks = if a_batch_stride == 0 { 1 } else { batch };
-        let b_blocks = if b_batch_stride == 0 { 1 } else { batch };
-        // Bring A to [m, k] and B to [k, n] row-major blocks.
-        let a: Cow<[f32]> = if trans_a {
-            Cow::Owned(transpose_blocks(&a[..a_blocks * m * k], a_blocks, k, m))
-        } else {
-            Cow::Borrowed(a)
-        };
-        let b: Cow<[f32]> = if trans_b {
-            Cow::Owned(transpose_blocks(&b[..b_blocks * k * n], b_blocks, n, k))
-        } else {
-            Cow::Borrowed(b)
-        };
-        let a_bs = if a_batch_stride == 0 { 0 } else { m * k };
-        let b_bs = if b_batch_stride == 0 { 0 } else { k * n };
+        let (a, b) = (f32s(a), f32s(b));
         let mut out = vec![0.0f32; batch * m * n];
-        if out.is_empty() {
+        if out.is_empty() || k == 0 {
             return wrap(out);
         }
-        let kernel = |row: usize, crow: &mut [f32]| {
-            let bi = row / m;
-            let i = row % m;
-            let arow = &a[bi * a_bs + i * k..bi * a_bs + (i + 1) * k];
-            let bm = &b[bi * b_bs..bi * b_bs + k * n];
-            for (p, &av) in arow.iter().enumerate() {
-                if av == 0.0 {
-                    continue;
-                }
-                let brow = &bm[p * n..(p + 1) * n];
-                for (c, &bv) in crow.iter_mut().zip(brow) {
-                    *c += av * bv;
-                }
+        let a_bs = if a_batch_stride == 0 { 0 } else { m * k };
+        let b_bs = if b_batch_stride == 0 { 0 } else { k * n };
+
+        #[cfg(feature = "accelerate")]
+        {
+            use accelerate::*;
+            let call = |bi: usize, c: &mut [f32]| unsafe {
+                cblas_sgemm(
+                    ROW_MAJOR,
+                    if trans_a { TRANS } else { NO_TRANS },
+                    if trans_b { TRANS } else { NO_TRANS },
+                    m as i32,
+                    n as i32,
+                    k as i32,
+                    1.0,
+                    a[bi * a_bs..].as_ptr(),
+                    if trans_a { m } else { k } as i32,
+                    b[bi * b_bs..].as_ptr(),
+                    if trans_b { k } else { n } as i32,
+                    0.0,
+                    c.as_mut_ptr(),
+                    n as i32,
+                )
+            };
+            // Accelerate threads large GEMMs itself; fan out only many small ones.
+            if batch > 1 && m * n * k < 128 * 128 * 128 {
+                out.par_chunks_mut(m * n).enumerate().for_each(|(bi, c)| call(bi, c));
+            } else {
+                out.chunks_mut(m * n).enumerate().for_each(|(bi, c)| call(bi, c));
             }
-        };
-        if batch * m * n * k >= PAR_THRESHOLD {
-            let min_rows = (PAR_THRESHOLD / (n * k).max(1)).max(1);
-            out.par_chunks_mut(n)
-                .with_min_len(min_rows)
-                .enumerate()
-                .for_each(|(r, c)| kernel(r, c));
-        } else {
-            out.chunks_mut(n).enumerate().for_each(|(r, c)| kernel(r, c));
+            #[allow(clippy::needless_return)]
+            return wrap(out);
         }
-        wrap(out)
+
+        #[cfg(not(feature = "accelerate"))]
+        {
+            // element (i, p) of A and (p, j) of B
+            let (rsa, csa) = if trans_a { (1, m) } else { (k, 1) };
+            let (rsb, csb) = if trans_b { (1, k) } else { (n, 1) };
+            let threads = rayon::current_num_threads();
+            let flops = batch * m * n * k;
+            // split each batch into row blocks so that all threads have work
+            let chunks = if flops < 1 << 18 || batch >= threads { 1 } else { threads.div_ceil(batch) };
+            let rows_per = m.div_ceil(chunks).max(1);
+            let block = |bi: usize, ci: usize, c: &mut [f32]| {
+                let r0 = ci * rows_per;
+                let rows = c.len() / n;
+                let a_blk = &a[bi * a_bs + r0 * rsa..];
+                let b_blk = &b[bi * b_bs..];
+                gemm(rows, k, n, a_blk, rsa, csa, b_blk, rsb, csb, c);
+            };
+            if flops < 1 << 18 {
+                out.chunks_mut(m * n).enumerate().for_each(|(bi, cb)| block(bi, 0, cb));
+            } else {
+                out.par_chunks_mut(m * n).enumerate().for_each(|(bi, cb)| {
+                    cb.par_chunks_mut(rows_per * n).enumerate().for_each(|(ci, c)| block(bi, ci, c));
+                });
+            }
+            wrap(out)
+        }
     }
 
     fn permute(&self, x: &Storage, shape: &[usize], perm: &[usize]) -> Storage {
-        let x = data(x);
+        let x = f32s(x);
         let st = strides(shape);
         let out_shape: Vec<usize> = perm.iter().map(|&p| shape[p]).collect();
         let in_st: Vec<usize> = perm.iter().map(|&p| st[p]).collect();
@@ -342,29 +514,50 @@ impl Backend for CpuBackend {
         let ix = in_st[rank - 1];
         for_rows(&mut out, inner, |r, row| {
             let (ox, _) = row_offsets(r, &out_shape, &in_st, &in_st);
-            for (j, o) in row.iter_mut().enumerate() {
-                *o = x[ox + j * ix];
+            if ix == 1 {
+                row.copy_from_slice(&x[ox..ox + inner]);
+            } else {
+                for (j, o) in row.iter_mut().enumerate() {
+                    *o = x[ox + j * ix];
+                }
             }
         });
         wrap(out)
     }
 
-    fn index_select(&self, table: &Storage, cols: usize, idx: &[usize]) -> Storage {
-        let t = data(table);
+    fn narrow(&self, x: &Storage, shape: &[usize], axis: usize, start: usize, len: usize) -> Storage {
+        match x {
+            Storage::Cpu(CpuStorage::F32(v)) => wrap(narrow_t(v, shape, axis, start, len)),
+            Storage::Cpu(CpuStorage::I32(v)) => wrap_i32(narrow_t(v, shape, axis, start, len)),
+            #[allow(unreachable_patterns)]
+            _ => panic!("CPU backend received a non-CPU storage"),
+        }
+    }
+
+    fn cat(&self, xs: &[&Storage], shapes: &[&[usize]], axis: usize) -> Storage {
+        match xs[0].dtype() {
+            DType::F32 => wrap(cat_t(&xs.iter().map(|s| f32s(s)).collect::<Vec<_>>(), shapes, axis)),
+            DType::I32 => wrap_i32(cat_t(&xs.iter().map(|s| i32s(s)).collect::<Vec<_>>(), shapes, axis)),
+        }
+    }
+
+    fn index_select(&self, table: &Storage, cols: usize, idx: &Storage) -> Storage {
+        let (t, idx) = (f32s(table), i32s(idx));
         let rows = t.len() / cols.max(1);
         let mut out = vec![0.0; idx.len() * cols];
         for_rows(&mut out, cols, |r, row| {
-            let i = idx[r];
-            assert!(i < rows, "index {i} out of range for {rows} rows");
+            let i = idx[r] as usize;
+            assert!(i < rows, "index {} out of range for {rows} rows", idx[r]);
             row.copy_from_slice(&t[i * cols..(i + 1) * cols]);
         });
         wrap(out)
     }
 
-    fn index_add(&self, src: &Storage, rows: usize, cols: usize, idx: &[usize]) -> Storage {
-        let s = data(src);
+    fn index_add(&self, src: &Storage, rows: usize, cols: usize, idx: &Storage) -> Storage {
+        let (s, idx) = (f32s(src), i32s(idx));
         let mut out = vec![0.0; rows * cols];
         for (r, &i) in idx.iter().enumerate() {
+            let i = i as usize;
             let dst = &mut out[i * cols..(i + 1) * cols];
             for (d, v) in dst.iter_mut().zip(&s[r * cols..(r + 1) * cols]) {
                 *d += v;
@@ -373,8 +566,40 @@ impl Backend for CpuBackend {
         wrap(out)
     }
 
+    fn gather(&self, x: &Storage, shape: &[usize], axis: usize, idx: &Storage, idx_len: usize) -> Storage {
+        let (x, idx) = (f32s(x), i32s(idx));
+        let (_, len, inner) = split_axis(shape, axis);
+        let mut out = vec![0.0; idx.len()];
+        for_rows(&mut out, idx_len * inner, |o, blk| {
+            for j in 0..idx_len {
+                for i in 0..inner {
+                    let p = o * idx_len * inner + j * inner + i;
+                    let l = idx[p] as usize;
+                    assert!(l < len, "gather index {l} out of range for size {len}");
+                    blk[j * inner + i] = x[(o * len + l) * inner + i];
+                }
+            }
+        });
+        wrap(out)
+    }
+
+    fn scatter_add(&self, src: &Storage, idx: &Storage, idx_len: usize, shape: &[usize], axis: usize) -> Storage {
+        let (src, idx) = (f32s(src), i32s(idx));
+        let (_, len, inner) = split_axis(shape, axis);
+        let mut out = vec![0.0; numel(shape)];
+        for_rows(&mut out, len * inner, |o, blk| {
+            for j in 0..idx_len {
+                for i in 0..inner {
+                    let p = o * idx_len * inner + j * inner + i;
+                    blk[idx[p] as usize * inner + i] += src[p];
+                }
+            }
+        });
+        wrap(out)
+    }
+
     fn im2col(&self, x: &Storage, g: Conv2dGeom) -> Storage {
-        let x = data(x);
+        let x = f32s(x);
         let (oh, ow) = g.out_hw();
         let l = oh * ow;
         let ckk = g.c * g.kh * g.kw;
@@ -405,7 +630,7 @@ impl Backend for CpuBackend {
     }
 
     fn col2im(&self, cols: &Storage, g: Conv2dGeom) -> Storage {
-        let cols = data(cols);
+        let cols = f32s(cols);
         let (oh, ow) = g.out_hw();
         let l = oh * ow;
         let ckk = g.c * g.kh * g.kw;
@@ -435,5 +660,156 @@ impl Backend for CpuBackend {
             }
         });
         wrap(out)
+    }
+
+    // ---- fused fast paths (last axis); other axes use the composed default ----
+
+    fn softmax(&self, x: &Storage, shape: &[usize], axis: usize) -> Storage {
+        if axis + 1 != shape.len() {
+            return Unfused(self.static_ref()).softmax(x, shape, axis);
+        }
+        let x = f32s(x);
+        let d = shape[axis];
+        let mut out = vec![0.0; x.len()];
+        for_rows(&mut out, d, |r, row| {
+            let src = &x[r * d..(r + 1) * d];
+            let m = src.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let mut s = 0.0;
+            for (o, &v) in row.iter_mut().zip(src) {
+                *o = (v - m).exp();
+                s += *o;
+            }
+            let inv = 1.0 / s;
+            row.iter_mut().for_each(|o| *o *= inv);
+        });
+        wrap(out)
+    }
+
+    fn softmax_backward(&self, y: &Storage, g: &Storage, shape: &[usize], axis: usize) -> Storage {
+        if axis + 1 != shape.len() {
+            return Unfused(self.static_ref()).softmax_backward(y, g, shape, axis);
+        }
+        let (y, g) = (f32s(y), f32s(g));
+        let d = shape[axis];
+        let mut out = vec![0.0; y.len()];
+        for_rows(&mut out, d, |r, row| {
+            let (yr, gr) = (&y[r * d..(r + 1) * d], &g[r * d..(r + 1) * d]);
+            let dot: f32 = yr.iter().zip(gr).map(|(a, b)| a * b).sum();
+            for ((o, &yv), &gv) in row.iter_mut().zip(yr).zip(gr) {
+                *o = yv * (gv - dot);
+            }
+        });
+        wrap(out)
+    }
+
+    fn log_softmax(&self, x: &Storage, shape: &[usize], axis: usize) -> Storage {
+        if axis + 1 != shape.len() {
+            return Unfused(self.static_ref()).log_softmax(x, shape, axis);
+        }
+        let x = f32s(x);
+        let d = shape[axis];
+        let mut out = vec![0.0; x.len()];
+        for_rows(&mut out, d, |r, row| {
+            let src = &x[r * d..(r + 1) * d];
+            let m = src.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let lse = m + src.iter().map(|&v| (v - m).exp()).sum::<f32>().ln();
+            for (o, &v) in row.iter_mut().zip(src) {
+                *o = v - lse;
+            }
+        });
+        wrap(out)
+    }
+
+    fn log_softmax_backward(&self, y: &Storage, g: &Storage, shape: &[usize], axis: usize) -> Storage {
+        if axis + 1 != shape.len() {
+            return Unfused(self.static_ref()).log_softmax_backward(y, g, shape, axis);
+        }
+        let (y, g) = (f32s(y), f32s(g));
+        let d = shape[axis];
+        let mut out = vec![0.0; y.len()];
+        for_rows(&mut out, d, |r, row| {
+            let (yr, gr) = (&y[r * d..(r + 1) * d], &g[r * d..(r + 1) * d]);
+            let s: f32 = gr.iter().sum();
+            for ((o, &yv), &gv) in row.iter_mut().zip(yr).zip(gr) {
+                *o = gv - yv.exp() * s;
+            }
+        });
+        wrap(out)
+    }
+
+    fn layer_norm(&self, x: &Storage, rows: usize, dim: usize, eps: f32) -> (Storage, Storage) {
+        let x = f32s(x);
+        let stats = |r: usize| {
+            let src = &x[r * dim..(r + 1) * dim];
+            let mean = src.iter().sum::<f32>() / dim as f32;
+            let var = src.iter().map(|&v| (v - mean) * (v - mean)).sum::<f32>() / dim as f32;
+            (mean, 1.0 / (var + eps).sqrt())
+        };
+        let st: Vec<(f32, f32)> = if x.len() >= PAR_THRESHOLD {
+            (0..rows).into_par_iter().map(stats).collect()
+        } else {
+            (0..rows).map(stats).collect()
+        };
+        let mut out = vec![0.0; x.len()];
+        for_rows(&mut out, dim, |r, row| {
+            let (mean, rstd) = st[r];
+            for (o, &v) in row.iter_mut().zip(&x[r * dim..(r + 1) * dim]) {
+                *o = (v - mean) * rstd;
+            }
+        });
+        (wrap(out), wrap(st.into_iter().map(|s| s.1).collect()))
+    }
+
+    fn layer_norm_backward(&self, g: &Storage, xhat: &Storage, rstd: &Storage, _rows: usize, dim: usize) -> Storage {
+        let (g, xh, rs) = (f32s(g), f32s(xhat), f32s(rstd));
+        let mut out = vec![0.0; g.len()];
+        let inv = 1.0 / dim as f32;
+        for_rows(&mut out, dim, |r, row| {
+            let (gr, xr) = (&g[r * dim..(r + 1) * dim], &xh[r * dim..(r + 1) * dim]);
+            let mg = gr.iter().sum::<f32>() * inv;
+            let mgx = gr.iter().zip(xr).map(|(a, b)| a * b).sum::<f32>() * inv;
+            for ((o, &gv), &xv) in row.iter_mut().zip(gr).zip(xr) {
+                *o = rs[r] * (gv - mg - xv * mgx);
+            }
+        });
+        wrap(out)
+    }
+
+    fn adam_step(&self, p: &Storage, g: &Storage, m: &Storage, v: &Storage, h: AdamParams) -> (Storage, Storage, Storage) {
+        let (p, g, m, v) = (f32s(p), f32s(g), f32s(m), f32s(v));
+        let n = p.len();
+        let (mut np, mut nm, mut nv) = (vec![0.0; n], vec![0.0; n], vec![0.0; n]);
+        let (ib1, ib2) = (1.0 / h.bias_correction1, 1.0 / h.bias_correction2);
+        let chunk = 1 << 14;
+        np.par_chunks_mut(chunk)
+            .zip(nm.par_chunks_mut(chunk))
+            .zip(nv.par_chunks_mut(chunk))
+            .enumerate()
+            .for_each(|(c, ((op, om), ov))| {
+                let base = c * chunk;
+                for i in 0..op.len() {
+                    let j = base + i;
+                    let mut gj = g[j];
+                    if h.weight_decay != 0.0 && !h.decoupled {
+                        gj += h.weight_decay * p[j];
+                    }
+                    let mj = h.beta1 * m[j] + (1.0 - h.beta1) * gj;
+                    let vj = h.beta2 * v[j] + (1.0 - h.beta2) * gj * gj;
+                    let mut pj = p[j] - h.lr * (mj * ib1) / ((vj * ib2).sqrt() + h.eps);
+                    if h.weight_decay != 0.0 && h.decoupled {
+                        pj -= h.lr * h.weight_decay * p[j];
+                    }
+                    op[i] = pj;
+                    om[i] = mj;
+                    ov[i] = vj;
+                }
+            });
+        (wrap(np), wrap(nm), wrap(nv))
+    }
+}
+
+impl CpuBackend {
+    fn static_ref(&self) -> &'static dyn Backend {
+        super::backend_for(Device::Cpu)
     }
 }

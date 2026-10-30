@@ -218,10 +218,11 @@ impl Embedding {
 }
 
 impl Module for Embedding {
-    /// `x` holds integer ids stored as floats.
+    /// `x` holds integer ids (an `I32` tensor, or floats holding integers).
     fn forward(&self, x: &Tensor) -> Tensor {
-        let ids: Vec<usize> = x.to_vec().iter().map(|&v| v as usize).collect();
-        self.forward_ids(&ids, x.shape())
+        let mut out_shape = x.shape().to_vec();
+        out_shape.push(self.weight.shape()[1]);
+        self.weight.index_select(x).reshape(&out_shape)
     }
     fn named_parameters(&self) -> Vec<(String, Tensor)> {
         vec![("weight".into(), self.weight.clone())]

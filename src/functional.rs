@@ -2,39 +2,36 @@
 //! Everything here is built from differentiable `Tensor` ops, so it works on
 //! any backend and gets gradients for free.
 
+use crate::ops::IntoIndices;
 use crate::rand;
 use crate::tensor::Tensor;
 
-/// Numerically stable softmax along `dim`.
+/// Numerically stable softmax along `dim` (fused kernel).
 pub fn softmax(x: &Tensor, dim: isize) -> Tensor {
-    // the shift is a constant for the gradient (softmax is shift invariant)
-    let m = x.max(dim, true).detach();
-    let e = (x - &m).exp();
-    &e / &e.sum(dim, true)
+    x.softmax(dim)
 }
 
-/// Numerically stable log-softmax along `dim`.
+/// Numerically stable log-softmax along `dim` (fused kernel).
 pub fn log_softmax(x: &Tensor, dim: isize) -> Tensor {
-    let m = x.max(dim, true).detach();
-    let s = x - &m;
-    &s - &s.exp().sum(dim, true).log()
+    x.log_softmax(dim)
 }
 
-/// Cross-entropy between `logits` `[N, C]` and integer class `targets` (len N),
-/// averaged over the batch. `label_smoothing` in [0, 1).
-pub fn cross_entropy(logits: &Tensor, targets: &[usize], label_smoothing: f32) -> Tensor {
+/// Cross-entropy between `logits` `[N, C]` and integer class `targets` (N
+/// indices: a tensor, `&[usize]`, `&Vec<usize>`, ...), averaged over the batch.
+/// `label_smoothing` in [0, 1).
+pub fn cross_entropy(logits: &Tensor, targets: impl IntoIndices, label_smoothing: f32) -> Tensor {
     assert_eq!(logits.rank(), 2, "cross_entropy expects [N, C] logits");
-    let (n, c) = (logits.shape()[0], logits.shape()[1]);
-    assert_eq!(targets.len(), n, "cross_entropy: {} targets for {n} rows", targets.len());
-    let off = label_smoothing / c as f32;
-    let on = 1.0 - label_smoothing + off;
-    let mut dist = vec![off; n * c];
-    for (i, &t) in targets.iter().enumerate() {
-        assert!(t < c, "target {t} out of range for {c} classes");
-        dist[i * c + t] = on;
+    let n = logits.shape()[0];
+    let t = targets.into_indices(logits.device());
+    assert_eq!(t.numel(), n, "cross_entropy: {} targets for {n} rows", t.numel());
+    let lsm = logits.log_softmax(-1);
+    let nll = -lsm.gather(1, &t.reshape(&[n, 1])).mean_all();
+    if label_smoothing > 0.0 {
+        let smooth = -lsm.mean(-1, false).mean_all();
+        nll * (1.0 - label_smoothing) + smooth * label_smoothing
+    } else {
+        nll
     }
-    let dist = Tensor::from_vec(dist, &[n, c], logits.device());
-    -(&log_softmax(logits, -1) * &dist).sum_all() * (1.0 / n as f32)
 }
 
 /// Mean squared error.
@@ -96,12 +93,9 @@ pub fn adaptive_avg_pool_1x1(x: &Tensor) -> Tensor {
     x.reshape(&[s[0], s[1], s[2] * s[3]]).mean(-1, false)
 }
 
-/// Layer normalization over the last dimension.
+/// Layer normalization over the last dimension (fused kernel + affine).
 pub fn layer_norm(x: &Tensor, weight: Option<&Tensor>, bias: Option<&Tensor>, eps: f32) -> Tensor {
-    let mu = x.mean(-1, true);
-    let xc = x - &mu;
-    let var = (&xc * &xc).mean(-1, true);
-    let mut y = &xc / &(var + eps).sqrt();
+    let mut y = x.normalize_last(eps);
     if let Some(w) = weight {
         y = y * w;
     }
@@ -168,9 +162,9 @@ pub fn sinusoidal_positional_encoding(t: usize, d: usize, device: crate::Device)
     Tensor::from_vec(pe, &[t, d], device)
 }
 
-/// Fraction of rows where `argmax(logits) == target`.
-pub fn accuracy(logits: &Tensor, targets: &[usize]) -> f32 {
-    let pred = logits.argmax(-1, false).to_vec();
-    let correct = pred.iter().zip(targets).filter(|(p, &t)| **p as usize == t).count();
-    correct as f32 / targets.len().max(1) as f32
+/// Fraction of rows where `argmax(logits) == target` (computed on the device).
+pub fn accuracy(logits: &Tensor, targets: impl IntoIndices) -> f32 {
+    let pred = logits.argmax(-1, false);
+    let t = targets.into_indices(logits.device()).reshape(pred.shape());
+    pred.eq_t(&t).mean_all().item()
 }

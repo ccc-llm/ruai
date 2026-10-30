@@ -90,13 +90,27 @@ fn matmul_variants() {
 fn nn_functions() {
     gradcheck("softmax", &[&[3, 5]], |x| F::softmax(&x[0], -1));
     gradcheck("log_softmax", &[&[3, 5]], |x| F::log_softmax(&x[0], 1));
-    gradcheck("cross_entropy", &[&[4, 3]], |x| F::cross_entropy(&x[0], &[0, 2, 1, 2], 0.1));
+    gradcheck("cross_entropy", &[&[4, 3]], |x| F::cross_entropy(&x[0], &[0usize, 2, 1, 2], 0.1));
     gradcheck("mse", &[&[4], &[4]], |x| F::mse_loss(&x[0], &x[1]));
     gradcheck("bce_logits", &[&[5]], |x| {
         F::binary_cross_entropy_with_logits(&x[0], &Tensor::from_slice(&[0., 1., 1., 0., 1.], &[5]))
     });
     gradcheck("layer_norm", &[&[3, 6], &[6], &[6]], |x| F::layer_norm(&x[0], Some(&x[1]), Some(&x[2]), 1e-5));
-    gradcheck("embedding", &[&[5, 3]], |x| x[0].index_select(&[1, 4, 1, 0]));
+    gradcheck("embedding", &[&[5, 3]], |x| x[0].index_select(&[1usize, 4, 1, 0]));
+}
+
+#[test]
+fn indexing_and_concat() {
+    gradcheck("narrow", &[&[3, 5]], |x| x[0].narrow(1, 1, 3));
+    gradcheck("select", &[&[3, 4, 2]], |x| x[0].select(1, 2));
+    gradcheck("cat", &[&[2, 3], &[2, 1], &[2, 2]], |x| Tensor::cat(&[&x[0], &x[1], &x[2]], -1));
+    gradcheck("stack", &[&[2, 3], &[2, 3]], |x| Tensor::stack(&[&x[0], &x[1]], 0));
+    let idx = Tensor::from_indices(&[2, 0, 1, 1, 3, 0], &[3, 2], CPU);
+    gradcheck("gather", &[&[3, 4]], move |x| x[0].gather(1, &idx));
+    let cond = Tensor::from_slice(&[1., 0., 1., 0.], &[4]);
+    gradcheck("where", &[&[3, 4], &[4]], move |x| Tensor::where_cond(&cond, &x[0], &x[1]));
+    gradcheck("minimum", &[&[8], &[8]], |x| x[0].minimum(&x[1]));
+    gradcheck("clamp", &[&[10]], |x| (&x[0] * 2.0).clamp(-0.5, 0.7));
 }
 
 #[test]

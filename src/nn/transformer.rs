@@ -162,10 +162,16 @@ impl GPT {
 
     /// `ids`: `[B, T]` row-major token ids -> logits `[B, T, vocab]`.
     pub fn forward_ids(&self, ids: &[usize], b: usize, t: usize) -> Tensor {
+        let dev = self.head.weight.device();
+        self.forward_tokens(&Tensor::from_indices(ids, &[b, t], dev))
+    }
+
+    /// `tokens`: `[B, T]` integer tensor -> logits `[B, T, vocab]`.
+    pub fn forward_tokens(&self, tokens: &Tensor) -> Tensor {
+        let t = tokens.shape()[1];
         assert!(t <= self.max_len, "sequence length {t} > max_len {}", self.max_len);
-        let tok = self.tok_emb.forward_ids(ids, &[b, t]);
-        let pos_ids: Vec<usize> = (0..t).collect();
-        let pos = self.pos_emb.forward_ids(&pos_ids, &[t]);
+        let tok = self.tok_emb.forward(tokens);
+        let pos = self.pos_emb.forward(&Tensor::arange(t, tokens.device()).to_dtype(crate::DType::I32));
         let mut x = tok + pos;
         let mask = F::causal_mask(t, x.device());
         for blk in &self.blocks {
@@ -200,10 +206,9 @@ impl GPT {
 }
 
 impl Module for GPT {
-    /// `x`: `[B, T]` token ids stored as floats.
+    /// `x`: `[B, T]` token ids.
     fn forward(&self, x: &Tensor) -> Tensor {
-        let ids: Vec<usize> = x.to_vec().iter().map(|&v| v as usize).collect();
-        self.forward_ids(&ids, x.shape()[0], x.shape()[1])
+        self.forward_tokens(x)
     }
     fn named_parameters(&self) -> Vec<(String, Tensor)> {
         let mut v = prefixed("tok_emb", self.tok_emb.named_parameters());
