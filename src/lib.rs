@@ -10,6 +10,7 @@
 //! * [`serialize`] — save / load weights (safetensors, PyTorch/HF compatible)
 //! * [`amp`] — mixed precision: `autocast` (F16/BF16) and `GradScaler`
 //! * [`checkpoint`] — resumable training checkpoints (model + optimizer + RNG)
+//! * [`nn::gpt2`] / [`tokenizer`] / [`generation`] — pretrained GPT-2, BPE, sampling
 //! * [`data`] — `Dataset` / `DataLoader` with multi-threaded prefetching
 //! * [`metrics`] — running averages, accuracy, throughput
 //! * [`backend`] — the device abstraction (CPU today; CUDA and MPS plug in
@@ -29,6 +30,7 @@ pub mod checkpoint;
 pub mod data;
 pub mod device;
 pub mod functional;
+pub mod generation;
 pub mod metrics;
 pub mod nn;
 pub mod ops;
@@ -37,6 +39,7 @@ pub mod rand;
 pub mod serialize;
 pub mod shape;
 pub mod tensor;
+pub mod tokenizer;
 
 pub use backend::DType;
 pub use device::Device;

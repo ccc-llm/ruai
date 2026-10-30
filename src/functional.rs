@@ -130,13 +130,20 @@ pub fn dropout(x: &Tensor, p: f32, training: bool) -> Tensor {
 
 /// Additive causal mask `[T, T]`: 0 on/below the diagonal, -inf-ish above.
 pub fn causal_mask(t: usize, device: crate::Device) -> Tensor {
-    let mut m = vec![0.0; t * t];
-    for i in 0..t {
-        for j in i + 1..t {
-            m[i * t + j] = -1e9;
+    causal_mask_offset(t, 0, device)
+}
+
+/// Causal mask `[Tq, past + Tq]` for `Tq` new queries attending to `past`
+/// cached positions plus themselves: query `i` sees keys `0..=past + i`.
+pub fn causal_mask_offset(tq: usize, past: usize, device: crate::Device) -> Tensor {
+    let tk = past + tq;
+    let mut m = vec![0.0; tq * tk];
+    for i in 0..tq {
+        for j in past + i + 1..tk {
+            m[i * tk + j] = -1e9;
         }
     }
-    Tensor::from_vec(m, &[t, t], device)
+    Tensor::from_vec(m, &[tq, tk], device)
 }
 
 /// Scaled dot-product attention. `q`: `[.., Tq, D]`, `k`, `v`: `[.., Tk, D]`,

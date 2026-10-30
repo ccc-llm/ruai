@@ -13,6 +13,9 @@ fn uniform_param(shape: &[usize], bound: f32, device: Device) -> Tensor {
 pub struct Linear {
     pub weight: Tensor,
     pub bias: Option<Tensor>,
+    /// Weight-only int8 copy `(q [in, out] I8, scale [out] F32)` after
+    /// [`Linear::quantize_int8`]; `weight` is then an empty placeholder.
+    int8: Option<(Tensor, Tensor)>,
 }
 
 impl Linear {
@@ -25,13 +28,49 @@ impl Linear {
         Linear {
             weight: uniform_param(&[in_features, out_features], bound, device),
             bias: bias.then(|| uniform_param(&[out_features], bound, device)),
+            int8: None,
         }
+    }
+
+    /// Wrap existing tensors (`weight` `[in, out]`).
+    pub fn from_weight(weight: Tensor, bias: Option<Tensor>) -> Self {
+        Linear { weight, bias, int8: None }
+    }
+
+    pub fn is_quantized(&self) -> bool {
+        self.int8.is_some()
+    }
+
+    /// Replace the weight by a symmetric per-output-channel int8 copy
+    /// (`scale[j] = max_i |W[i, j]| / 127`) for inference: 4x less weight
+    /// memory and traffic. The f32 weight is released; the layer is no longer
+    /// trainable. The int8 tensors are saved as buffers `weight_int8` / `weight_scale`.
+    pub fn quantize_int8(&mut self) {
+        if self.int8.is_some() {
+            return;
+        }
+        let (k, n) = (self.weight.shape()[0], self.weight.shape()[1]);
+        let dev = self.weight.device();
+        let w = self.weight.to_vec();
+        let mut scale = vec![0f32; n];
+        for row in w.chunks_exact(n) {
+            for (s, &v) in scale.iter_mut().zip(row) {
+                *s = s.max(v.abs());
+            }
+        }
+        scale.iter_mut().for_each(|s| *s = if *s > 0.0 { *s / 127.0 } else { 1.0 });
+        let q: Vec<i8> = w.iter().enumerate().map(|(i, &v)| (v / scale[i % n]).round().clamp(-127.0, 127.0) as i8).collect();
+        self.int8 = Some((Tensor::from_vec_i8(q, &[k, n], dev), Tensor::from_vec(scale, &[n], dev)));
+        self.weight = Tensor::zeros(&[0], dev);
     }
 }
 
 impl Module for Linear {
     fn forward(&self, x: &Tensor) -> Tensor {
-        let y = x.matmul(&self.weight); // half under autocast
+        let y = match &self.int8 {
+            Some((q, s)) => x.matmul_int8(q, s),
+            None => x.matmul(&self.weight), // half under autocast
+        };
         match &self.bias {
             Some(b) => {
                 let b = b.to_dtype(y.dtype());
@@ -41,11 +80,20 @@ impl Module for Linear {
         }
     }
     fn named_parameters(&self) -> Vec<(String, Tensor)> {
-        let mut v = vec![("weight".to_string(), self.weight.clone())];
+        let mut v = Vec::new();
+        if self.int8.is_none() {
+            v.push(("weight".to_string(), self.weight.clone()));
+        }
         if let Some(b) = &self.bias {
             v.push(("bias".to_string(), b.clone()));
         }
         v
+    }
+    fn named_buffers(&self) -> Vec<(String, Tensor)> {
+        match &self.int8 {
+            Some((q, s)) => vec![("weight_int8".to_string(), q.clone()), ("weight_scale".to_string(), s.clone())],
+            None => vec![],
+        }
     }
 }
 

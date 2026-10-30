@@ -87,6 +87,9 @@ fn matmul_variants() {
     gradcheck("mm_2d_nd", &[&[3, 4], &[2, 4, 5]], |x| x[0].matmul(&x[1]));
     gradcheck("mm_batched", &[&[2, 2, 3, 4], &[2, 2, 4, 3]], |x| x[0].matmul(&x[1]));
     gradcheck("mm_transposed", &[&[2, 3, 4], &[2, 5, 4]], |x| x[0].matmul(&x[1].t()));
+    gradcheck("matmul_nt_2d", &[&[3, 4], &[5, 4]], |x| x[0].matmul_nt(&x[1]));
+    gradcheck("matmul_nt_tied_head", &[&[2, 3, 4], &[6, 4]], |x| x[0].matmul_nt(&x[1]));
+    gradcheck("matmul_nt_batched", &[&[2, 3, 4], &[2, 5, 4]], |x| x[0].matmul_nt(&x[1]));
 }
 
 #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "rust-nn"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 description = "A small PyTorch-like neural network engine in Rust (autograd + CNN + Transformer)"
 license = "MIT"
@@ -14,6 +14,8 @@ matrixmultiply = "0.3"
 half = "2"
 # Hugging Face reference implementation of the safetensors format
 safetensors = "0.8"
+# vocab.json of BPE tokenizers (already a dependency of safetensors)
+serde_json = "1"
 
 # CUDA: loaded at runtime (dynamic-loading), so it builds without the CUDA toolkit
 cudarc = { version = "0.19", optional = true, default-features = false, features = ["std", "driver", "nvrtc", "cublas", "f16", "dynamic-loading", "cuda-12080"] }

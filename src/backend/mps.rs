@@ -545,7 +545,12 @@ impl Backend for MpsBackend {
             DType::I32 => self.read::<i32>(s).into_iter().map(|v| v as f32).collect(),
             DType::F16 => self.read::<half::f16>(s).into_iter().map(f32::from).collect(),
             DType::BF16 => self.read::<half::bf16>(s).into_iter().map(f32::from).collect(),
+            DType::I8 => self.read::<i8>(s).into_iter().map(f32::from).collect(),
         }
+    }
+
+    fn from_i8(&self, data: Vec<i8>) -> Storage {
+        wrap(self.upload(data.as_ptr() as *const c_void, data.len(), DType::I8))
     }
 
     fn to_i32(&self, x: &Storage) -> Vec<i32> {
@@ -563,6 +568,7 @@ impl Backend for MpsBackend {
             DType::I32 => (value as i32) as u32,
             DType::F16 => half::f16::from_f32(value).to_bits() as u32,
             DType::BF16 => half::bf16::from_f32(value).to_bits() as u32,
+            DType::I8 => (value as i8) as u8 as u32,
         };
         let n = u(len);
         self.run(
@@ -880,6 +886,31 @@ impl Backend for MpsBackend {
             "layer_norm_backward_rows",
             &[Arg::Buf(st(g)), Arg::Buf(st(xhat)), Arg::Buf(st(rstd)), Arg::Buf(&out), Arg::Bytes(bytes_of(&d))],
             Grid::Rows { rows, tg: row_threads(dim) },
+        );
+        wrap(out)
+    }
+
+    fn matmul_int8(&self, x: &Storage, q: &Storage, scales: &Storage, m: usize, k: usize, n: usize) -> Storage {
+        let dt = st(x).dtype;
+        if m > 16 {
+            // many rows: dequantize once and use the GEMM
+            let w = self.cast(q, dt);
+            let w = self.binary(BinaryOp::Mul, &w, &[k, n], &self.cast(scales, dt), &[n], &[k, n]);
+            let spec = MatmulSpec { batch: 1, m, k, n, trans_a: false, trans_b: false, a_batch_stride: 0, b_batch_stride: 0 };
+            return self.matmul(x, &w, spec);
+        }
+        #[repr(C)]
+        struct Int8Params {
+            m: u32,
+            k: u32,
+            n: u32,
+        }
+        let out = self.alloc(m * n, dt);
+        let p = Int8Params { m: u(m), k: u(k), n: u(n) };
+        self.run(
+            &fk("matmul_int8", dt),
+            &[Arg::Buf(st(x)), Arg::Buf(st(q)), Arg::Buf(st(scales)), Arg::Buf(&out), Arg::Bytes(bytes_of(&p))],
+            Grid::Threads(m * n),
         );
         wrap(out)
     }

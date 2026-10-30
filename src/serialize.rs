@@ -2,8 +2,8 @@
 //!
 //! The default format is [safetensors](https://huggingface.co/docs/safetensors)
 //! (via Hugging Face's reference implementation), so weights interoperate with
-//! PyTorch / Hugging Face: `F32`, `F16`, `BF16` and `I32` are written and
-//! read as-is; `F64` loads as `F32`, and `I64`, `I16`, `I8`, `U8`, `U16`, `U32`,
+//! PyTorch / Hugging Face: `F32`, `F16`, `BF16`, `I32` and `I8` are written
+//! and read as-is; `F64` loads as `F32`, and `I64`, `I16`, `U8`, `U16`, `U32`,
 //! `BOOL` load as `I32`. Files in the legacy `RSNN` format (v0.1-v0.4) can still be loaded.
 
 use crate::backend::DType;
@@ -41,6 +41,7 @@ pub fn to_safetensors_bytes(tensors: &[(String, Tensor)], metadata: Option<Metad
             // exact: the values are already representable in the half format
             DType::F16 => (StDtype::F16, t.to_vec().iter().flat_map(|&v| half::f16::from_f32(v).to_le_bytes()).collect()),
             DType::BF16 => (StDtype::BF16, t.to_vec().iter().flat_map(|&v| half::bf16::from_f32(v).to_le_bytes()).collect()),
+            DType::I8 => (StDtype::I8, t.to_vec_i32().iter().map(|&v| v as i8 as u8).collect()),
         };
         raw.push((name.clone(), dtype, t.shape().to_vec(), bytes));
     }
@@ -91,7 +92,7 @@ fn view_to_tensor(name: &str, v: &TensorView) -> io::Result<Tensor> {
         }
         StDtype::I16 => Tensor::from_vec_i32(words(2).map(|c| i16::from_le_bytes([c[0], c[1]]) as i32).collect(), &shape, Device::Cpu),
         StDtype::U16 => Tensor::from_vec_i32(words(2).map(|c| u16::from_le_bytes([c[0], c[1]]) as i32).collect(), &shape, Device::Cpu),
-        StDtype::I8 => Tensor::from_vec_i32(b.iter().map(|&x| x as i8 as i32).collect(), &shape, Device::Cpu),
+        StDtype::I8 => Tensor::from_vec_i8(b.iter().map(|&x| x as i8).collect(), &shape, Device::Cpu),
         StDtype::U8 | StDtype::BOOL => Tensor::from_vec_i32(b.iter().map(|&x| x as i32).collect(), &shape, Device::Cpu),
         StDtype::U32 => {
             let v = words(4)

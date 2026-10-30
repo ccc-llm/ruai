@@ -37,18 +37,21 @@ pub enum DType {
     BF16,
     /// 32-bit signed int: indices (embedding ids, class targets, argmax results).
     I32,
+    /// 8-bit signed int: quantized weights (storage only; see `matmul_int8`).
+    I8,
 }
 
 impl DType {
     pub fn size_in_bytes(&self) -> usize {
         match self {
+            DType::I8 => 1,
             DType::F16 | DType::BF16 => 2,
             DType::F32 | DType::I32 => 4,
         }
     }
 
     pub fn is_float(&self) -> bool {
-        !matches!(self, DType::I32)
+        !matches!(self, DType::I32 | DType::I8)
     }
 
     pub fn is_half(&self) -> bool {
@@ -80,6 +83,7 @@ impl fmt::Display for DType {
             DType::F16 => write!(f, "f16"),
             DType::BF16 => write!(f, "bf16"),
             DType::I32 => write!(f, "i32"),
+            DType::I8 => write!(f, "i8"),
         }
     }
 }
@@ -91,6 +95,7 @@ pub enum CpuStorage {
     F16(Arc<Vec<half::f16>>),
     BF16(Arc<Vec<half::bf16>>),
     I32(Arc<Vec<i32>>),
+    I8(Arc<Vec<i8>>),
 }
 
 /// Device-resident buffer. Cheap to clone (reference counted); storages are
@@ -121,6 +126,7 @@ impl Storage {
             Storage::Cpu(CpuStorage::F16(_)) => DType::F16,
             Storage::Cpu(CpuStorage::BF16(_)) => DType::BF16,
             Storage::Cpu(CpuStorage::I32(_)) => DType::I32,
+            Storage::Cpu(CpuStorage::I8(_)) => DType::I8,
             #[cfg(feature = "cuda")]
             Storage::Cuda(s) => s.dtype,
             #[cfg(feature = "mps")]
@@ -134,6 +140,7 @@ impl Storage {
             Storage::Cpu(CpuStorage::F16(v)) => v.len(),
             Storage::Cpu(CpuStorage::BF16(v)) => v.len(),
             Storage::Cpu(CpuStorage::I32(v)) => v.len(),
+            Storage::Cpu(CpuStorage::I8(v)) => v.len(),
             #[cfg(feature = "cuda")]
             Storage::Cuda(s) => s.len,
             #[cfg(feature = "mps")]
@@ -168,6 +175,7 @@ impl Storage {
         match self.dtype() {
             DType::F32 => be.from_f32(self.to_vec()),
             DType::I32 => be.from_i32(self.to_vec_i32()),
+            DType::I8 => be.cast(&be.from_i32(self.to_vec_i32()), DType::I8),
             // through f32 on the host (exact: every half value is an f32)
             d => be.cast(&be.from_f32(self.to_vec()), d),
         }
@@ -304,6 +312,10 @@ pub trait Backend: Send + Sync {
     /// Copy to host as i32 (any dtype).
     fn to_i32(&self, x: &Storage) -> Vec<i32>;
     fn full(&self, len: usize, value: f32, dtype: DType) -> Storage;
+    /// Upload int8 data (default: through i32 and a cast).
+    fn from_i8(&self, data: Vec<i8>) -> Storage {
+        self.cast(&self.from_i32(data.into_iter().map(i32::from).collect()), DType::I8)
+    }
     fn cast(&self, x: &Storage, dtype: DType) -> Storage;
 
     // ---- elementwise ----
@@ -424,6 +436,19 @@ pub trait Backend: Send + Sync {
         let xm = self.binary(BinaryOp::Mul, xhat, &shape, &mgx, &keep, &shape);
         let t = self.binary(BinaryOp::Sub, &t, &shape, &xm, &shape, &shape);
         self.binary(BinaryOp::Mul, &t, &shape, rstd, &keep, &shape)
+    }
+
+    /// Weight-only int8 matmul: `x (m x k) @ (q (k x n, I8) * scale[n])`,
+    /// output in `x`'s dtype. `scales` is `F32`. The default dequantizes and
+    /// calls `matmul`; backends override it to read the int8 weights directly
+    /// (a quarter of the memory traffic, which dominates token-by-token decoding).
+    fn matmul_int8(&self, x: &Storage, q: &Storage, scales: &Storage, m: usize, k: usize, n: usize) -> Storage {
+        let dt = x.dtype();
+        let w = self.cast(q, dt);
+        let sc = self.cast(scales, dt);
+        let w = self.binary(BinaryOp::Mul, &w, &[k, n], &sc, &[n], &[k, n]);
+        let spec = MatmulSpec { batch: 1, m, k, n, trans_a: false, trans_b: false, a_batch_stride: 0, b_batch_stride: 0 };
+        self.matmul(x, &w, spec)
     }
 
     /// One Adam/AdamW step on a flat parameter: returns `(new_param, new_m, new_v)`.

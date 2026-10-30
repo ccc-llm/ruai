@@ -31,6 +31,7 @@ enum Buf {
     F16(Arc<CudaSlice<half::f16>>),
     BF16(Arc<CudaSlice<half::bf16>>),
     I32(Arc<CudaSlice<i32>>),
+    I8(Arc<CudaSlice<i8>>),
 }
 
 /// Device buffer on one GPU.
@@ -274,6 +275,7 @@ impl CudaBackend {
                 DType::F16 => Buf::F16(Arc::new(self.stream.alloc::<half::f16>(n).expect("CUDA alloc failed"))),
                 DType::BF16 => Buf::BF16(Arc::new(self.stream.alloc::<half::bf16>(n).expect("CUDA alloc failed"))),
                 DType::I32 => Buf::I32(Arc::new(self.stream.alloc::<i32>(n).expect("CUDA alloc failed"))),
+                DType::I8 => Buf::I8(Arc::new(self.stream.alloc::<i8>(n).expect("CUDA alloc failed"))),
             }
         };
         CudaStorage { buf, ordinal: self.ordinal, len, dtype }
@@ -285,6 +287,7 @@ impl CudaBackend {
             Buf::F16(b) => b.device_ptr(&self.stream).0,
             Buf::BF16(b) => b.device_ptr(&self.stream).0,
             Buf::I32(b) => b.device_ptr(&self.stream).0,
+            Buf::I8(b) => b.device_ptr(&self.stream).0,
         }
     }
 
@@ -403,6 +406,7 @@ impl Backend for CudaBackend {
             Buf::F16(b) => self.stream.clone_dtoh(b.as_ref()).expect(dl).into_iter().map(f32::from).collect(),
             Buf::BF16(b) => self.stream.clone_dtoh(b.as_ref()).expect(dl).into_iter().map(f32::from).collect(),
             Buf::I32(b) => self.stream.clone_dtoh(b.as_ref()).expect(dl).into_iter().map(|v| v as f32).collect(),
+            Buf::I8(b) => self.stream.clone_dtoh(b.as_ref()).expect(dl).into_iter().map(f32::from).collect(),
         };
         v.truncate(s.len);
         v
@@ -425,6 +429,7 @@ impl Backend for CudaBackend {
             DType::I32 => (value as i32) as u32,
             DType::F16 => half::f16::from_f32(value).to_bits() as u32,
             DType::BF16 => half::bf16::from_f32(value).to_bits() as u32,
+            DType::I8 => (value as i8) as u8 as u32,
         };
         let (o, n) = (self.ptr(&out), u(len));
         launch!(self, copy_kernel("fill", dtype), threads(len); &o, &n, &bits);
@@ -557,7 +562,7 @@ impl Backend for CudaBackend {
             DType::F32 => gemm!(f32, 1.0f32, 0.0f32, F32),
             DType::F16 => gemm!(half::f16, half::f16::ONE, half::f16::ZERO, F16),
             DType::BF16 => gemm!(half::bf16, half::bf16::ONE, half::bf16::ZERO, BF16),
-            DType::I32 => panic!("CUDA matmul needs float inputs"),
+            DType::I32 | DType::I8 => panic!("CUDA matmul needs float inputs"),
         };
         wrap(CudaStorage { buf, ordinal: self.ordinal, len: batch * m * n, dtype: dt })
     }
@@ -720,6 +725,37 @@ impl Backend for CudaBackend {
         let out = self.alloc(r * dim, DType::F32);
         let (gp, hp, rp, op, d) = (self.ptr(st(g)), self.ptr(st(xhat)), self.ptr(st(rstd)), self.ptr(&out), u(dim));
         launch!(self, "layer_norm_backward_rows", rows(r, dim); &gp, &hp, &rp, &op, &d);
+        wrap(out)
+    }
+
+    fn from_i8(&self, data: Vec<i8>) -> Storage {
+        let len = data.len();
+        let host = if data.is_empty() { vec![0] } else { data };
+        let s = self.stream.clone_htod(&host).expect("CUDA upload failed");
+        wrap(CudaStorage { buf: Buf::I8(Arc::new(s)), ordinal: self.ordinal, len, dtype: DType::I8 })
+    }
+
+    fn matmul_int8(&self, x: &Storage, q: &Storage, scales: &Storage, m: usize, k: usize, n: usize) -> Storage {
+        let dt = st(x).dtype;
+        if m > 16 {
+            // many rows: dequantize once and use cuBLAS
+            let w = self.cast(q, dt);
+            let w = self.binary(BinaryOp::Mul, &w, &[k, n], &self.cast(scales, dt), &[n], &[k, n]);
+            let spec = MatmulSpec { batch: 1, m, k, n, trans_a: false, trans_b: false, a_batch_stride: 0, b_batch_stride: 0 };
+            return self.matmul(x, &w, spec);
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Int8Params {
+            m: u32,
+            k: u32,
+            n: u32,
+        }
+        unsafe impl DeviceRepr for Int8Params {}
+        let out = self.alloc(m * n, dt);
+        let p = Int8Params { m: u(m), k: u(k), n: u(n) };
+        let (xp, qp, sp, op) = (self.ptr(st(x)), self.ptr(st(q)), self.ptr(st(scales)), self.ptr(&out));
+        launch!(self, fk("matmul_int8", dt), threads(m * n); &xp, &qp, &sp, &op, &p);
         wrap(out)
     }
 

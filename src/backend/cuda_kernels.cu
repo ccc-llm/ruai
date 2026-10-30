@@ -19,6 +19,7 @@ struct bf16_t { u16 bits; };
 
 __device__ __forceinline__ float ld(float v) { return v; }
 __device__ __forceinline__ float ld(int v) { return (float)v; }
+__device__ __forceinline__ float ld(signed char v) { return (float)v; }
 __device__ __forceinline__ float ld(f16_t v) {
     float f;
     asm("cvt.f32.f16 %0, %1;" : "=f"(f) : "h"(v.bits));
@@ -29,6 +30,7 @@ __device__ __forceinline__ float ld(bf16_t v) { return __int_as_float(((u32)v.bi
 template <typename T> __device__ __forceinline__ T st(float f);
 template <> __device__ __forceinline__ float st<float>(float f) { return f; }
 template <> __device__ __forceinline__ int st<int>(float f) { return (int)f; }
+template <> __device__ __forceinline__ signed char st<signed char>(float f) { return (signed char)fminf(fmaxf(f, -128.0f), 127.0f); }
 template <> __device__ __forceinline__ f16_t st<f16_t>(float f) {
     f16_t r;
     asm("cvt.rn.f16.f32 %0, %1;" : "=h"(r.bits) : "f"(f));
@@ -59,6 +61,7 @@ template <typename W> __device__ void fill_impl(W* out, u32 n, u32 bits) {
 }
 extern "C" __global__ void fill_u32(u32* out, u32 n, u32 bits) { fill_impl<u32>(out, n, bits); }
 extern "C" __global__ void fill_u16(u16* out, u32 n, u32 bits) { fill_impl<u16>(out, n, bits); }
+extern "C" __global__ void fill_u8(unsigned char* out, u32 n, u32 bits) { fill_impl<unsigned char>(out, n, bits); }
 
 template <typename S, typename D> __device__ void cast_impl(const S* x, D* y, u32 n) {
     u32 i = gid();
@@ -78,6 +81,14 @@ CAST(bf16, bf16_t, i32, int)
 CAST(i32, int, f32, float)
 CAST(i32, int, f16, f16_t)
 CAST(i32, int, bf16, bf16_t)
+CAST(i8, signed char, f32, float)
+CAST(i8, signed char, f16, f16_t)
+CAST(i8, signed char, bf16, bf16_t)
+CAST(i8, signed char, i32, int)
+CAST(f32, float, i8, signed char)
+CAST(f16, f16_t, i8, signed char)
+CAST(bf16, bf16_t, i8, signed char)
+CAST(i32, int, i8, signed char)
 
 // ---------------------------------------------------------------- elementwise
 
@@ -185,6 +196,9 @@ template <typename W> __device__ void strided_copy_impl(const W* x, W* out, cons
 }
 extern "C" __global__ void strided_copy_u32(const u32* x, u32* out, CopyParams p) { strided_copy_impl<u32>(x, out, p); }
 extern "C" __global__ void strided_copy_u16(const u16* x, u16* out, CopyParams p) { strided_copy_impl<u16>(x, out, p); }
+extern "C" __global__ void strided_copy_u8(const unsigned char* x, unsigned char* out, CopyParams p) {
+    strided_copy_impl<unsigned char>(x, out, p);
+}
 
 struct CatParams {
     u32 n;
@@ -201,6 +215,9 @@ template <typename W> __device__ void cat_copy_impl(const W* x, W* out, const Ca
 }
 extern "C" __global__ void cat_copy_u32(const u32* x, u32* out, CatParams p) { cat_copy_impl<u32>(x, out, p); }
 extern "C" __global__ void cat_copy_u16(const u16* x, u16* out, CatParams p) { cat_copy_impl<u16>(x, out, p); }
+extern "C" __global__ void cat_copy_u8(const unsigned char* x, unsigned char* out, CatParams p) {
+    cat_copy_impl<unsigned char>(x, out, p);
+}
 
 template <typename T> __device__ void where_impl(const T* c, const T* a, const T* b, T* out, u32 n) {
     u32 i = gid();
@@ -476,3 +493,26 @@ template <typename T> __device__ void col2im_impl(const T* cols, T* x, const Con
 #define MAKE_COL2IM(suf, T) \
     extern "C" __global__ void col2im_##suf(const T* cols, T* x, ConvParams g) { col2im_impl<T>(cols, x, g); }
 FOR_FLOATS(MAKE_COL2IM)
+
+// ---------------------------------------------------------------- int8 weights
+
+struct Int8Params {
+    u32 m, k, n;
+};
+
+// out[i, j] = scale[j] * sum_l x[i, l] * q[l, j]; one thread per output
+// (coalesced weight reads across j; suits small m / decoding).
+template <typename T> __device__ void matmul_int8_impl(const T* x, const signed char* q, const float* sc, T* out, const Int8Params& p) {
+    u32 t = gid();
+    if (t >= p.m * p.n) return;
+    u32 i = t / p.n, j = t % p.n;
+    const T* xr = x + (u64)i * p.k;
+    float acc = 0.0f;
+    for (u32 l = 0; l < p.k; ++l) acc += ld(xr[l]) * (float)q[(u64)l * p.n + j];
+    out[t] = st<T>(acc * sc[j]);
+}
+#define MAKE_MATMUL_INT8(suf, T)                                                                                \
+    extern "C" __global__ void matmul_int8_##suf(const T* x, const signed char* q, const float* sc, T* out, Int8Params p) { \
+        matmul_int8_impl<T>(x, q, sc, out, p);                                                                  \
+    }
+FOR_FLOATS(MAKE_MATMUL_INT8)

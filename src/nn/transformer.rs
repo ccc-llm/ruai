@@ -5,6 +5,62 @@ use crate::functional as F;
 use crate::tensor::Tensor;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Cached keys and values of one attention layer, `[B, H, T_past, D/H]`.
+#[derive(Clone, Default)]
+pub struct LayerKv {
+    pub k: Option<Tensor>,
+    pub v: Option<Tensor>,
+}
+
+impl LayerKv {
+    /// Number of cached positions.
+    pub fn len(&self) -> usize {
+        self.k.as_ref().map_or(0, |k| k.dim(2))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Append new keys/values `[B, H, T_new, D/H]`; returns all of them.
+    pub fn append(&mut self, k: Tensor, v: Tensor) -> (Tensor, Tensor) {
+        let (k, v) = match (self.k.take(), self.v.take()) {
+            (Some(pk), Some(pv)) => (Tensor::cat(&[&pk, &k], 2), Tensor::cat(&[&pv, &v], 2)),
+            _ => (k, v),
+        };
+        self.k = Some(k.clone());
+        self.v = Some(v.clone());
+        (k, v)
+    }
+}
+
+/// Key/value cache for incremental (token-by-token) decoding: each new token
+/// only computes its own query/key/value and attends to the cached ones, so
+/// generating `n` tokens costs O(n) layer evaluations instead of O(n²).
+#[derive(Clone, Default)]
+pub struct KvCache {
+    pub layers: Vec<LayerKv>,
+}
+
+impl KvCache {
+    pub fn new(n_layers: usize) -> Self {
+        KvCache { layers: vec![LayerKv::default(); n_layers] }
+    }
+
+    /// Number of cached positions.
+    pub fn len(&self) -> usize {
+        self.layers.first().map_or(0, LayerKv::len)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn clear(&mut self) {
+        self.layers.iter_mut().for_each(|l| *l = LayerKv::default());
+    }
+}
+
 /// Multi-head attention over `[B, T, D]` inputs.
 pub struct MultiHeadAttention {
     pub wq: Linear,
@@ -49,6 +105,20 @@ impl MultiHeadAttention {
         let o = o.permute(&[0, 2, 1, 3]).reshape(&[b, tq, d]);
         self.wo.forward(&o)
     }
+
+    /// Causal self-attention of new positions `x` `[B, T_new, D]` against
+    /// the cached ones plus themselves; appends the new keys/values to `kv`.
+    pub fn attend_cached(&self, x: &Tensor, kv: &mut LayerKv) -> Tensor {
+        let (b, tq, d) = (x.shape()[0], x.shape()[1], x.shape()[2]);
+        let past = kv.len();
+        let q = self.split_heads(&self.wq.forward(x));
+        let (k, v) = kv.append(self.split_heads(&self.wk.forward(x)), self.split_heads(&self.wv.forward(x)));
+        // a single new query may see every key; otherwise mask the future
+        let mask = (tq > 1).then(|| F::causal_mask_offset(tq, past, x.device()));
+        let training = self.training.load(Ordering::Relaxed);
+        let o = F::scaled_dot_product_attention(&q, &k, &v, mask.as_ref(), self.dropout, training);
+        self.wo.forward(&o.permute(&[0, 2, 1, 3]).reshape(&[b, tq, d]))
+    }
 }
 
 impl Module for MultiHeadAttention {
@@ -92,6 +162,14 @@ impl TransformerBlock {
             dropout,
             training: AtomicBool::new(true),
         }
+    }
+
+    /// Causal forward of new positions using (and extending) a KV cache.
+    pub fn forward_cached(&self, x: &Tensor, kv: &mut LayerKv) -> Tensor {
+        let training = self.training.load(Ordering::Relaxed);
+        let x = x + F::dropout(&self.attn.attend_cached(&self.ln1.forward(x), kv), self.dropout, training);
+        let h = self.ln2.forward(&x);
+        &x + F::dropout(&self.ffn.forward(&h), self.dropout, training)
     }
 
     /// Forward with an explicit additive attention mask (overrides `causal`).
@@ -170,9 +248,7 @@ impl GPT {
     pub fn forward_tokens(&self, tokens: &Tensor) -> Tensor {
         let t = tokens.shape()[1];
         assert!(t <= self.max_len, "sequence length {t} > max_len {}", self.max_len);
-        let tok = self.tok_emb.forward(tokens);
-        let pos = self.pos_emb.forward(&Tensor::arange(t, tokens.device()).to_dtype(crate::DType::I32));
-        let mut x = tok + pos;
+        let mut x = self.embed(tokens, 0);
         let mask = F::causal_mask(t, x.device());
         for blk in &self.blocks {
             x = blk.forward_masked(&x, Some(&mask));
@@ -180,9 +256,59 @@ impl GPT {
         self.head.forward(&self.ln_f.forward(&x))
     }
 
-    /// Autoregressive sampling of `n` new tokens after `prompt`.
-    /// `temperature <= 0` means greedy decoding.
+    /// Token + position embeddings for positions `start..start + T`.
+    fn embed(&self, tokens: &Tensor, start: usize) -> Tensor {
+        let t = tokens.shape()[1];
+        let pos = Tensor::from_indices(&(start..start + t).collect::<Vec<_>>(), &[t], tokens.device());
+        self.tok_emb.forward(tokens) + self.pos_emb.forward(&pos)
+    }
+
+    /// Logits `[B, T_new, vocab]` for new tokens `[B, T_new]` following the
+    /// `cache.len()` positions already in `cache` (which is extended).
+    pub fn forward_cached(&self, tokens: &Tensor, cache: &mut KvCache) -> Tensor {
+        if cache.layers.len() != self.blocks.len() {
+            *cache = KvCache::new(self.blocks.len());
+        }
+        let start = cache.len();
+        assert!(start + tokens.shape()[1] <= self.max_len, "KV cache would exceed max_len {}", self.max_len);
+        let mut x = self.embed(tokens, start);
+        for (blk, kv) in self.blocks.iter().zip(cache.layers.iter_mut()) {
+            x = blk.forward_cached(&x, kv);
+        }
+        self.head.forward(&self.ln_f.forward(&x))
+    }
+
+    /// Autoregressive sampling of `n` new tokens after `prompt` with a KV
+    /// cache. `temperature <= 0` means greedy decoding. Past `max_len`
+    /// tokens the context window slides over the last `max_len` tokens
+    /// (re-encoded without the cache), exactly like [`GPT::generate_uncached`].
     pub fn generate(&self, prompt: &[usize], n: usize, temperature: f32) -> Vec<usize> {
+        let mut sampler = crate::generation::Sampler::new(temperature, 0, 1.0, crate::rand::randint(usize::MAX) as u64);
+        let dev = self.head.weight.device();
+        let mut ids = prompt.to_vec();
+        let mut cache = KvCache::new(self.blocks.len());
+        crate::no_grad(|| {
+            let mut pending: Vec<usize> = ids.clone();
+            for _ in 0..n {
+                if cache.len() + pending.len() > self.max_len {
+                    // slide the window: re-encode the most recent max_len tokens
+                    cache.clear();
+                    pending = ids[ids.len() - self.max_len..].to_vec();
+                }
+                let logits = self.forward_cached(&Tensor::from_indices(&pending, &[1, pending.len()], dev), &mut cache);
+                let v = logits.dim(-1);
+                let last = logits.narrow(1, pending.len() - 1, 1).reshape(&[v]).to_vec();
+                let next = sampler.sample(&last);
+                ids.push(next);
+                pending = vec![next];
+            }
+        });
+        ids
+    }
+
+    /// Like [`GPT::generate`] but recomputes the whole context every step
+    /// (no KV cache); for reference and testing.
+    pub fn generate_uncached(&self, prompt: &[usize], n: usize) -> Vec<usize> {
         let mut ids = prompt.to_vec();
         crate::no_grad(|| {
             for _ in 0..n {
@@ -191,14 +317,7 @@ impl GPT {
                 let logits = self.forward_ids(ctx, 1, ctx.len());
                 let v = logits.dim(-1);
                 let last = logits.reshape(&[ctx.len(), v]).to_vec()[(ctx.len() - 1) * v..].to_vec();
-                let next = if temperature <= 0.0 {
-                    last.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0
-                } else {
-                    let m = last.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                    let p: Vec<f32> = last.iter().map(|&l| ((l - m) / temperature).exp()).collect();
-                    crate::rand::sample_categorical(&p)
-                };
-                ids.push(next);
+                ids.push(crate::generation::argmax(&last));
             }
         });
         ids

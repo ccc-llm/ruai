@@ -157,6 +157,12 @@ impl Tensor {
         Self::from_storage(backend_for(device).from_i32(data), shape.to_vec())
     }
 
+    /// An `I8` tensor (e.g. quantized weights).
+    pub fn from_vec_i8(data: Vec<i8>, shape: &[usize], device: Device) -> Tensor {
+        assert_eq!(data.len(), numel(shape), "data length {} != numel of {shape:?}", data.len());
+        Self::from_storage(backend_for(device).from_i8(data), shape.to_vec())
+    }
+
     /// An `I32` index tensor from `usize` indices.
     pub fn from_indices(idx: &[usize], shape: &[usize], device: Device) -> Tensor {
         Self::from_vec_i32(idx.iter().map(|&i| i as i32).collect(), shape, device)

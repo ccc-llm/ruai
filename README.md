@@ -22,6 +22,12 @@ cargo run --release --features mps --example bench mps
 # NVIDIA GPU（CUDA）：加上 --features cuda
 cargo run --release --features cuda --example gpt -- --device cuda
 
+# 預訓練 GPT-2（Hugging Face 權重）：下載一次後即可生成文字
+./scripts/download_gpt2.sh
+cargo run --release --example gpt2 -- --prompt "The meaning of life is"
+cargo run --release --example gpt2 -- --int8                  # int8 權重
+cargo run --release --features mps --example gpt2 -- --device mps
+
 # 混合精度訓練（autocast + f32 主權重；f16 會自動做 loss scaling）
 cargo run --release --features mps --example gpt -- --device mps --amp f16
 ```
@@ -87,6 +93,23 @@ for epoch in state.epoch..epochs {
 }
 ```
 
+### 預訓練 GPT-2
+
+```rust
+use rustnn::nn::gpt2::GPT2;
+use rustnn::tokenizer::Gpt2Tokenizer;
+use rustnn::generation::Sampler;
+
+let tok = Gpt2Tokenizer::from_dir("data/gpt2")?;
+let mut model = GPT2::from_pretrained("data/gpt2", Device::Cpu)?;  // 直接讀 HF 的 model.safetensors
+model.quantize_int8();                                              // 可選：int8 權重
+let mut sampler = Sampler::new(0.8, 40, 0.95, 42);                  // temperature, top-k, top-p, seed
+let ids = model.generate(&tok.encode("Once upon a time"), 50, &mut sampler);  // 使用 KV cache
+println!("{}", tok.decode(&ids));
+```
+
+> ⚠️ 尚未以真實 GPT-2 權重驗證：載入、KV cache、tokenizer 與 int8 都已用合成資料測試（見下方「測試」），但還沒有對官方權重執行過。下載後執行 `cargo test --release --test inference` 會自動跑兩個黃金值測試：tokenizer（`"The dog"` → `[464, 3290]`）與 greedy 生成要與 Hugging Face transformers 的 GPT-2 整合測試（`test_lm_generate_gpt2`）結果一致。該期望值是依記憶寫入的，若不符請先核對期望值本身。
+
 ### 混合精度（AMP）
 
 ```rust
@@ -113,6 +136,9 @@ autocast 規則（同 PyTorch）：matmul / Linear / Conv 以半精度執行；s
 | 類別 | 內容 |
 |---|---|
 | DType | `F32`、`F16`、`BF16`（皆可微分；半精度運算內部以 f32 計算後再捨入）、`I32`（索引：token id、類別標籤、argmax 結果，存在裝置上）；可微分的 `to_dtype`、型別提升規則 |
+| 推理 | **KV cache**（逐 token 解碼為 O(n)，支援 prefill + 逐步解碼、超過上下文長度時滑動視窗）、`Sampler`（greedy / temperature / top-k / top-p，可設種子）、`matmul_nt`（不複製的轉置乘法，用於 tied head）|
+| GPT-2 | `nn::gpt2::GPT2`：參數名稱與 Hugging Face `GPT2LMHeadModel` 相同、HF 的 Conv1D 版面 `[in, out]` 與本專案 `Linear` 一致，`model.safetensors` 不需轉換即可載入；支援 small/medium/large/xl；`tokenizer::Gpt2Tokenizer`（byte-level BPE，手寫實作 GPT-2 的前處理 regex）|
+| int8 | `DType::I8`、`Linear::quantize_int8`（逐輸出通道對稱量化）、`GPT2::quantize_int8`；`matmul_int8` 原語在 CPU / MPS / CUDA 都有直接讀 int8 的融合 kernel（記憶體流量為 f32 的 1/4），大 batch 時改為反量化 + GEMM |
 | 混合精度 | `autocast(F16 \| BF16, ..)`、`GradScaler`（動態 loss scaling、溢位跳步、狀態可存進 checkpoint）、`Module::to_dtype` |
 | Tensor | 任意維度、NumPy 廣播、`reshape/view/permute/transpose/unsqueeze/flatten/expand`、運算子多載 (`&a + &b`, `a * 2.0`) |
 | Autograd | 動態計算圖、拓撲排序反向傳播、梯度累加、`no_grad()` / `NoGradGuard`、`detach()` |
@@ -230,6 +256,8 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - `tests/data.rs`：DataLoader 順序、打亂是排列且可重現、不同 worker 數結果相同、確實平行、提早中斷、worker panic、collate；排程數值；指標
 - `tests/amp.rs`：半精度數值與型別提升、可微分轉型、autocast 規則、AMP 梯度與 f32 梯度一致（F16 誤差 < 2%、BF16 < 8%）、GradScaler（還原尺度、溢位跳步、成長、狀態保存）、F32/F16/BF16 訓練都能收斂、半精度 CNN 推理、safetensors 保留半精度型別
 - `tests/devices.rs` 另含所有原語的 F16/BF16 版本在 GPU 與 CPU 間的對照（含各種轉置與廣播的半精度 matmul）
+- `tests/inference.rs`：KV cache 逐步／分段 prefill 的 logits 與完整前向一致、有無 cache 的生成結果相同（含滑動視窗）、GPT-2 的 HF 參數名稱與 checkpoint 載入（含 `transformer.` 前綴與 attention mask buffer）、int8 精度、BPE（自建詞表的合併與任意 Unicode 位元組級來回）、前處理 regex 的邊界情況、取樣器分佈與可重現性；**有 `data/gpt2` 時**另跑 HF 官方 GPT-2 的黃金值測試
+- `tests/devices.rs` 另含 int8 matmul（融合 kernel 與 GEMM 兩條路徑）與 i8 轉型在 GPU 與 CPU 間的對照
 - `tests/training.rs`：MLP 學會 XOR、CNN（含 BatchNorm）收斂、GPT 記住序列、存檔/載入 round-trip
 
 ## 版本規劃
@@ -242,7 +270,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v0.4 | CUDA 後端（cuBLAS + NVRTC）、多卡 | ✅（待實機驗證） |
 | v0.5 | DataLoader、完整 checkpoint（含優化器狀態與 RNG）、safetensors、LR 排程、梯度累積、指標 | ✅ |
 | v0.6 | f16 / bf16（CPU / MPS / CUDA）、autocast、GradScaler、半精度推理 | ✅ |
-| v0.7 | KV cache、載入 GPT-2 官方權重、int8 量化 | |
+| v0.7 | KV cache、載入 GPT-2 官方權重、BPE tokenizer、取樣、int8 量化 | ✅（GPT-2 尚未以真實權重驗證） |
 | v0.8 | ResNet、ViT、encoder-decoder、RMSNorm/RoPE/SwiGLU | |
 | v1.0 | API 穩定、文件、發布 crates.io | |
 
@@ -254,4 +282,5 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - attention 尚未融合成單一 kernel（flash-attention 式的融合排在之後的版本）
 - MPS：小運算受派送開銷限制
 - CUDA 後端尚未在 NVIDIA 實機上執行過（見上方說明與 `scripts/verify_cuda.sh`）
+- GPT-2 尚未以真實權重驗證（見上方說明與 `scripts/download_gpt2.sh`）
 - MPS / CUDA：張量維度上限 8；元素數必須能放進 u32

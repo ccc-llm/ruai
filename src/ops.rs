@@ -493,13 +493,42 @@ impl Tensor {
         Tensor::from_storage(s, out_shape)
     }
 
+    /// Operands of a matmul after autocast / dtype promotion.
+    fn matmul_operands(&self, other: &Tensor) -> (Tensor, Tensor) {
+        match autocast_dtype() {
+            Some(d) if self.dtype().is_float() && other.dtype().is_float() => (self.to_dtype(d), other.to_dtype(d)),
+            _ => promoted(self, other),
+        }
+    }
+
+    /// `self @ otherᵀ` (transpose of the last two dims of `other`) without
+    /// materializing the transpose, e.g. a tied output head
+    /// `hidden.matmul_nt(&embedding_table)`.
+    pub fn matmul_nt(&self, other: &Tensor) -> Tensor {
+        let (a, b) = self.matmul_operands(other);
+        let out = a.matmul_raw(&b, false, true);
+        Tensor::from_op(out.storage(), out.shape().to_vec(), vec![a.clone(), b.clone()], "matmul_nt", move |g| {
+            // out = a bᵀ:  da = g b,  db = gᵀ a
+            let ga = need(&a).then(|| g.matmul_raw(&b, false, false).sum_to(a.shape()));
+            let gb = need(&b).then(|| {
+                if b.rank() == 2 && a.rank() > 2 {
+                    let k = a.dim(-1);
+                    let n = g.dim(-1);
+                    let af = a.reshape(&[a.numel() / k, k]);
+                    let gf = g.reshape(&[g.numel() / n, n]);
+                    gf.matmul_raw(&af, true, false)
+                } else {
+                    g.matmul_raw(&a, true, false).sum_to(b.shape())
+                }
+            });
+            vec![ga, gb]
+        })
+    }
+
     /// Matrix product of the last two dims, batched over leading dims.
     /// Inside [`crate::autocast`] both operands are cast to the autocast dtype.
     pub fn matmul(&self, other: &Tensor) -> Tensor {
-        let (a, b) = match autocast_dtype() {
-            Some(d) if self.dtype().is_float() && other.dtype().is_float() => (self.to_dtype(d), other.to_dtype(d)),
-            _ => promoted(self, other),
-        };
+        let (a, b) = self.matmul_operands(other);
         let out = a.matmul_raw(&b, false, false);
         Tensor::from_op(out.storage(), out.shape().to_vec(), vec![a.clone(), b.clone()], "matmul", move |g| {
             let ga = need(&a).then(|| g.matmul_raw(&b, false, true).sum_to(a.shape()));
@@ -516,6 +545,23 @@ impl Tensor {
             });
             vec![ga, gb]
         })
+    }
+
+    /// Weight-only int8 matmul `self @ (q * scales)` for inference:
+    /// `self` `[..., k]` (float), `q` `[k, n]` (`I8`), `scales` `[n]` (`F32`).
+    /// Not differentiable.
+    pub fn matmul_int8(&self, q: &Tensor, scales: &Tensor) -> Tensor {
+        assert_float(self, "matmul_int8");
+        assert_eq!(q.dtype(), DType::I8, "matmul_int8: weights must be I8");
+        assert_eq!(q.rank(), 2, "matmul_int8: weights must be [k, n]");
+        let (k, n) = (q.shape()[0], q.shape()[1]);
+        assert_eq!(self.dim(-1), k, "matmul_int8: inner dims differ ({:?} @ {:?})", self.shape(), q.shape());
+        assert_eq!(scales.shape(), &[n], "matmul_int8: scales must be [n]");
+        let m = self.numel() / k.max(1);
+        let s = self.backend().matmul_int8(&self.storage(), &q.storage(), &scales.to_dtype(DType::F32).storage(), m, k, n);
+        let mut shape = self.shape().to_vec();
+        *shape.last_mut().unwrap() = n;
+        Tensor::from_storage(s, shape)
     }
 
     // ------------------------------------------------------------------

@@ -429,3 +429,38 @@ fn half_precision_matmul() {
         }
     });
 }
+
+#[test]
+fn int8_matmul() {
+    rand::manual_seed(9);
+    for_each_gpu(|p, _| {
+        for d in [DType::F32, DType::F16, DType::BF16] {
+            // m <= 16 takes the fused kernel, larger m the dequantize + GEMM path
+            for &(m, k, n) in &[(1, 64, 300), (5, 33, 70), (40, 32, 48)] {
+                let (xc, xg) = randn_as(p, m * k, d);
+                let q: Vec<i8> = (0..k * n).map(|i| ((i * 37 % 255) as i32 - 127) as i8).collect();
+                let s: Vec<f32> = (0..n).map(|j| 0.001 + j as f32 * 1e-5).collect();
+                let (qc, qg) = (p.cpu.from_i8(q.clone()), p.gpu.from_i8(q));
+                let (sc, sg) = (p.cpu.from_f32(s.clone()), p.gpu.from_f32(s));
+                assert_eq!(qg.dtype(), DType::I8);
+                same("i8 roundtrip", &qc, &qg, 0.0);
+                let tol = if d == DType::F32 { 1e-4 } else { half_tol(d) * 3.0 };
+                same(
+                    &format!("{d} matmul_int8 m={m}"),
+                    &p.cpu.matmul_int8(&xc, &qc, &sc, m, k, n),
+                    &p.gpu.matmul_int8(&xg, &qg, &sg, m, k, n),
+                    tol,
+                );
+            }
+        }
+        // i8 casts and copies
+        let (ic, ig) = (p.cpu.from_i8(vec![-128, -1, 0, 7, 127]), p.gpu.from_i8(vec![-128, -1, 0, 7, 127]));
+        for to in [DType::F32, DType::F16, DType::BF16, DType::I32] {
+            same(&format!("cast i8->{to}"), &p.cpu.cast(&ic, to), &p.gpu.cast(&ig, to), 0.0);
+        }
+        let (fc, fg) = (p.cpu.from_f32(vec![-300.0, -2.7, 0.0, 3.9, 500.0]), p.gpu.from_f32(vec![-300.0, -2.7, 0.0, 3.9, 500.0]));
+        same("cast f32->i8 (saturating)", &p.cpu.cast(&fc, DType::I8), &p.gpu.cast(&fg, DType::I8), 0.0);
+        same("i8 narrow", &p.cpu.narrow(&ic, &[5], 0, 1, 3), &p.gpu.narrow(&ig, &[5], 0, 1, 3), 0.0);
+        same("i8 full", &p.cpu.full(4, -3.0, DType::I8), &p.gpu.full(4, -3.0, DType::I8), 0.0);
+    });
+}

@@ -29,11 +29,13 @@ inline float ld(float v) { return v; }
 inline float ld(half v) { return float(v); }
 inline float ld(bf16_t v) { return as_type<float>(uint(v.bits) << 16); }
 inline float ld(int v) { return float(v); }
+inline float ld(char v) { return float(v); }
 
 template <typename T> inline T st(float f);
 template <> inline float st<float>(float f) { return f; }
 template <> inline half st<half>(float f) { return half(f); }
 template <> inline int st<int>(float f) { return int(f); }
+template <> inline char st<char>(float f) { return char(clamp(f, -128.0f, 127.0f)); }
 template <> inline bf16_t st<bf16_t>(float f) {
     uint u = as_type<uint>(f);
     bf16_t r;
@@ -57,6 +59,7 @@ kernel void fill_t(device W* out [[buffer(0)]],
 }
 instantiate("fill_u32", fill_t, uint)
 instantiate("fill_u16", fill_t, ushort)
+instantiate("fill_u8", fill_t, uchar)
 
 template <typename S, typename D>
 kernel void cast_t(device const S* x [[buffer(0)]], device D* y [[buffer(1)]],
@@ -75,6 +78,14 @@ instantiate("cast_bf16_i32", cast_t, bf16_t, int)
 instantiate("cast_i32_f32", cast_t, int, float)
 instantiate("cast_i32_f16", cast_t, int, half)
 instantiate("cast_i32_bf16", cast_t, int, bf16_t)
+instantiate("cast_i8_f32", cast_t, char, float)
+instantiate("cast_i8_f16", cast_t, char, half)
+instantiate("cast_i8_bf16", cast_t, char, bf16_t)
+instantiate("cast_i8_i32", cast_t, char, int)
+instantiate("cast_f32_i8", cast_t, float, char)
+instantiate("cast_f16_i8", cast_t, half, char)
+instantiate("cast_bf16_i8", cast_t, bf16_t, char)
+instantiate("cast_i32_i8", cast_t, int, char)
 
 // ---------------------------------------------------------------- elementwise
 
@@ -184,6 +195,7 @@ kernel void strided_copy_t(device const W* x [[buffer(0)]], device W* out [[buff
 }
 instantiate("strided_copy_u32", strided_copy_t, uint)
 instantiate("strided_copy_u16", strided_copy_t, ushort)
+instantiate("strided_copy_u8", strided_copy_t, uchar)
 
 struct CatParams {
     uint n;      // elements of this input
@@ -201,6 +213,7 @@ kernel void cat_copy_t(device const W* x [[buffer(0)]], device W* out [[buffer(1
 }
 instantiate("cat_copy_u32", cat_copy_t, uint)
 instantiate("cat_copy_u16", cat_copy_t, ushort)
+instantiate("cat_copy_u8", cat_copy_t, uchar)
 
 template <typename T>
 kernel void where_t(device const T* c [[buffer(0)]], device const T* a [[buffer(1)]],
@@ -483,3 +496,25 @@ kernel void col2im_t(device const T* cols [[buffer(0)]], device T* x [[buffer(1)
     x[t] = st<T>(acc);
 }
 instantiate_floats("col2im", col2im_t)
+
+// ---------------------------------------------------------------- int8 weights
+
+struct Int8Params {
+    uint m, k, n;
+};
+
+// out[i, j] = scale[j] * sum_l x[i, l] * q[l, j]; one thread per output.
+// Neighbouring threads read neighbouring weight bytes (coalesced), which
+// suits small m (token-by-token decoding).
+template <typename T>
+kernel void matmul_int8_t(device const T* x [[buffer(0)]], device const char* q [[buffer(1)]],
+                          device const float* sc [[buffer(2)]], device T* out [[buffer(3)]],
+                          constant Int8Params& p [[buffer(4)]], uint t [[thread_position_in_grid]]) {
+    if (t >= p.m * p.n) return;
+    uint i = t / p.n, j = t % p.n;
+    device const T* xr = x + i * p.k;
+    float acc = 0.0f;
+    for (uint l = 0; l < p.k; ++l) acc += ld(xr[l]) * float(q[l * p.n + j]);
+    out[t] = st<T>(acc * sc[j]);
+}
+instantiate_floats("matmul_int8", matmul_int8_t)

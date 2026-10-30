@@ -50,6 +50,7 @@ fn as_f32(s: &Storage) -> Cow<'_, [f32]> {
         Storage::Cpu(CpuStorage::I32(v)) => Cow::Owned(v.iter().map(|&x| x as f32).collect()),
         Storage::Cpu(CpuStorage::F16(v)) => Cow::Owned(v.to_f32_vec()),
         Storage::Cpu(CpuStorage::BF16(v)) => Cow::Owned(v.to_f32_vec()),
+        Storage::Cpu(CpuStorage::I8(v)) => Cow::Owned(v.iter().map(|&x| x as f32).collect()),
         #[allow(unreachable_patterns)]
         _ => panic!("CPU backend received a non-CPU storage ({})", s.device()),
     }
@@ -62,8 +63,24 @@ fn from_f32_as(v: Vec<f32>, dtype: DType) -> Storage {
         DType::F16 => Storage::Cpu(CpuStorage::F16(Arc::new(Vec::<f16>::from_f32_slice(&v)))),
         DType::BF16 => Storage::Cpu(CpuStorage::BF16(Arc::new(Vec::<bf16>::from_f32_slice(&v)))),
         DType::I32 => wrap_i32(v.into_iter().map(|x| x as i32).collect()),
+        DType::I8 => Storage::Cpu(CpuStorage::I8(Arc::new(v.into_iter().map(|x| x as i8).collect()))),
     }
 }
+
+fn i8s(s: &Storage) -> &[i8] {
+    match s {
+        Storage::Cpu(CpuStorage::I8(v)) => v.as_slice(),
+        #[allow(unreachable_patterns)]
+        _ => panic!("CPU backend expected an i8 CPU storage, got {} on {}", s.dtype(), s.device()),
+    }
+}
+
+/// Raw output pointer shared by tasks that write disjoint regions.
+#[derive(Clone, Copy)]
+#[cfg_attr(feature = "accelerate", allow(dead_code))]
+struct OutPtr(*mut f32);
+unsafe impl Send for OutPtr {}
+unsafe impl Sync for OutPtr {}
 
 fn wrap(v: Vec<f32>) -> Storage {
     Storage::Cpu(CpuStorage::F32(Arc::new(v)))
@@ -287,6 +304,7 @@ impl Backend for CpuCore {
     fn to_i32(&self, x: &Storage) -> Vec<i32> {
         match x {
             Storage::Cpu(CpuStorage::I32(v)) => v.to_vec(),
+            Storage::Cpu(CpuStorage::I8(v)) => v.iter().map(|&x| x as i32).collect(),
             _ => as_f32(x).iter().map(|&v| v as i32).collect(),
         }
     }
@@ -499,6 +517,35 @@ impl Backend for CpuCore {
             let (rsb, csb) = if trans_b { (1, k) } else { (n, 1) };
             let threads = rayon::current_num_threads();
             let flops = batch * m * n * k;
+            if batch == 1 && m < threads && n >= 64 * threads && flops >= 1 << 18 {
+                // few rows (e.g. decoding one token): split the columns instead
+                let cols_per = n.div_ceil(threads * 4).next_multiple_of(16);
+                let c = OutPtr(out.as_mut_ptr());
+                (0..n.div_ceil(cols_per)).into_par_iter().for_each(|ci| {
+                    let j0 = ci * cols_per;
+                    let w = cols_per.min(n - j0);
+                    // Safety: each task writes the disjoint column block j0..j0+w of C
+                    unsafe {
+                        matrixmultiply::sgemm(
+                            m,
+                            k,
+                            w,
+                            1.0,
+                            a.as_ptr(),
+                            rsa as isize,
+                            csa as isize,
+                            b.as_ptr().add(j0 * csb),
+                            rsb as isize,
+                            csb as isize,
+                            0.0,
+                            { c }.0.add(j0),
+                            n as isize,
+                            1,
+                        );
+                    }
+                });
+                return wrap(out);
+            }
             // split each batch into row blocks so that all threads have work
             let chunks = if flops < 1 << 18 || batch >= threads { 1 } else { threads.div_ceil(batch) };
             let rows_per = m.div_ceil(chunks).max(1);
@@ -555,6 +602,7 @@ impl Backend for CpuCore {
             Storage::Cpu(CpuStorage::I32(v)) => wrap_i32(narrow_t(v, shape, axis, start, len)),
             Storage::Cpu(CpuStorage::F16(v)) => Storage::Cpu(CpuStorage::F16(Arc::new(narrow_t(v, shape, axis, start, len)))),
             Storage::Cpu(CpuStorage::BF16(v)) => Storage::Cpu(CpuStorage::BF16(Arc::new(narrow_t(v, shape, axis, start, len)))),
+            Storage::Cpu(CpuStorage::I8(v)) => Storage::Cpu(CpuStorage::I8(Arc::new(narrow_t(v, shape, axis, start, len)))),
             #[allow(unreachable_patterns)]
             _ => panic!("CPU backend received a non-CPU storage"),
         }
@@ -806,6 +854,42 @@ impl Backend for CpuCore {
         wrap(out)
     }
 
+    fn from_i8(&self, data: Vec<i8>) -> Storage {
+        Storage::Cpu(CpuStorage::I8(Arc::new(data)))
+    }
+
+    fn matmul_int8(&self, x: &Storage, q: &Storage, scales: &Storage, m: usize, k: usize, n: usize) -> Storage {
+        let (x, q, sc) = (f32s(x), i8s(q), f32s(scales));
+        let mut out = vec![0.0f32; m * n];
+        // out[i, j] = scale[j] * sum_p x[i, p] * q[p, j]; column blocks keep
+        // the accumulator in cache and spread single-row (decode) work
+        let cw = 256.min(n.max(1));
+        let row = |i: usize, orow: &mut [f32]| {
+            let xr = &x[i * k..(i + 1) * k];
+            orow.par_chunks_mut(cw).enumerate().for_each(|(cb, acc)| {
+                let j0 = cb * cw;
+                let w = acc.len();
+                for (p, &xv) in xr.iter().enumerate() {
+                    if xv == 0.0 {
+                        continue;
+                    }
+                    let qr = &q[p * n + j0..p * n + j0 + w];
+                    for (a, &qv) in acc.iter_mut().zip(qr) {
+                        *a += xv * qv as f32;
+                    }
+                }
+                for (a, &s) in acc.iter_mut().zip(&sc[j0..j0 + w]) {
+                    *a *= s;
+                }
+            });
+        };
+        if out.is_empty() {
+            return wrap(out);
+        }
+        out.par_chunks_mut(n).enumerate().for_each(|(i, orow)| row(i, orow));
+        wrap(out)
+    }
+
     fn adam_step(&self, p: &Storage, g: &Storage, m: &Storage, v: &Storage, h: AdamParams) -> (Storage, Storage, Storage) {
         let (p, g, m, v) = (f32s(p), f32s(g), f32s(m), f32s(v));
         let n = p.len();
@@ -970,5 +1054,12 @@ impl Backend for CpuBackend {
     }
     fn adam_step(&self, p: &Storage, g: &Storage, m: &Storage, v: &Storage, h: AdamParams) -> (Storage, Storage, Storage) {
         CORE.adam_step(p, g, m, v, h)
+    }
+    fn from_i8(&self, data: Vec<i8>) -> Storage {
+        CORE.from_i8(data)
+    }
+    fn matmul_int8(&self, x: &Storage, q: &Storage, scales: &Storage, m: usize, k: usize, n: usize) -> Storage {
+        let (x, d) = up(x);
+        down(CORE.matmul_int8(&x, q, scales, m, k, n), d)
     }
 }

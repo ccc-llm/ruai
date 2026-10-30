@@ -7,10 +7,13 @@ use super::DType;
 pub const PLAIN_KERNELS: &[&str] = &[
     "fill_u32",
     "fill_u16",
+    "fill_u8",
     "strided_copy_u32",
     "strided_copy_u16",
+    "strided_copy_u8",
     "cat_copy_u32",
     "cat_copy_u16",
+    "cat_copy_u8",
     "softmax_rows",
     "softmax_backward_rows",
     "layer_norm_rows",
@@ -21,8 +24,9 @@ pub const PLAIN_KERNELS: &[&str] = &[
     "scatter_add",
 ];
 /// Kernels instantiated for each float storage type: `<name>_<f32|f16|bf16>`.
-pub const FLOAT_KERNELS: &[&str] = &["unary", "binary", "where", "reduce_strided", "reduce_rows", "index_select", "im2col", "col2im"];
-const DTYPES: [DType; 4] = [DType::F32, DType::F16, DType::BF16, DType::I32];
+pub const FLOAT_KERNELS: &[&str] =
+    &["unary", "binary", "where", "reduce_strided", "reduce_rows", "index_select", "im2col", "col2im", "matmul_int8"];
+const DTYPES: [DType; 5] = [DType::F32, DType::F16, DType::BF16, DType::I32, DType::I8];
 
 pub fn kernel_names() -> Vec<String> {
     let mut v: Vec<String> = PLAIN_KERNELS.iter().map(|s| s.to_string()).collect();
@@ -47,6 +51,7 @@ pub fn dname(d: DType) -> &'static str {
         DType::F16 => "f16",
         DType::BF16 => "bf16",
         DType::I32 => "i32",
+        DType::I8 => "i8",
     }
 }
 
@@ -62,5 +67,10 @@ pub fn cast_kernel(from: DType, to: DType) -> String {
 
 /// Dtype-agnostic copy kernel for the element width of `d`.
 pub fn copy_kernel(base: &str, d: DType) -> String {
-    format!("{base}_{}", if d.size_in_bytes() == 2 { "u16" } else { "u32" })
+    let w = match d.size_in_bytes() {
+        1 => "u8",
+        2 => "u16",
+        _ => "u32",
+    };
+    format!("{base}_{w}")
 }
