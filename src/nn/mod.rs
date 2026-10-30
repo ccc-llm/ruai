@@ -2,6 +2,7 @@
 
 pub mod gpt2;
 pub mod layers;
+pub mod llama;
 pub mod module;
 pub mod transformer;
 

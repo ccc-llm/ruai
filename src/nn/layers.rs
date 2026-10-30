@@ -349,3 +349,61 @@ impl Module for FeedForward {
         v
     }
 }
+
+/// RMS normalization over the last dimension with a learned scale (Llama).
+pub struct RMSNorm {
+    pub weight: Tensor,
+    pub eps: f32,
+}
+
+impl RMSNorm {
+    pub fn new(dim: usize, eps: f32, device: Device) -> Self {
+        RMSNorm { weight: Tensor::ones(&[dim], device).requires_grad_(), eps }
+    }
+}
+
+impl Module for RMSNorm {
+    fn forward(&self, x: &Tensor) -> Tensor {
+        F::rms_norm(x, Some(&self.weight), self.eps)
+    }
+    fn named_parameters(&self) -> Vec<(String, Tensor)> {
+        vec![("weight".into(), self.weight.clone())]
+    }
+}
+
+/// Gated feed-forward (Shazeer 2020) used by Llama:
+/// `down_proj(silu(gate_proj(x)) * up_proj(x))`, all without bias.
+pub struct SwiGLU {
+    pub gate_proj: Linear,
+    pub up_proj: Linear,
+    pub down_proj: Linear,
+}
+
+impl SwiGLU {
+    pub fn new(dim: usize, hidden: usize, device: Device) -> Self {
+        SwiGLU {
+            gate_proj: Linear::with_bias(dim, hidden, false, device),
+            up_proj: Linear::with_bias(dim, hidden, false, device),
+            down_proj: Linear::with_bias(hidden, dim, false, device),
+        }
+    }
+}
+
+impl Module for SwiGLU {
+    fn forward(&self, x: &Tensor) -> Tensor {
+        let h = self.gate_proj.forward(x).silu() * self.up_proj.forward(x);
+        self.down_proj.forward(&h)
+    }
+    fn named_parameters(&self) -> Vec<(String, Tensor)> {
+        let mut v = prefixed("gate_proj", self.gate_proj.named_parameters());
+        v.extend(prefixed("up_proj", self.up_proj.named_parameters()));
+        v.extend(prefixed("down_proj", self.down_proj.named_parameters()));
+        v
+    }
+    fn named_buffers(&self) -> Vec<(String, Tensor)> {
+        let mut v = prefixed("gate_proj", self.gate_proj.named_buffers());
+        v.extend(prefixed("up_proj", self.up_proj.named_buffers()));
+        v.extend(prefixed("down_proj", self.down_proj.named_buffers()));
+        v
+    }
+}

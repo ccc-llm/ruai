@@ -239,3 +239,21 @@ fn safetensors_keeps_half_dtypes() {
     serialize::load_state_dict(&lin, &src, true).unwrap();
     assert_eq!((lin.weight.dtype(), lin.weight.to_vec()), (DType::F32, vec![1.0, 2.0, 3.0]));
 }
+
+#[test]
+fn narrow_and_cat_in_half_precision() {
+    for d in [DType::F16, DType::BF16] {
+        let x = Tensor::from_vec(vec![1., 2., 3., 4., 5., 6.], &[2, 3], dev()).to_dtype(d).requires_grad_();
+        let y = x.narrow(1, 1, 1);
+        assert_eq!(y.dtype(), d);
+        (&y * 2.0).sum_all().backward();
+        assert_eq!(x.grad().unwrap().dtype(), d);
+        assert_eq!(x.grad().unwrap().to_vec(), vec![0., 2., 0., 0., 2., 0.]);
+        // mixed dtypes promote like binary ops
+        let a = Tensor::ones(&[1, 2], dev()).to_dtype(d);
+        let b = Tensor::zeros(&[1, 1], dev());
+        let c = Tensor::cat(&[&a, &b], 1);
+        assert_eq!(c.dtype(), DType::F32);
+        assert_eq!(c.to_vec(), vec![1., 1., 0.]);
+    }
+}

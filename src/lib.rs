@@ -11,6 +11,7 @@
 //! * [`amp`] — mixed precision: `autocast` (F16/BF16) and `GradScaler`
 //! * [`checkpoint`] — resumable training checkpoints (model + optimizer + RNG)
 //! * [`nn::gpt2`] / [`tokenizer`] / [`generation`] — pretrained GPT-2, BPE, sampling
+//! * [`nn::llama`] — Llama-family decoder (RMSNorm, RoPE, SwiGLU, GQA), Hugging Face compatible
 //! * [`data`] — `Dataset` / `DataLoader` with multi-threaded prefetching
 //! * [`metrics`] — running averages, accuracy, throughput
 //! * [`backend`] — the device abstraction (CPU today; CUDA and MPS plug in

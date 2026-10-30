@@ -114,6 +114,75 @@ pub fn layer_norm(x: &Tensor, weight: Option<&Tensor>, bias: Option<&Tensor>, ep
     y
 }
 
+/// RMS normalization over the last dimension (Zhang & Sennrich, used by
+/// Llama): `x / sqrt(mean(x²) + eps) * weight`. The statistics are computed
+/// in f32; the result has the input's dtype (f32 under autocast).
+pub fn rms_norm(x: &Tensor, weight: Option<&Tensor>, eps: f32) -> Tensor {
+    let xf = x.to_dtype(crate::DType::F32);
+    let rstd = (&xf * &xf).mean(-1, true).add_scalar(eps).sqrt().recip();
+    let mut y = &xf * &rstd;
+    if crate::tensor::autocast_dtype().is_none() {
+        y = y.to_dtype(x.dtype());
+    }
+    match weight {
+        Some(w) => {
+            let w = w.to_dtype(y.dtype());
+            y * w
+        }
+        None => y,
+    }
+}
+
+/// Rotary-embedding inverse frequencies `theta^(-2i/head_dim)`, `i < head_dim/2`.
+pub fn rope_inv_freq(head_dim: usize, theta: f32) -> Vec<f32> {
+    assert!(head_dim.is_multiple_of(2), "RoPE needs an even head_dim, got {head_dim}");
+    (0..head_dim / 2).map(|i| theta.powf(-((2 * i) as f32) / head_dim as f32)).collect()
+}
+
+/// RoPE tables `(cos, sin)`, each `[T, 2 * inv_freq.len()]`, for positions
+/// `start..start + t` (the frequencies are repeated for both halves, as in
+/// the Hugging Face "rotate_half" layout).
+pub fn rope_cos_sin(inv_freq: &[f32], start: usize, t: usize, device: crate::Device) -> (Tensor, Tensor) {
+    let half = inv_freq.len();
+    let d = 2 * half;
+    let (mut cos, mut sin) = (vec![0.0; t * d], vec![0.0; t * d]);
+    for p in 0..t {
+        for (i, &f) in inv_freq.iter().enumerate() {
+            // f64 keeps large positions accurate
+            let a = (start + p) as f64 * f as f64;
+            let (s, c) = a.sin_cos();
+            for j in [i, i + half] {
+                cos[p * d + j] = c as f32;
+                sin[p * d + j] = s as f32;
+            }
+        }
+    }
+    (Tensor::from_vec(cos, &[t, d], device), Tensor::from_vec(sin, &[t, d], device))
+}
+
+/// Apply rotary position embeddings to `x` `[.., T, D]` with tables from
+/// [`rope_cos_sin`]: `x * cos + rotate_half(x) * sin`, where
+/// `rotate_half([x1, x2]) = [-x2, x1]`.
+pub fn apply_rope(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Tensor {
+    let d = x.dim(-1);
+    assert_eq!(cos.dim(-1), d, "apply_rope: tables have dim {}, input {d}", cos.dim(-1));
+    let half = d / 2;
+    let rot = Tensor::cat(&[&x.narrow(-1, half, half).neg(), &x.narrow(-1, 0, half)], -1);
+    let (cos, sin) = (cos.to_dtype(x.dtype()), sin.to_dtype(x.dtype()));
+    x * &cos + rot * sin
+}
+
+/// Repeat key/value heads for grouped-query attention:
+/// `[B, H_kv, T, D]` -> `[B, H_kv * n_rep, T, D]` (each head `n_rep` times in a row).
+pub fn repeat_kv(x: &Tensor, n_rep: usize) -> Tensor {
+    if n_rep == 1 {
+        return x.clone();
+    }
+    let s = x.shape();
+    let (b, h, t, d) = (s[0], s[1], s[2], s[3]);
+    x.unsqueeze(2).expand(&[b, h, n_rep, t, d]).reshape(&[b, h * n_rep, t, d])
+}
+
 /// Inverted dropout: zero with probability `p` and scale the rest by 1/(1-p).
 pub fn dropout(x: &Tensor, p: f32, training: bool) -> Tensor {
     if !training || p <= 0.0 {

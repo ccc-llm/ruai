@@ -165,3 +165,15 @@ fn causal_attention_does_not_look_ahead() {
         assert!((y1[i] - y2[i]).abs() < 1e-5, "position {} changed", i / 8);
     }
 }
+
+#[test]
+fn llama_components() {
+    gradcheck("silu", &[&[7]], |x| x[0].silu());
+    gradcheck("rms_norm", &[&[3, 6], &[6]], |x| F::rms_norm(&x[0], Some(&x[1]), 1e-5));
+    let inv = F::rope_inv_freq(4, 10000.0);
+    let (cos, sin) = F::rope_cos_sin(&inv, 2, 3, dev());
+    gradcheck("rope", &[&[2, 2, 3, 4]], move |x| F::apply_rope(&x[0], &cos, &sin));
+    gradcheck("repeat_kv", &[&[1, 2, 3, 2]], |x| F::repeat_kv(&x[0], 3));
+    let ffn = nn::SwiGLU::new(4, 8, dev());
+    gradcheck("swiglu_input", &[&[2, 4]], move |x| ffn.forward(&x[0]));
+}

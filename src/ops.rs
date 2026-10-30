@@ -123,6 +123,11 @@ impl Tensor {
         self.unary_op(UnaryOp::Gelu, "gelu", |g, x, _| g * &x.unary_raw(UnaryOp::GeluGrad))
     }
 
+    /// SiLU / swish: `x * sigmoid(x)` (composed, so it works on every backend).
+    pub fn silu(&self) -> Tensor {
+        self * &self.sigmoid()
+    }
+
     pub fn sin(&self) -> Tensor {
         self.unary_op(UnaryOp::Sin, "sin", |g, x, _| g * &x.unary_raw(UnaryOp::Cos))
     }
@@ -618,12 +623,12 @@ impl Tensor {
             let mut zshape = in_shape.clone();
             if start > 0 {
                 zshape[ax] = start;
-                parts.push(Tensor::zeros(&zshape, g.device()));
+                parts.push(Tensor::zeros(&zshape, g.device()).to_dtype(g.dtype()));
             }
             parts.push(g.clone());
             if start + len < size {
                 zshape[ax] = size - start - len;
-                parts.push(Tensor::zeros(&zshape, g.device()));
+                parts.push(Tensor::zeros(&zshape, g.device()).to_dtype(g.dtype()));
             }
             vec![Some(Tensor::cat(&parts.iter().collect::<Vec<_>>(), ax as isize))]
         })
@@ -647,6 +652,12 @@ impl Tensor {
         }
         if xs.len() == 1 {
             return xs[0].clone();
+        }
+        // mixed dtypes: cast every input to the common (promoted) dtype
+        let dtype = xs.iter().skip(1).fold(xs[0].dtype(), |d, x| DType::promote(d, false, x.dtype(), false));
+        if xs.iter().any(|x| x.dtype() != dtype) {
+            let cast: Vec<Tensor> = xs.iter().map(|x| x.to_dtype(dtype)).collect();
+            return Tensor::cat(&cast.iter().collect::<Vec<_>>(), dim);
         }
         let storages: Vec<_> = xs.iter().map(|x| x.storage()).collect();
         let srefs: Vec<_> = storages.iter().collect();

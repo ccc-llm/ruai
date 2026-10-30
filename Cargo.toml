@@ -1,8 +1,8 @@
 [package]
 name = "rust-nn"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
-description = "A small PyTorch-like neural network engine in Rust (autograd + CNN + Transformer)"
+description = "A small PyTorch-like neural network engine in Rust (autograd + CNN + Transformer + Llama)"
 license = "MIT"
 
 [lib]

@@ -26,6 +26,7 @@ cargo run --release --features cuda --example gpt -- --device cuda
 ./scripts/download_gpt2.sh
 cargo run --release --example gpt2 -- --prompt "The meaning of life is"
 cargo run --release --example gpt2 -- --int8                  # int8 權重
+cargo run --release --example llama     # 字元級 Llama（RMSNorm/RoPE/SwiGLU/GQA）→ 匯出 HF 格式 → 重新載入 → 生成
 cargo run --release --features mps --example gpt2 -- --device mps
 
 # 混合精度訓練（autocast + f32 主權重；f16 會自動做 loss scaling）
@@ -110,6 +111,23 @@ println!("{}", tok.decode(&ids));
 
 > ⚠️ 尚未以真實 GPT-2 權重驗證：載入、KV cache、tokenizer 與 int8 都已用合成資料測試（見下方「測試」），但還沒有對官方權重執行過。下載後執行 `cargo test --release --test inference` 會自動跑兩個黃金值測試：tokenizer（`"The dog"` → `[464, 3290]`）與 greedy 生成要與 Hugging Face transformers 的 GPT-2 整合測試（`test_lm_generate_gpt2`）結果一致。該期望值是依記憶寫入的，若不符請先核對期望值本身。
 
+### Llama（RMSNorm / RoPE / SwiGLU / GQA）
+
+```rust
+use rustnn::nn::llama::{Llama, LlamaConfig};
+
+let cfg = LlamaConfig::new(vocab, 256, 4, 8, 2, 512);   // vocab, hidden, layers, heads, kv_heads, max_len
+let model = Llama::new(cfg, Device::Cpu);               // 8 個 query head 共用 2 組 K/V（GQA）
+let logits = model.forward_tokens(&tokens);             // [B, T] -> [B, T, vocab]
+model.save_pretrained("runs/llama")?;                    // config.json + model.safetensors（HF 版面）
+let model = Llama::from_pretrained("data/tinyllama", Device::Cpu)?;  // HF LlamaForCausalLM 權重
+let ids = model.generate(&prompt_ids, 50, &mut Sampler::greedy());   // KV cache（只快取 kv_heads 份）
+```
+
+元件也可單獨使用：`F::rms_norm`、`F::rope_inv_freq` / `F::rope_cos_sin` / `F::apply_rope`（HF 的 rotate_half 版面）、`F::repeat_kv`、`Tensor::silu`、`nn::RMSNorm`、`nn::SwiGLU`。`config.json` 支援 `num_key_value_heads`、`head_dim`、`rope_theta`、`tie_word_embeddings`、`attention_bias` 與 Llama 3.1 的 `rope_scaling`（`rope_type: "llama3"`；其他類型會回報錯誤）。HF 的 `nn.Linear` 權重為 `[out, in]`，本專案 `Linear` 為 `[in, out]`，`from_pretrained` / `save_pretrained` 會自動轉置。
+
+> ⚠️ 尚未以真實 Llama 權重驗證：HF 版面（名稱、形狀、轉置）、RoPE 性質、llama3 頻率縮放與 config 解析都以合成資料測試，但還沒有對官方權重比對過 logits。專案目前沒有 SentencePiece / `tokenizer.json` 分詞器，載入預訓練 Llama 後需自行提供 token id。
+
 ### 混合精度（AMP）
 
 ```rust
@@ -138,13 +156,14 @@ autocast 規則（同 PyTorch）：matmul / Linear / Conv 以半精度執行；s
 | DType | `F32`、`F16`、`BF16`（皆可微分；半精度運算內部以 f32 計算後再捨入）、`I32`（索引：token id、類別標籤、argmax 結果，存在裝置上）；可微分的 `to_dtype`、型別提升規則 |
 | 推理 | **KV cache**（逐 token 解碼為 O(n)，支援 prefill + 逐步解碼、超過上下文長度時滑動視窗）、`Sampler`（greedy / temperature / top-k / top-p，可設種子）、`matmul_nt`（不複製的轉置乘法，用於 tied head）|
 | GPT-2 | `nn::gpt2::GPT2`：參數名稱與 Hugging Face `GPT2LMHeadModel` 相同、HF 的 Conv1D 版面 `[in, out]` 與本專案 `Linear` 一致，`model.safetensors` 不需轉換即可載入；支援 small/medium/large/xl；`tokenizer::Gpt2Tokenizer`（byte-level BPE，手寫實作 GPT-2 的前處理 regex）|
+| Llama | `nn::llama::Llama`：RMSNorm、RoPE（含 Llama 3.1 頻率縮放）、SwiGLU、GQA（KV cache 只存 K/V head）、tied / untied head、int8；參數名稱同 HF `LlamaForCausalLM`，`from_pretrained`（單檔或分片 safetensors）/ `save_pretrained` |
 | int8 | `DType::I8`、`Linear::quantize_int8`（逐輸出通道對稱量化）、`GPT2::quantize_int8`；`matmul_int8` 原語在 CPU / MPS / CUDA 都有直接讀 int8 的融合 kernel（記憶體流量為 f32 的 1/4），大 batch 時改為反量化 + GEMM |
 | 混合精度 | `autocast(F16 \| BF16, ..)`、`GradScaler`（動態 loss scaling、溢位跳步、狀態可存進 checkpoint）、`Module::to_dtype` |
 | Tensor | 任意維度、NumPy 廣播、`reshape/view/permute/transpose/unsqueeze/flatten/expand`、運算子多載 (`&a + &b`, `a * 2.0`) |
 | Autograd | 動態計算圖、拓撲排序反向傳播、梯度累加、`no_grad()` / `NoGradGuard`、`detach()` |
-| 運算 | `+ - * /`、`exp log sqrt powf abs tanh sigmoid relu gelu sin cos maximum`、`sum mean var max min argmax`、`minimum clamp where_cond masked_fill`、batched `matmul`、`index_select gather narrow select cat stack`、`im2col` |
-| functional | `softmax`、`log_softmax`、`cross_entropy`（含 label smoothing）、`mse_loss`、`bce_with_logits`、`conv2d`、`max/avg_pool2d`、`layer_norm`、`dropout`、`scaled_dot_product_attention`、`causal_mask`、正弦位置編碼 |
-| nn | `Linear`、`Conv2d`、`MaxPool2d`、`AvgPool2d`、`BatchNorm2d`、`LayerNorm`、`Embedding`、`Dropout`、`Flatten`、`ReLU/GELU/Tanh/Sigmoid`、`Sequential`、`FeedForward`、`MultiHeadAttention`（自注意力 / 交叉注意力）、`TransformerBlock`（Pre-LN，可選 causal）、`GPT` |
+| 運算 | `+ - * /`、`exp log sqrt powf abs tanh sigmoid relu gelu silu sin cos maximum`、`sum mean var max min argmax`、`minimum clamp where_cond masked_fill`、batched `matmul`、`index_select gather narrow select cat stack`、`im2col` |
+| functional | `softmax`、`log_softmax`、`cross_entropy`（含 label smoothing）、`mse_loss`、`bce_with_logits`、`conv2d`、`max/avg_pool2d`、`layer_norm`、`rms_norm`、`dropout`、`scaled_dot_product_attention`、`causal_mask`、正弦位置編碼、RoPE（`rope_cos_sin` / `apply_rope`）、`repeat_kv` |
+| nn | `Linear`、`RMSNorm`、`SwiGLU`、`Conv2d`、`MaxPool2d`、`AvgPool2d`、`BatchNorm2d`、`LayerNorm`、`Embedding`、`Dropout`、`Flatten`、`ReLU/GELU/Tanh/Sigmoid`、`Sequential`、`FeedForward`、`MultiHeadAttention`（自注意力 / 交叉注意力）、`TransformerBlock`（Pre-LN，可選 causal）、`GPT` |
 | optim | `SGD`（momentum、weight decay）、`Adam`、`AdamW`（融合 kernel，一個參數一次走訪）、`clip_grad_norm`、`cosine_lr`（含 warmup） |
 | 資料 | `Dataset` trait、`DataLoader`（多執行緒預取、每 epoch 確定性打亂、`drop_last`、自訂 collate、提早中斷不卡住、worker panic 會傳遞）、`VecDataset`、`ClassificationData`、`Subset`、`random_split` |
 | 存檔 | **safetensors**（Hugging Face 官方實作）：讀寫 F32/F16/BF16/I32（保留原型別），另可讀 F64/I64/I16/I8/U8/U16/U32/BOOL；`load_state_dict`（strict 或回報 missing / unexpected）；仍可讀 v0.1–v0.4 的 RSNN 格式 |
@@ -166,7 +185,7 @@ src/
 ├── tensor.rs      Tensor 結構、計算圖節點、backward()
 ├── ops.rs         可微分運算：forward 呼叫 backend，backward 由其他運算組成
 ├── functional.rs  組合運算（softmax、conv2d、attention …）
-├── nn/            Module trait 與各種層、Transformer、GPT
+├── nn/            Module trait 與各種層、Transformer、GPT、GPT-2、Llama
 ├── optim/         優化器（mod.rs）與學習率排程（lr.rs）
 ├── data.rs        Dataset / DataLoader
 ├── checkpoint.rs  可接續訓練的 checkpoint
@@ -258,6 +277,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - `tests/devices.rs` 另含所有原語的 F16/BF16 版本在 GPU 與 CPU 間的對照（含各種轉置與廣播的半精度 matmul）
 - `tests/inference.rs`：KV cache 逐步／分段 prefill 的 logits 與完整前向一致、有無 cache 的生成結果相同（含滑動視窗）、GPT-2 的 HF 參數名稱與 checkpoint 載入（含 `transformer.` 前綴與 attention mask buffer）、int8 精度、BPE（自建詞表的合併與任意 Unicode 位元組級來回）、前處理 regex 的邊界情況、取樣器分佈與可重現性；**有 `data/gpt2` 時**另跑 HF 官方 GPT-2 的黃金值測試
 - `tests/devices.rs` 另含 int8 matmul（融合 kernel 與 GEMM 兩條路徑）與 i8 轉型在 GPU 與 CPU 間的對照
+- `tests/llama.rs`：RMSNorm 數值、RoPE 保持範數且內積只依相對位置、`repeat_kv` 版面、llama3 頻率縮放、HF `config.json` 解析與往返、GQA 下 KV cache 逐步／分段 prefill 與完整前向一致、因果性與 batch 一致、有無 cache 的生成相同、HF 版面（`[out, in]` 形狀與逐元素轉置）存檔／載入、學會序列、int8、autocast 梯度與 f32 一致
 - `tests/training.rs`：MLP 學會 XOR、CNN（含 BatchNorm）收斂、GPT 記住序列、存檔/載入 round-trip
 
 ## 版本規劃
@@ -271,8 +291,9 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v0.5 | DataLoader、完整 checkpoint（含優化器狀態與 RNG）、safetensors、LR 排程、梯度累積、指標 | ✅ |
 | v0.6 | f16 / bf16（CPU / MPS / CUDA）、autocast、GradScaler、半精度推理 | ✅ |
 | v0.7 | KV cache、載入 GPT-2 官方權重、BPE tokenizer、取樣、int8 量化 | ✅（GPT-2 尚未以真實權重驗證） |
-| v0.8 | ResNet、ViT、encoder-decoder、RMSNorm/RoPE/SwiGLU | |
-| v1.0 | API 穩定、文件、發布 crates.io | |
+| v0.8 | RMSNorm、RoPE、SwiGLU、GQA、Llama 模型（HF 版面載入／匯出） | ✅（Llama 尚未以真實權重驗證） |
+| v0.9 | ResNet、ViT、encoder-decoder Transformer（cross-attention、seq2seq） | |
+| v1.0 | API 整理、rustdoc 文件、clippy 乾淨、`cargo package` 可發布 | |
 
 ## 目前限制
 
@@ -283,4 +304,5 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - MPS：小運算受派送開銷限制
 - CUDA 後端尚未在 NVIDIA 實機上執行過（見上方說明與 `scripts/verify_cuda.sh`）
 - GPT-2 尚未以真實權重驗證（見上方說明與 `scripts/download_gpt2.sh`）
+- Llama 尚未以真實權重驗證，且沒有 SentencePiece / `tokenizer.json` 分詞器
 - MPS / CUDA：張量維度上限 8；元素數必須能放進 u32

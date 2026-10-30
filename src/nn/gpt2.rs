@@ -217,30 +217,9 @@ impl GPT2 {
         sampler: &mut Sampler,
         mut on_token: impl FnMut(usize) -> bool,
     ) -> Vec<usize> {
-        assert!(!prompt.is_empty(), "prompt must not be empty");
         let dev = self.wte.weight.device();
         let max = self.config.n_positions;
-        let mut ids = prompt.to_vec();
-        let mut cache = KvCache::new(self.blocks.len());
-        crate::no_grad(|| {
-            let mut pending = ids[ids.len().saturating_sub(max)..].to_vec();
-            for _ in 0..n {
-                if cache.len() + pending.len() > max {
-                    // slide the window over the most recent n_positions tokens
-                    cache.clear();
-                    pending = ids[ids.len() - max..].to_vec();
-                }
-                let logits = self.forward_cached(&Tensor::from_indices(&pending, &[1, pending.len()], dev), &mut cache);
-                let v = logits.dim(-1);
-                let next = sampler.sample(&logits.narrow(1, pending.len() - 1, 1).reshape(&[v]).to_vec());
-                ids.push(next);
-                pending = vec![next];
-                if !on_token(next) {
-                    break;
-                }
-            }
-        });
-        ids
+        crate::generation::generate_cached(prompt, n, max, dev, sampler, |t, c| self.forward_cached(t, c), &mut on_token)
     }
 
     /// Weight-only int8 quantization of every linear layer and of the
