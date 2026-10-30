@@ -316,9 +316,13 @@ fn autocast_gradients_match_f32() {
     assert!(err < 0.02 * norm, "relative gradient error {}", err / norm);
 }
 
-/// Real weights: a small pretrained Llama-family model (scripts/download_smollm.sh).
+/// Real weights: SmolLM2-135M (scripts/download_smollm.sh). The expected
+/// values come from an independent plain-PyTorch implementation of
+/// Hugging Face's `LlamaForCausalLM` run on the same files (it agreed with
+/// this crate to 3e-4 on every logit). The 135M model prefers " the" over
+/// " Paris" here.
 #[test]
-fn pretrained_smollm_knows_paris() {
+fn pretrained_smollm_matches_reference() {
     let dir = std::path::Path::new("data/smollm2-135m");
     if !dir.join("model.safetensors").exists() || !dir.join("tokenizer.json").exists() {
         eprintln!("skipping: data/smollm2-135m not found (run scripts/download_smollm.sh)");
@@ -326,9 +330,19 @@ fn pretrained_smollm_knows_paris() {
     }
     let tok = ruai::tokenizer::HfTokenizer::from_dir(dir).unwrap();
     let model = Llama::from_pretrained(dir, dev()).unwrap();
-    let prompt = tok.encode("The capital of France is", true);
-    let out = model.generate(&prompt, 6, &mut Sampler::greedy());
-    let text = tok.decode(&out[prompt.len()..], true);
-    eprintln!("continuation: {text:?}");
-    assert!(text.contains("Paris"), "greedy continuation {text:?} does not mention Paris");
+    let ids = tok.encode("The capital of France is", true);
+    assert_eq!(ids, vec![504, 3575, 282, 4649, 314]);
+    let n = ids.len();
+    let logits = no_grad(|| model.forward_tokens(&Tensor::from_indices(&ids, &[1, n], dev())));
+    let last = logits.narrow(1, n - 1, 1).reshape(&[49152]).to_vec();
+    let mut order: Vec<usize> = (0..last.len()).collect();
+    order.sort_by(|a, b| last[*b].total_cmp(&last[*a]));
+    let want = [(260, 14.0228), (7042, 12.9973), (3807, 12.7472), (1217, 12.2369), (253, 12.1246)];
+    for (k, &(id, logit)) in want.iter().enumerate() {
+        assert_eq!(order[k], id, "rank {k}: got {:?}", tok.id_to_token(order[k]));
+        assert!((last[id] - logit).abs() < 2e-3, "token {id}: logit {} vs reference {logit}", last[id]);
+    }
+    assert_eq!(tok.id_to_token(7042), Some("ĠParis"));
+    let out = model.generate(&ids, 6, &mut Sampler::greedy());
+    eprintln!("continuation: {:?}", tok.decode(&out[n..], true));
 }

@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.0.1
+
+Verified against real pretrained weights (GPT-2 small and SmolLM2-135M from Hugging Face).
+
+- **Fix (MPS):** Metal's `tanh` returns NaN for arguments above ~45, so GELU and `tanh`
+  produced NaN on large activations: real GPT-2 generated only `<|endoftext|>` on MPS. The
+  argument is now clamped to ±15 (where tanh is already ±1 in f32); new extreme-input
+  GPU-vs-CPU test.
+- GPT-2: greedy generation matches Hugging Face's own integration test token for token on CPU
+  and MPS. The int8 test now checks logit error (1.8% of the range) instead of an exact
+  continuation (f32 prefers " was" over "'s" by only 0.33 logits there).
+- SmolLM2-135M: logits match an independent plain-PyTorch `LlamaForCausalLM` to 3e-4; the
+  real-weight test now uses those reference values instead of a guessed "Paris" continuation.
+
 ## 2.0.0
 
 - Strided views: tensors are a buffer plus `(shape, strides, offset)`; `permute`, `transpose`,

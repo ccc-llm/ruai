@@ -89,15 +89,21 @@ instantiate("cast_i32_i8", cast_t, int, char)
 
 // ---------------------------------------------------------------- elementwise
 
+// Metal's tanh returns NaN for arguments above ~45 (GPT-2 has activations in
+// the thousands); tanh(±15) is already ±1 in f32.
+inline float tanh_f(float x) {
+    return tanh(clamp(x, -15.0f, 15.0f));
+}
+
 inline float gelu_f(float x) {
     const float S = 0.7978845608f;
-    return 0.5f * x * (1.0f + tanh(S * (x + 0.044715f * x * x * x)));
+    return 0.5f * x * (1.0f + tanh_f(S * (x + 0.044715f * x * x * x)));
 }
 
 inline float gelu_grad_f(float x) {
     const float S = 0.7978845608f;
     float u = S * (x + 0.044715f * x * x * x);
-    float t = tanh(u);
+    float t = tanh_f(u);
     return 0.5f * (1.0f + t) + 0.5f * x * (1.0f - t * t) * S * (1.0f + 3.0f * 0.044715f * x * x);
 }
 
@@ -116,7 +122,7 @@ kernel void unary_t(device const T* x [[buffer(0)]], device T* y [[buffer(1)]],
         case 3: r = sqrt(v); break;
         case 4: r = 1.0f / v; break;
         case 5: r = fabs(v); break;
-        case 6: r = tanh(v); break;
+        case 6: r = tanh_f(v); break;
         case 7: r = 1.0f / (1.0f + exp(-v)); break;
         case 8: r = max(v, 0.0f); break;
         case 9: r = gelu_f(v); break;

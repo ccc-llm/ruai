@@ -1,6 +1,6 @@
 [package]
 name = "ruai"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2021"
 description = "A small PyTorch-like neural network engine in Rust (autograd, CNN/ResNet/ViT, Transformer/GPT/Llama, seq2seq)"
 license = "MIT"

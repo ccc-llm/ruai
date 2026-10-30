@@ -88,6 +88,13 @@ fn elementwise() {
         for op in ops {
             same(&format!("{op:?}"), &p.cpu.unary(op, &c), &p.gpu.unary(op, &g), 1e-5);
         }
+        // extreme inputs (GPT-2 activations reach the thousands): Metal's
+        // tanh used to return NaN above ~45
+        let big = vec![-3000.0, -1000.0, -60.0, -45.0, -20.0, 0.5, 20.0, 45.0, 60.0, 100.0, 1000.0, 3000.0];
+        let (bc, bg) = (p.cpu.from_f32(big.clone()), p.gpu.from_f32(big));
+        for op in [UnaryOp::Tanh, UnaryOp::Sigmoid, UnaryOp::Gelu, UnaryOp::GeluGrad, UnaryOp::Relu, UnaryOp::Neg] {
+            same(&format!("{op:?} extreme"), &p.cpu.unary(op, &bc), &p.gpu.unary(op, &bg), 1e-5);
+        }
         let ca = p.cpu.unary(UnaryOp::Abs, &c);
         let ga = p.gpu.unary(UnaryOp::Abs, &g);
         for op in [UnaryOp::Log, UnaryOp::Sqrt] {

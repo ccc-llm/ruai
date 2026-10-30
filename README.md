@@ -125,7 +125,7 @@ let ids = model.generate(&tok.encode("Once upon a time"), 50, &mut sampler);  //
 println!("{}", tok.decode(&ids));
 ```
 
-> ⚠️ 尚未以真實 GPT-2 權重驗證：載入、KV cache、tokenizer 與 int8 都已用合成資料測試（見下方「測試」），但還沒有對官方權重執行過。下載後執行 `cargo test --release --test inference` 會自動跑兩個黃金值測試：tokenizer（`"The dog"` → `[464, 3290]`）與 greedy 生成要與 Hugging Face transformers 的 GPT-2 整合測試（`test_lm_generate_gpt2`）結果一致。該期望值是依記憶寫入的，若不符請先核對期望值本身。
+> ✅ 已以官方權重驗證（`./scripts/download_gpt2.sh` 後 `cargo test --release --test inference`）：tokenizer 黃金值、greedy 生成 "The dog" 的 20 個 token 與 Hugging Face transformers 的 GPT-2 整合測試（`test_lm_generate_gpt2`）完全相同（CPU 與 MPS）；int8 的 logits 誤差約為 logit 範圍的 1.8%。實測（Apple M3，100 個 token）：CPU f32 / int8 / int4 = 41 / 62 / 88 tokens/s，MPS = 58 / 163 / 178 tokens/s。
 
 ### Llama（RMSNorm / RoPE / SwiGLU / GQA）
 
@@ -158,7 +158,7 @@ println!("{}", tok.decode(&ids, true));                         // true：略過
 
 `HfTokenizer` 支援 BPE 模型（GPT-2、Llama 2/3、TinyLlama、SmolLM、Qwen …）的 normalizer、pre-tokenizer（ByteLevel、含 lookahead 的 Split regex、Metaspace、Digits …）、byte fallback、added / special token、post-processor 範本與 decoder；不支援的元件（WordPiece、Unigram 等）載入時會回報錯誤。
 
-> ⚠️ 尚未以真實權重驗證：HF 版面、RoPE、llama3 頻率縮放、config 與 `tokenizer.json` 解析都以合成資料測試。下載後 `cargo test --release --test llama --test tokenizer` 會自動跑真實權重測試（SmolLM2 要接出 "Paris"、GPT-2 的 `tokenizer.json` 要與 `vocab.json` + `merges.txt` 逐 token 相同），也可在 GitHub Actions 手動觸發 CI 的 pretrained 工作。
+> ✅ 已以 SmolLM2-135M 的官方權重驗證（`./scripts/download_smollm.sh` 後 `cargo test --release --test llama --test tokenizer`）：`tokenizer.json` 分詞結果正確，logits 與另外以純 PyTorch 依 Hugging Face `LlamaForCausalLM` 寫成的獨立實作相差不到 3e-4（每個位置的 argmax 都相同，CPU 與 MPS）；GPT-2 的 `tokenizer.json` 與 `vocab.json` + `merges.txt` 逐 token 相同。實測（Apple M3，40 個 token）：CPU f32 / int8 / int4 = 36 / 53 / 61 tokens/s，MPS = 29 / 92 / 99 tokens/s（30 層的小模型在 MPS 上受每個 op 的派送開銷限制）。尚未驗證：Llama 3 的 `rope_scaling`、Llama 2 的 SentencePiece 式 `tokenizer.json`。
 
 ### 微調：LoRA 與 gradient checkpointing
 
@@ -402,12 +402,12 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v0.4 | CUDA 後端（cuBLAS + NVRTC）、多卡 | ✅（待實機驗證） |
 | v0.5 | DataLoader、完整 checkpoint（含優化器狀態與 RNG）、safetensors、LR 排程、梯度累積、指標 | ✅ |
 | v0.6 | f16 / bf16（CPU / MPS / CUDA）、autocast、GradScaler、半精度推理 | ✅ |
-| v0.7 | KV cache、載入 GPT-2 官方權重、BPE tokenizer、取樣、int8 量化 | ✅（GPT-2 尚未以真實權重驗證） |
-| v0.8 | RMSNorm、RoPE、SwiGLU、GQA、Llama 模型（HF 版面載入／匯出） | ✅（Llama 尚未以真實權重驗證） |
+| v0.7 | KV cache、載入 GPT-2 官方權重、BPE tokenizer、取樣、int8 量化 | ✅（v2.0.1 以官方權重驗證） |
+| v0.8 | RMSNorm、RoPE、SwiGLU、GQA、Llama 模型（HF 版面載入／匯出） | ✅（v2.0.1 以 SmolLM2 官方權重驗證） |
 | v0.9 | ResNet、ViT、encoder-decoder Transformer（cross-attention、seq2seq） | ✅ |
 | v1.0 | API 整理（`GPT::generate` 改用 `Sampler`）、所有公開項目都有 rustdoc、clippy 乾淨、`cargo package` 可打包 | ✅（crates.io 名稱：`ruai`） |
 | v1.1 | GitHub Actions CI（Linux / macOS，可手動觸發 GPT-2 真實權重測試）、`zeros_like` 保留 dtype、`collator` 保留影像形狀 | ✅ |
-| v1.2 | Hugging Face `tokenizer.json` 分詞器（`HfTokenizer`）、`llama --model` 載入預訓練模型 | ✅（尚未以真實檔案驗證） |
+| v1.2 | Hugging Face `tokenizer.json` 分詞器（`HfTokenizer`）、`llama --model` 載入預訓練模型 | ✅（v2.0.1 以 GPT-2 / SmolLM2 的檔案驗證） |
 | v1.3 | LoRA（含 int8 底模）、gradient checkpointing、`freeze` / `trainable_parameters` | ✅ |
 | v1.4 | 分組 int4 權重量化（CPU / MPS / CUDA 融合 kernel，可在其上訓練 LoRA） | ✅ |
 | v1.5 | 融合 attention（CPU：FlashAttention 式分塊；其他後端：分塊 GEMM，記憶體有上限）、MPS 量化 matvec 加速 | ✅ |
@@ -421,6 +421,5 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - GPU 上的 attention 是分塊 GEMM，不是單一融合 kernel（真正的 GPU FlashAttention 需要 simdgroup 矩陣分塊）；backward 會重算並暫時建立 scores
 - MPS：小運算受派送開銷限制
 - CUDA 後端尚未在 NVIDIA 實機上執行過（見上方說明與 `scripts/verify_cuda.sh`）
-- GPT-2 尚未以真實權重驗證（見上方說明與 `scripts/download_gpt2.sh`）
-- Llama 與 `tokenizer.json` 尚未以真實檔案驗證；`HfTokenizer` 只支援 BPE 模型
+- `HfTokenizer` 只支援 BPE 模型；Llama 3 的 `rope_scaling` 與 Llama 2 式（SentencePiece）`tokenizer.json` 尚未以真實檔案驗證
 - MPS / CUDA：張量維度上限 8；元素數必須能放進 u32
