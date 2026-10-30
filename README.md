@@ -1,5 +1,7 @@
 # ruai（rust-nn）
 
+[![CI](https://github.com/ccc-llm/ruai/actions/workflows/ci.yml/badge.svg)](https://github.com/ccc-llm/ruai/actions/workflows/ci.yml)
+
 一個用 Rust 寫的、類似 PyTorch 的神經網路引擎：動態計算圖 + 反向自動微分，支援訓練與推理，內建 CNN、ResNet、ViT、Transformer（GPT / GPT-2 / Llama）與 encoder-decoder。支援 CPU（rayon 多執行緒，macOS 可選用 Accelerate）、Apple GPU（Metal / MPS）與 NVIDIA GPU（CUDA）。
 
 ## 安裝
@@ -89,7 +91,8 @@ use ruai::data::{ClassificationData, DataLoader};
 use ruai::optim::lr::{CosineLr, LrScheduler};
 use ruai::checkpoint::{self, TrainState};
 
-let loader = DataLoader::new(train_data, 64, ClassificationData::collate(dev))
+let collate = train_data.collator(dev);                 // [B, C, H, W]（collate 則攤平成 [B, C*H*W]）
+let loader = DataLoader::new(train_data, 64, collate)
     .shuffle(true).drop_last(true).num_workers(2);    // 背景執行緒預先組 batch
 let sched = CosineLr { base_lr: 1e-3, min_lr: 1e-4, warmup: 100, total: 10_000 };
 let mut state = TrainState::default();               // 或 checkpoint::load(...) 接續
@@ -330,6 +333,12 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v0.8 | RMSNorm、RoPE、SwiGLU、GQA、Llama 模型（HF 版面載入／匯出） | ✅（Llama 尚未以真實權重驗證） |
 | v0.9 | ResNet、ViT、encoder-decoder Transformer（cross-attention、seq2seq） | ✅ |
 | v1.0 | API 整理（`GPT::generate` 改用 `Sampler`）、所有公開項目都有 rustdoc、clippy 乾淨、`cargo package` 可打包 | ✅（crates.io 名稱：`ruai`） |
+| v1.1 | GitHub Actions CI（Linux / macOS，可手動觸發 GPT-2 真實權重測試）、`zeros_like` 保留 dtype、`collator` 保留影像形狀 | ✅ |
+| v1.2 | Hugging Face `tokenizer.json` 分詞器 | |
+| v1.3 | 預先配置的 KV cache（O(n) 解碼）、LoRA、gradient checkpointing | |
+| v1.4 | int4 權重量化 | |
+| v1.5 | 融合 attention kernel | |
+| v2.0 | 不複製的 strided view、二階導數 | |
 
 ## 目前限制
 

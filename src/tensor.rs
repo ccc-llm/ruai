@@ -200,14 +200,19 @@ impl Tensor {
         Self::full(shape, 1.0, device)
     }
 
-    /// `F32` zeros with `t`'s shape and device (not its dtype).
+    /// Zeros with `t`'s shape, device and dtype.
     pub fn zeros_like(t: &Tensor) -> Tensor {
-        Self::zeros(t.shape(), t.device())
+        Self::full_like(t, 0.0)
     }
 
-    /// `F32` ones with `t`'s shape and device (not its dtype).
+    /// Ones with `t`'s shape, device and dtype.
     pub fn ones_like(t: &Tensor) -> Tensor {
-        Self::ones(t.shape(), t.device())
+        Self::full_like(t, 1.0)
+    }
+
+    /// `value` everywhere, with `t`'s shape, device and dtype.
+    pub fn full_like(t: &Tensor, value: f32) -> Tensor {
+        Self::from_storage(t.backend().full(t.numel(), value, t.dtype()), t.shape().to_vec())
     }
 
     /// Samples from N(0, 1).

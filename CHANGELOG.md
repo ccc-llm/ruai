@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.0
+
+- GitHub Actions CI: Linux (CPU tests, clippy, rustdoc, CUDA build) and macOS (Accelerate, Metal);
+  a manual run can also download GPT-2 and run the golden tests against the real weights.
+- `Tensor::zeros_like` / `ones_like` keep the input's dtype (were always F32); new `Tensor::full_like`.
+- `ClassificationData::collator` keeps the sample shape (`[B, C, H, W]` images);
+  `collate` still flattens.
+- `Rng::below(0)` panics with a clear message instead of dividing by zero.
+
 ## 1.0.0
 
 API stabilization and documentation.

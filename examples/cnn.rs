@@ -110,17 +110,12 @@ fn build_cnn(size: usize, classes: usize, device: Device) -> Sequential {
         .add(nn::Linear::new(64, classes, device))
 }
 
-/// `[B, C*H*W]` batch inputs back to images.
-fn images(b: &Batch, size: usize) -> Tensor {
-    b.inputs.reshape(&[b.inputs.shape()[0], 1, size, size])
-}
-
-fn evaluate(model: &dyn Module, loader: &DataLoader<ClassificationData, Batch>, size: usize) -> f32 {
+fn evaluate(model: &dyn Module, loader: &DataLoader<ClassificationData, Batch>) -> f32 {
     model.eval();
     let mut acc = Accuracy::new();
     no_grad(|| {
         for b in loader.iter() {
-            acc.update(&model.forward(&images(&b, size)), &b.targets);
+            acc.update(&model.forward(&b.inputs), &b.targets);
         }
     });
     model.train();
@@ -148,12 +143,14 @@ fn main() {
     let size = train.sample_shape[1];
 
     // batches are assembled on 2 background threads while the model trains
-    let train_loader = DataLoader::new(train, 64, ClassificationData::collate(device))
+    // inputs arrive as [B, 1, H, W] images
+    let (train_collate, test_collate) = (train.collator(device), test.collator(device));
+    let train_loader = DataLoader::new(train, 64, train_collate)
         .shuffle(true)
         .drop_last(true)
         .seed(1)
         .num_workers(2);
-    let test_loader = DataLoader::new(test, 256, ClassificationData::collate(device));
+    let test_loader = DataLoader::new(test, 256, test_collate);
 
     let model = build_model(&kind, size, classes, device);
     println!("model parameters: {}", model.num_parameters());
@@ -173,7 +170,7 @@ fn main() {
         for (i, b) in train_loader.epoch(state.epoch).enumerate() {
             sched.apply(&mut opt, state.step as usize);
             opt.zero_grad();
-            let loss = F::cross_entropy(&model.forward(&images(&b, size)), &b.targets, 0.0);
+            let loss = F::cross_entropy(&model.forward(&b.inputs), &b.targets, 0.0);
             loss.backward();
             opt.step();
             state.step += 1;
@@ -184,7 +181,7 @@ fn main() {
             }
         }
         state.epoch += 1;
-        let acc = evaluate(&model, &test_loader, size);
+        let acc = evaluate(&model, &test_loader);
         state.extra.insert("test_acc".into(), format!("{acc:.4}"));
         checkpoint::save(&ckpt, &model, &opt, &state).expect("save checkpoint");
         println!(
@@ -202,5 +199,5 @@ fn main() {
     serialize::save(&path, &model).expect("save");
     let restored = build_model(&kind, size, classes, device);
     serialize::load(&path, &restored).expect("load");
-    println!("reloaded model test acc: {:.2}% (weights in {path})", 100.0 * evaluate(&*restored, &test_loader, size));
+    println!("reloaded model test acc: {:.2}% (weights in {path})", 100.0 * evaluate(&*restored, &test_loader));
 }

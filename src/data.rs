@@ -119,8 +119,8 @@ pub struct ClassificationData {
     pub sample_shape: Vec<usize>,
 }
 
-/// A batch of inputs and `I32` targets `[B]`. [`ClassificationData::collate`]
-/// produces flattened inputs `[B, prod(sample_shape)]`; reshape them as needed.
+/// A batch of inputs and `I32` targets `[B]`. [`ClassificationData::collator`]
+/// gives inputs `[B, ...sample_shape]`, [`ClassificationData::collate`] flattened `[B, prod(sample_shape)]`.
 pub struct Batch {
     /// Input features.
     pub inputs: Tensor,
@@ -136,7 +136,21 @@ impl ClassificationData {
         ClassificationData { features, labels, sample_shape: sample_shape.to_vec() }
     }
 
-    /// Collate `(features, label)` samples into a [`Batch`] on `device`.
+    /// Collate function that keeps the sample shape: inputs are
+    /// `[B, ...sample_shape]` (e.g. `[B, C, H, W]` images) on `device`.
+    pub fn collator(&self, device: Device) -> impl Fn(Vec<(Vec<f32>, usize)>) -> Batch + Send + Sync + 'static {
+        let flat = Self::collate(device);
+        let sample_shape = self.sample_shape.clone();
+        move |items| {
+            let b = flat(items);
+            let mut shape = vec![b.targets.numel()];
+            shape.extend_from_slice(&sample_shape);
+            Batch { inputs: b.inputs.reshape(&shape), targets: b.targets }
+        }
+    }
+
+    /// Collate `(features, label)` samples into a [`Batch`] on `device`
+    /// with flattened inputs `[B, prod(sample_shape)]` (see [`ClassificationData::collator`]).
     pub fn collate(device: Device) -> impl Fn(Vec<(Vec<f32>, usize)>) -> Batch + Send + Sync + 'static {
         move |items: Vec<(Vec<f32>, usize)>| {
             let per = items.first().map_or(0, |(x, _)| x.len());

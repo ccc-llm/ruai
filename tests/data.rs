@@ -148,3 +148,30 @@ fn metrics() {
     acc.update(&logits.narrow(0, 0, 1), &[1usize]);
     assert_eq!(acc.value(), 0.5);
 }
+
+#[test]
+fn collator_keeps_sample_shape() {
+    let data = ClassificationData::new((0..24).map(|i| i as f32).collect(), vec![0, 1], &[3, 2, 2]);
+    let b = data.collator(Device::Cpu)(vec![data.get(1), data.get(0)]);
+    assert_eq!(b.inputs.shape(), &[2, 3, 2, 2]);
+    assert_eq!(b.inputs.to_vec()[0], 12.0);
+    assert_eq!(b.targets.to_vec_i32(), vec![1, 0]);
+    let flat = ClassificationData::collate(Device::Cpu)(vec![data.get(0)]);
+    assert_eq!(flat.inputs.shape(), &[1, 12]);
+}
+
+#[test]
+fn like_constructors_keep_dtype() {
+    for d in [ruai::DType::F32, ruai::DType::F16, ruai::DType::BF16, ruai::DType::I32] {
+        let t = Tensor::from_vec(vec![1., 2., 3.], &[3], Device::Cpu).to_dtype(d);
+        assert_eq!(Tensor::zeros_like(&t).dtype(), d);
+        assert_eq!(Tensor::ones_like(&t).to_vec(), vec![1., 1., 1.]);
+        assert_eq!(Tensor::full_like(&t, 7.0).dtype(), d);
+    }
+}
+
+#[test]
+#[should_panic(expected = "n must be positive")]
+fn rng_below_zero_panics_clearly() {
+    ruai::rand::Rng::new(1).below(0);
+}

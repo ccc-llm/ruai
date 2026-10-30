@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      pretrained:
+        description: "Also download GPT-2 (~550 MB) and run the golden tests against the real weights"
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  linux:
+    name: Linux (CPU, CUDA build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --release
+      - run: cargo clippy --all-targets
+      # CUDA libraries are loaded at runtime, so the backend builds without a GPU
+      - run: cargo check --all-targets --features cuda
+      - run: cargo clippy --all-targets --features cuda
+      - run: cargo doc --no-deps --features cuda
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  macos:
+    name: macOS (CPU + Accelerate, Metal)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # GPU tests in tests/devices.rs run only if the runner exposes a Metal device
+      - run: cargo test --release --features mps,accelerate
+      - run: cargo clippy --all-targets --features mps,accelerate
+      - run: cargo doc --no-deps --features mps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  pretrained:
+    name: GPT-2 golden tests (real weights)
+    if: github.event_name == 'workflow_dispatch' && inputs.pretrained
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: ./scripts/download_gpt2.sh
+      - run: cargo test --release --test inference -- --nocapture

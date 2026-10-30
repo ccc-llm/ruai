@@ -42,6 +42,7 @@ impl Rng {
 
     /// Uniform integer in `0..n`.
     pub fn below(&mut self, n: usize) -> usize {
+        assert!(n > 0, "Rng::below: n must be positive");
         (self.next_u64() % n as u64) as usize
     }
 
