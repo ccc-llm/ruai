@@ -1,0 +1,28 @@
+[package]
+name = "rust-nn"
+version = "0.1.0"
+edition = "2021"
+description = "A small PyTorch-like neural network engine in Rust (autograd + CNN + Transformer)"
+license = "MIT"
+
+[lib]
+name = "rustnn"
+
+[dependencies]
+rayon = "1.10"
+
+[features]
+default = []
+# GPU backends (skeletons for now; see src/backend/cuda.rs and src/backend/mps.rs)
+cuda = []
+mps = []
+
+[profile.release]
+opt-level = 3
+debug = false
+
+[profile.dev]
+opt-level = 1
+
+[profile.test]
+opt-level = 2
