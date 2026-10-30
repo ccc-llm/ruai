@@ -286,6 +286,55 @@ pub fn sinusoidal_positional_encoding(t: usize, d: usize, device: crate::Device)
     Tensor::from_vec(pe, &[t, d], device)
 }
 
+/// Gradient checkpointing (activation recomputation, like
+/// `torch.utils.checkpoint`): run `f(inputs)` without storing its
+/// intermediate activations, and recompute them during the backward pass.
+/// Trades about one extra forward pass for much less activation memory.
+///
+/// `params` are the trainable tensors `f` uses internally (e.g. a block's
+/// [`crate::nn::Module::parameters`]); their gradients are accumulated by the
+/// recomputation. The global RNG state and the autocast mode of the forward
+/// pass are restored for the recomputation, so dropout masks match. Side
+/// effects inside `f` (e.g. batch-norm running statistics) happen twice.
+pub fn grad_checkpoint<F>(inputs: &[&Tensor], params: Vec<Tensor>, f: F) -> Tensor
+where
+    F: Fn(&[Tensor]) -> Tensor + Send + Sync + 'static,
+{
+    let xs: Vec<Tensor> = inputs.iter().map(|&t| t.clone()).collect();
+    if !crate::is_grad_enabled() {
+        return f(&xs);
+    }
+    let rng_state = rand::state();
+    let autocast = crate::autocast_dtype();
+    let detached: Vec<Tensor> = xs.iter().map(Tensor::detach).collect();
+    let out = crate::no_grad(|| f(&detached));
+    let needs: Vec<bool> = xs.iter().map(Tensor::requires_grad).collect();
+    let mut parents = xs;
+    parents.extend(params.into_iter().filter(Tensor::requires_grad));
+    let n_parents = parents.len();
+    Tensor::from_op(out.storage(), out.shape().to_vec(), parents, "grad_checkpoint", move |g| {
+        let current = rand::state();
+        rand::set_state(rng_state);
+        let xs: Vec<Tensor> = detached
+            .iter()
+            .zip(&needs)
+            .map(|(t, &r)| if r { t.detach().requires_grad_() } else { t.detach() })
+            .collect();
+        let y = crate::enable_grad(|| {
+            let _ac = crate::tensor::AutocastGuard::new(autocast);
+            f(&xs)
+        });
+        rand::set_state(current);
+        if y.requires_grad() {
+            // parameter gradients accumulate directly into their `.grad`
+            y.backward_with(g.to_dtype(y.dtype()));
+        }
+        let mut grads: Vec<Option<Tensor>> = xs.iter().zip(&needs).map(|(x, &r)| if r { x.grad() } else { None }).collect();
+        grads.resize(n_parents, None);
+        grads
+    })
+}
+
 /// Fraction of rows where `argmax(logits) == target` (computed on the device).
 pub fn accuracy(logits: &Tensor, targets: impl IntoIndices) -> f32 {
     let pred = logits.argmax(-1, false);

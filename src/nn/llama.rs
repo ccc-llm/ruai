@@ -28,6 +28,7 @@ use crate::Device;
 use serde_json::Value;
 use std::io;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Llama 3.1-style RoPE frequency scaling (`rope_scaling.rope_type == "llama3"`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -203,6 +204,7 @@ impl LlamaConfig {
     }
 }
 
+#[derive(Clone)]
 struct Attention {
     q_proj: Linear,
     k_proj: Linear,
@@ -213,6 +215,7 @@ struct Attention {
     head_dim: usize,
 }
 
+#[derive(Clone)]
 struct DecoderLayer {
     input_layernorm: RMSNorm,
     self_attn: Attention,
@@ -234,6 +237,7 @@ pub struct Llama {
     /// int8 copy of a tied head, set by [`Llama::quantize_int8`].
     head_int8: Option<Linear>,
     inv_freq: Vec<f32>,
+    gradient_checkpointing: AtomicBool,
 }
 
 impl Attention {
@@ -266,10 +270,41 @@ impl Attention {
 }
 
 impl DecoderLayer {
+    /// The seven projection matrices with their names.
+    fn linears_mut(&mut self) -> [(&'static str, &mut Linear); 7] {
+        let a = &mut self.self_attn;
+        let m = &mut self.mlp;
+        [
+            ("self_attn.q_proj", &mut a.q_proj),
+            ("self_attn.k_proj", &mut a.k_proj),
+            ("self_attn.v_proj", &mut a.v_proj),
+            ("self_attn.o_proj", &mut a.o_proj),
+            ("mlp.gate_proj", &mut m.gate_proj),
+            ("mlp.up_proj", &mut m.up_proj),
+            ("mlp.down_proj", &mut m.down_proj),
+        ]
+    }
+
+    fn parameters(&self) -> Vec<Tensor> {
+        let mut v = self.input_layernorm.parameters();
+        for (_, l) in self.self_attn.linears() {
+            v.extend(l.parameters());
+        }
+        v.extend(self.post_attention_layernorm.parameters());
+        v.extend(self.mlp.parameters());
+        v
+    }
+
     fn forward(&self, x: &Tensor, cos: &Tensor, sin: &Tensor, kv: Option<&mut LayerKv>) -> Tensor {
         let x = x + self.self_attn.forward(&self.input_layernorm.forward(x), cos, sin, kv);
         &x + self.mlp.forward(&self.post_attention_layernorm.forward(&x))
     }
+}
+
+/// Whether a projection path like `self_attn.q_proj` matches a LoRA target
+/// (equal to one of its dot-separated components, or to the whole path).
+pub(crate) fn lora_target(path: &str, targets: &[&str]) -> bool {
+    targets.iter().any(|t| path == *t || path.split('.').any(|c| c == *t))
 }
 
 /// Hugging Face stores these as `[out, in]`; this crate as `[in, out]`.
@@ -308,6 +343,7 @@ impl Llama {
             lm_head: (!c.tie_word_embeddings).then(|| Linear::with_bias(d, c.vocab_size, false, device)),
             head_int8: None,
             inv_freq: config.rope_inv_freq(),
+            gradient_checkpointing: AtomicBool::new(false),
         }
     }
 
@@ -361,6 +397,7 @@ impl Llama {
     /// Parameters in Hugging Face layout (linear weights `[out, in]`).
     pub fn hf_state_dict(&self) -> Vec<(String, Tensor)> {
         assert!(self.head_int8.is_none() && !self.layers.iter().any(|l| l.self_attn.q_proj.is_quantized()), "cannot export an int8-quantized model");
+        assert!(!self.named_parameters().iter().any(|(n, _)| n.contains(".lora_")), "merge the LoRA adapters (merge_lora) before exporting");
         self.named_parameters()
             .into_iter()
             .map(|(n, t)| {
@@ -400,8 +437,14 @@ impl Llama {
         assert!(start + t <= max, "context {} exceeds max_position_embeddings {max}", start + t);
         let (cos, sin) = F::rope_cos_sin(&self.inv_freq, start, t, tokens.device());
         let mut x = self.embed_tokens.forward(tokens);
+        let checkpoint = cache.is_none() && self.gradient_checkpointing.load(Ordering::Relaxed) && crate::is_grad_enabled();
         for (i, layer) in self.layers.iter().enumerate() {
-            x = layer.forward(&x, &cos, &sin, cache.as_mut().map(|c| &mut c.layers[i]));
+            x = if checkpoint {
+                let l = layer.clone();
+                F::grad_checkpoint(&[&x, &cos, &sin], layer.parameters(), move |xs| l.forward(&xs[0], &xs[1], &xs[2], None))
+            } else {
+                layer.forward(&x, &cos, &sin, cache.as_mut().map(|c| &mut c.layers[i]))
+            };
         }
         let x = self.norm.forward(&x);
         match (&self.lm_head, &self.head_int8) {
@@ -423,6 +466,47 @@ impl Llama {
         let dev = self.embed_tokens.weight.device();
         let max = self.config.max_position_embeddings;
         crate::generation::generate_cached(prompt, n, max, dev, sampler, |t, c| self.forward_cached(t, c), on_token)
+    }
+
+    /// Recompute each decoder layer's activations during the backward pass
+    /// instead of storing them ([`F::grad_checkpoint`]): much less memory
+    /// for training on long sequences, about one extra forward pass of time.
+    pub fn set_gradient_checkpointing(&self, on: bool) {
+        self.gradient_checkpointing.store(on, Ordering::Relaxed);
+    }
+
+    /// Freeze the whole model and attach LoRA adapters ([`Linear::add_lora`])
+    /// to every projection whose name matches one of `targets`, e.g.
+    /// `&["q_proj", "v_proj"]` or `&["self_attn", "mlp"]` (a target matches a
+    /// whole dot-separated component of `self_attn.q_proj`, `mlp.down_proj`, ...).
+    /// Returns the number of adapted layers; train `trainable_parameters()`.
+    pub fn add_lora(&mut self, rank: usize, alpha: f32, targets: &[&str]) -> usize {
+        // freeze everything except adapters added earlier
+        for (name, p) in self.named_parameters() {
+            if !name.contains(".lora_") {
+                p.set_requires_grad(false);
+            }
+        }
+        let mut n = 0;
+        for l in &mut self.layers {
+            for (name, lin) in l.linears_mut() {
+                if lora_target(name, targets) {
+                    lin.add_lora(rank, alpha);
+                    n += 1;
+                }
+            }
+        }
+        assert!(n > 0, "no projection matches the LoRA targets {targets:?}");
+        n
+    }
+
+    /// Fold all LoRA adapters into their weights ([`Linear::merge_lora`]).
+    pub fn merge_lora(&mut self) {
+        for l in &mut self.layers {
+            for (_, lin) in l.linears_mut() {
+                lin.merge_lora();
+            }
+        }
     }
 
     /// Weight-only int8 quantization of every linear layer and the output

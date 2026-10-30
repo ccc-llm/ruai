@@ -586,7 +586,8 @@ impl Tensor {
 
     /// Weight-only int8 matmul `self @ (q * scales)` for inference:
     /// `self` `[..., k]` (float), `q` `[k, n]` (`I8`), `scales` `[n]` (`F32`).
-    /// Not differentiable.
+    /// Differentiable with respect to `self` only (the quantized weights are
+    /// frozen), so LoRA adapters can be trained on top of an int8 model.
     pub fn matmul_int8(&self, q: &Tensor, scales: &Tensor) -> Tensor {
         assert_float(self, "matmul_int8");
         assert_eq!(q.dtype(), DType::I8, "matmul_int8: weights must be I8");
@@ -598,7 +599,12 @@ impl Tensor {
         let s = self.backend().matmul_int8(&self.storage(), &q.storage(), &scales.to_dtype(DType::F32).storage(), m, k, n);
         let mut shape = self.shape().to_vec();
         *shape.last_mut().unwrap() = n;
-        Tensor::from_storage(s, shape)
+        let (q, scales) = (q.clone(), scales.clone());
+        Tensor::from_op(s, shape, vec![self.clone()], "matmul_int8", move |g| {
+            // dx = g @ Wᵀ with the dequantized W = q * scales (materialized only here)
+            let w = q.to_dtype(DType::F32) * scales.to_dtype(DType::F32);
+            vec![Some(g.matmul_nt(&w))]
+        })
     }
 
     // ------------------------------------------------------------------

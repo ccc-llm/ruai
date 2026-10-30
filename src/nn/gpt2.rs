@@ -26,6 +26,7 @@ use crate::tensor::Tensor;
 use crate::Device;
 use std::io;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// GPT-2 hyperparameters (names as in Hugging Face `GPT2Config`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,17 +62,20 @@ impl GPT2Config {
     }
 }
 
+#[derive(Clone)]
 struct Attention {
     c_attn: Linear, // [n_embd, 3 * n_embd]: q, k, v
     c_proj: Linear,
     n_head: usize,
 }
 
+#[derive(Clone)]
 struct Mlp {
     c_fc: Linear,
     c_proj: Linear,
 }
 
+#[derive(Clone)]
 struct Block {
     ln_1: LayerNorm,
     attn: Attention,
@@ -92,6 +96,7 @@ pub struct GPT2 {
     pub ln_f: LayerNorm,
     /// int8 copy of the tied head (`wteᵀ`), set by [`GPT2::quantize_int8`].
     head_int8: Option<Linear>,
+    gradient_checkpointing: AtomicBool,
 }
 
 impl Attention {
@@ -116,6 +121,24 @@ impl Attention {
 }
 
 impl Block {
+    fn linears_mut(&mut self) -> [(&'static str, &mut Linear); 4] {
+        [
+            ("attn.c_attn", &mut self.attn.c_attn),
+            ("attn.c_proj", &mut self.attn.c_proj),
+            ("mlp.c_fc", &mut self.mlp.c_fc),
+            ("mlp.c_proj", &mut self.mlp.c_proj),
+        ]
+    }
+
+    fn parameters(&self) -> Vec<Tensor> {
+        let mut v = self.ln_1.parameters();
+        for l in [&self.attn.c_attn, &self.attn.c_proj, &self.mlp.c_fc, &self.mlp.c_proj] {
+            v.extend(l.parameters());
+        }
+        v.extend(self.ln_2.parameters());
+        v
+    }
+
     fn forward(&self, x: &Tensor, kv: Option<&mut LayerKv>) -> Tensor {
         let x = x + self.attn.forward(&self.ln_1.forward(x), kv);
         let h = self.mlp.c_fc.forward(&self.ln_2.forward(&x)).gelu(); // "gelu_new" (tanh)
@@ -147,6 +170,7 @@ impl GPT2 {
             blocks,
             ln_f: LayerNorm::new(d, device),
             head_int8: None,
+            gradient_checkpointing: AtomicBool::new(false),
         }
     }
 
@@ -200,8 +224,14 @@ impl GPT2 {
         assert!(start + t <= self.config.n_positions, "context {} exceeds n_positions {}", start + t, self.config.n_positions);
         let pos = Tensor::from_indices(&(start..start + t).collect::<Vec<_>>(), &[t], tokens.device());
         let mut x = self.wte.forward(tokens) + self.wpe.forward(&pos);
+        let checkpoint = cache.is_none() && self.gradient_checkpointing.load(Ordering::Relaxed) && crate::is_grad_enabled();
         for (i, blk) in self.blocks.iter().enumerate() {
-            x = blk.forward(&x, cache.as_mut().map(|c| &mut c.layers[i]));
+            x = if checkpoint {
+                let b = blk.clone();
+                F::grad_checkpoint(&[&x], blk.parameters(), move |xs| b.forward(&xs[0], None))
+            } else {
+                blk.forward(&x, cache.as_mut().map(|c| &mut c.layers[i]))
+            };
         }
         let x = self.ln_f.forward(&x);
         match &self.head_int8 {
@@ -229,6 +259,45 @@ impl GPT2 {
         let dev = self.wte.weight.device();
         let max = self.config.n_positions;
         crate::generation::generate_cached(prompt, n, max, dev, sampler, |t, c| self.forward_cached(t, c), &mut on_token)
+    }
+
+    /// Recompute each block's activations during the backward pass instead
+    /// of storing them ([`F::grad_checkpoint`]).
+    pub fn set_gradient_checkpointing(&self, on: bool) {
+        self.gradient_checkpointing.store(on, Ordering::Relaxed);
+    }
+
+    /// Freeze the model and attach LoRA adapters to every linear layer
+    /// matching `targets` (components of `attn.c_attn`, `attn.c_proj`,
+    /// `mlp.c_fc`, `mlp.c_proj`; e.g. `&["c_attn"]` or `&["attn", "mlp"]`).
+    /// Returns the number of adapted layers.
+    pub fn add_lora(&mut self, rank: usize, alpha: f32, targets: &[&str]) -> usize {
+        // freeze everything except adapters added earlier
+        for (name, p) in self.named_parameters() {
+            if !name.contains(".lora_") {
+                p.set_requires_grad(false);
+            }
+        }
+        let mut n = 0;
+        for b in &mut self.blocks {
+            for (name, lin) in b.linears_mut() {
+                if super::llama::lora_target(name, targets) {
+                    lin.add_lora(rank, alpha);
+                    n += 1;
+                }
+            }
+        }
+        assert!(n > 0, "no linear layer matches the LoRA targets {targets:?}");
+        n
+    }
+
+    /// Fold all LoRA adapters into their weights.
+    pub fn merge_lora(&mut self) {
+        for b in &mut self.blocks {
+            for (_, lin) in b.linears_mut() {
+                lin.merge_lora();
+            }
+        }
     }
 
     /// Weight-only int8 quantization of every linear layer and of the

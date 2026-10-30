@@ -28,6 +28,22 @@ pub trait Module: Send + Sync {
         self.named_parameters().into_iter().map(|(_, t)| t).collect()
     }
 
+    /// Parameters that currently require gradients (what an optimizer should
+    /// get after [`Module::freeze`] / [`crate::nn::Linear::add_lora`]).
+    fn trainable_parameters(&self) -> Vec<Tensor> {
+        self.parameters().into_iter().filter(Tensor::requires_grad).collect()
+    }
+
+    /// Stop gradient tracking for every parameter (e.g. before adding LoRA adapters).
+    fn freeze(&self) {
+        self.parameters().iter().for_each(|p| p.set_requires_grad(false));
+    }
+
+    /// Re-enable gradient tracking for every floating-point parameter.
+    fn unfreeze(&self) {
+        self.parameters().iter().filter(|p| p.dtype().is_float()).for_each(|p| p.set_requires_grad(true));
+    }
+
     /// Switch to training mode.
     fn train(&self) {
         self.set_training(true);
@@ -76,6 +92,13 @@ pub trait Module: Send + Sync {
     fn num_parameters(&self) -> usize {
         self.parameters().iter().map(|p| p.numel()).sum()
     }
+}
+
+/// Only the LoRA adapter tensors (`*.lora_a`, `*.lora_b`) of a model, e.g. to
+/// save a small fine-tuning result with [`crate::serialize::save_tensors`]
+/// and load it later with `load_state_dict(.., strict = false)`.
+pub fn lora_state_dict(model: &dyn Module) -> Vec<(String, Tensor)> {
+    model.named_parameters().into_iter().filter(|(n, _)| n.ends_with(".lora_a") || n.ends_with(".lora_b")).collect()
 }
 
 /// Prefix child names: `("weight", t)` -> `("fc1.weight", t)`.

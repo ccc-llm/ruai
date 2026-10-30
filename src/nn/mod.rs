@@ -13,5 +13,5 @@ pub mod transformer;
 pub mod vit;
 
 pub use layers::*;
-pub use module::{prefixed, Module, Sequential};
+pub use module::{lora_state_dict, prefixed, Module, Sequential};
 pub use transformer::{GPTConfig, KvCache, LayerKv, MultiHeadAttention, TransformerBlock, GPT};

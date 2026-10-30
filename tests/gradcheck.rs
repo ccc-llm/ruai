@@ -179,3 +179,10 @@ fn llama_components() {
     let ffn = nn::SwiGLU::new(4, 8, dev());
     gradcheck("swiglu_input", &[&[2, 4]], move |x| ffn.forward(&x[0]));
 }
+
+#[test]
+fn int8_matmul_input_gradient() {
+    let q = ruai::Tensor::from_vec(vec![3., -2., 7., 1., 0., -5.], &[3, 2], dev()).to_dtype(ruai::DType::I8);
+    let s = Tensor::from_vec(vec![0.1, 0.3], &[2], dev());
+    gradcheck("matmul_int8", &[&[2, 3]], move |x| x[0].matmul_int8(&q, &s));
+}

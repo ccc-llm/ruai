@@ -160,6 +160,20 @@ println!("{}", tok.decode(&ids, true));                         // true：略過
 
 > ⚠️ 尚未以真實權重驗證：HF 版面、RoPE、llama3 頻率縮放、config 與 `tokenizer.json` 解析都以合成資料測試。下載後 `cargo test --release --test llama --test tokenizer` 會自動跑真實權重測試（SmolLM2 要接出 "Paris"、GPT-2 的 `tokenizer.json` 要與 `vocab.json` + `merges.txt` 逐 token 相同），也可在 GitHub Actions 手動觸發 CI 的 pretrained 工作。
 
+### 微調：LoRA 與 gradient checkpointing
+
+```rust
+let mut model = Llama::from_pretrained("data/smollm2-135m", dev)?;
+model.add_lora(8, 16.0, &["q_proj", "v_proj"]);       // 凍結整個模型，只訓練低秩 adapter（rank 8，alpha 16）
+model.set_gradient_checkpointing(true);              // backward 時重算每層 activation，省記憶體
+let mut opt = Adam::adamw(model.trainable_parameters(), 1e-4, 0.0);
+// ...訓練...
+serialize::save_tensors("adapter.safetensors", &nn::lora_state_dict(&model))?;  // 只存 adapter（很小）
+model.merge_lora();                                   // 併回權重後可 save_pretrained 匯出成 HF 格式
+```
+
+`add_lora` 也可用在 `quantize_int8()` 之後（QLoRA 式：int8 底模 + f32 adapter）。`F::grad_checkpoint(inputs, params, f)` 可用在任意子網路，重算時會還原 RNG 狀態與 autocast 模式，所以含 dropout 的梯度也與不重算時完全相同。
+
 ### ResNet / ViT / encoder-decoder
 
 ```rust
@@ -333,6 +347,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - `tests/llama.rs`：RMSNorm 數值、RoPE 保持範數且內積只依相對位置、`repeat_kv` 版面、llama3 頻率縮放、HF `config.json` 解析與往返、GQA 下 KV cache 逐步／分段 prefill 與完整前向一致、因果性與 batch 一致、有無 cache 的生成相同、HF 版面（`[out, in]` 形狀與逐元素轉置）存檔／載入、學會序列、int8、autocast 梯度與 f32 一致
 - `tests/vision.rs`：ResNet-18/34/50 與 ViT-B/16 的參數數量與 torchvision / timm 完全一致、ResNet 參數名稱與形狀、torchvision 版面（1-D BN、`[out, in]` fc、`num_batches_tracked`）載入後輸出相同、max pool 的 padding 是 -inf、小型 ResNet / ViT 學會分類
 - `tests/seq2seq.rs`：解碼端 KV cache 與 teacher forcing 一致、有 padding mask 時來源 padding 完全不影響輸出（沒 mask 時會影響）、`cross_entropy_ignore`、學會反轉序列
+- `tests/finetune.rs`：LoRA 初始為恆等、只訓練 adapter、凍結參數不變、合併前後輸出相同、只存 adapter 再載入、int8 底模上可訓練；gradient checkpointing 在 Llama / Llama+LoRA / 含 dropout 的 GPT / GPT-2 上梯度與不重算時相同
 - `tests/training.rs`：MLP 學會 XOR、CNN（含 BatchNorm）收斂、GPT 記住序列、存檔/載入 round-trip
 
 ## 版本規劃
@@ -351,10 +366,10 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v1.0 | API 整理（`GPT::generate` 改用 `Sampler`）、所有公開項目都有 rustdoc、clippy 乾淨、`cargo package` 可打包 | ✅（crates.io 名稱：`ruai`） |
 | v1.1 | GitHub Actions CI（Linux / macOS，可手動觸發 GPT-2 真實權重測試）、`zeros_like` 保留 dtype、`collator` 保留影像形狀 | ✅ |
 | v1.2 | Hugging Face `tokenizer.json` 分詞器（`HfTokenizer`）、`llama --model` 載入預訓練模型 | ✅（尚未以真實檔案驗證） |
-| v1.3 | 預先配置的 KV cache（O(n) 解碼）、LoRA、gradient checkpointing | |
+| v1.3 | LoRA（含 int8 底模）、gradient checkpointing、`freeze` / `trainable_parameters` | ✅ |
 | v1.4 | int4 權重量化 | |
 | v1.5 | 融合 attention kernel | |
-| v2.0 | 不複製的 strided view、二階導數 | |
+| v2.0 | 不複製的 strided view、預先配置的 KV cache、二階導數 | |
 
 ## 目前限制
 

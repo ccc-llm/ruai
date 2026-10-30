@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.3.0
+
+- LoRA: `Linear::add_lora` / `merge_lora`, `Llama::add_lora` and `GPT2::add_lora` (by
+  projection name, e.g. `&["q_proj", "v_proj"]`), `nn::lora_state_dict` to save only the
+  adapters; works on int8-quantized models (QLoRA-style).
+- Gradient checkpointing: `F::grad_checkpoint` (replays the RNG state and autocast mode) and
+  `set_gradient_checkpointing` on `Llama`, `GPT2` and `GPT`; gradients are identical.
+- `Module::trainable_parameters`, `freeze`, `unfreeze`; `ruai::enable_grad`.
+- `matmul_int8` is now differentiable with respect to its input (needed to train adapters
+  through int8 layers).
+- Layers and transformer blocks are `Clone` (sharing parameters).
+- The preallocated KV cache planned for this version moved to 2.0: without strided views
+  every read of a preallocated buffer would copy it anyway.
+
 ## 1.2.0
 
 - `tokenizer::HfTokenizer`: Hugging Face `tokenizer.json` for BPE models (GPT-2, Llama 2/3,

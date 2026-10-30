@@ -104,6 +104,20 @@ impl Drop for NoGradGuard {
     }
 }
 
+/// Run `f` with gradient recording switched on, even inside [`no_grad`] or a
+/// backward pass (like `torch.enable_grad()`).
+pub fn enable_grad<T>(f: impl FnOnce() -> T) -> T {
+    let prev = GRAD_ENABLED.with(|g| g.replace(true));
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            GRAD_ENABLED.with(|g| g.set(self.0));
+        }
+    }
+    let _r = Restore(prev);
+    f()
+}
+
 /// Run `f` without recording operations for autograd.
 pub fn no_grad<T>(f: impl FnOnce() -> T) -> T {
     let _g = NoGradGuard::new();

@@ -136,6 +136,21 @@ impl MultiHeadAttention {
     }
 }
 
+impl Clone for MultiHeadAttention {
+    /// Shares the parameters (like cloning a [`Tensor`]).
+    fn clone(&self) -> Self {
+        MultiHeadAttention {
+            wq: self.wq.clone(),
+            wk: self.wk.clone(),
+            wv: self.wv.clone(),
+            wo: self.wo.clone(),
+            n_heads: self.n_heads,
+            dropout: self.dropout,
+            training: AtomicBool::new(self.training.load(Ordering::Relaxed)),
+        }
+    }
+}
+
 impl Module for MultiHeadAttention {
     /// Unmasked self-attention.
     fn forward(&self, x: &Tensor) -> Tensor {
@@ -204,6 +219,21 @@ impl TransformerBlock {
     }
 }
 
+impl Clone for TransformerBlock {
+    /// Shares the parameters (like cloning a [`Tensor`]).
+    fn clone(&self) -> Self {
+        TransformerBlock {
+            ln1: self.ln1.clone(),
+            attn: self.attn.clone(),
+            ln2: self.ln2.clone(),
+            ffn: self.ffn.clone(),
+            causal: self.causal,
+            dropout: self.dropout,
+            training: AtomicBool::new(self.training.load(Ordering::Relaxed)),
+        }
+    }
+}
+
 impl Module for TransformerBlock {
     fn forward(&self, x: &Tensor) -> Tensor {
         if self.causal {
@@ -240,6 +270,7 @@ pub struct GPT {
     pub head: Linear,
     /// Maximum context length.
     pub max_len: usize,
+    gradient_checkpointing: AtomicBool,
 }
 
 /// Hyperparameters of [`GPT`].
@@ -271,6 +302,7 @@ impl GPT {
             ln_f: LayerNorm::new(cfg.dim, device),
             head: Linear::new(cfg.dim, cfg.vocab_size, device),
             max_len: cfg.max_len,
+            gradient_checkpointing: AtomicBool::new(false),
         }
     }
 
@@ -286,10 +318,22 @@ impl GPT {
         assert!(t <= self.max_len, "sequence length {t} > max_len {}", self.max_len);
         let mut x = self.embed(tokens, 0);
         let mask = F::causal_mask(t, x.device());
+        let checkpoint = self.gradient_checkpointing.load(Ordering::Relaxed) && crate::is_grad_enabled();
         for blk in &self.blocks {
-            x = blk.forward_masked(&x, Some(&mask));
+            x = if checkpoint {
+                let b = blk.clone();
+                F::grad_checkpoint(&[&x, &mask], blk.parameters(), move |xs| b.forward_masked(&xs[0], Some(&xs[1])))
+            } else {
+                blk.forward_masked(&x, Some(&mask))
+            };
         }
         self.head.forward(&self.ln_f.forward(&x))
+    }
+
+    /// Recompute each block's activations during the backward pass instead
+    /// of storing them ([`F::grad_checkpoint`]).
+    pub fn set_gradient_checkpointing(&self, on: bool) {
+        self.gradient_checkpointing.store(on, Ordering::Relaxed);
     }
 
     /// Token + position embeddings for positions `start..start + T`.

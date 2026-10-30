@@ -9,7 +9,21 @@ fn uniform_param(shape: &[usize], bound: f32, device: Device) -> Tensor {
     Tensor::rand_uniform(shape, -bound, bound, device).requires_grad_()
 }
 
+/// Low-rank adapter (Hu et al. 2021) on a [`Linear`]:
+/// `y += (x @ A @ B) * scale`, see [`Linear::add_lora`].
+#[derive(Clone)]
+pub struct Lora {
+    /// `[in, rank]`, random init.
+    pub a: Tensor,
+    /// `[rank, out]`, zero init (so the adapter starts as a no-op).
+    pub b: Tensor,
+    /// `alpha / rank`.
+    pub scale: f32,
+}
+
 /// Fully connected layer `y = x @ W + b`, with `W` stored as `[in, out]`.
+/// Cloning shares the parameters (like cloning a [`Tensor`]).
+#[derive(Clone)]
 pub struct Linear {
     /// `[in, out]` weight matrix.
     pub weight: Tensor,
@@ -18,6 +32,8 @@ pub struct Linear {
     /// Weight-only int8 copy `(q [in, out] I8, scale [out] F32)` after
     /// [`Linear::quantize_int8`]; `weight` is then an empty placeholder.
     int8: Option<(Tensor, Tensor)>,
+    /// Optional low-rank adapter.
+    pub lora: Option<Lora>,
 }
 
 impl Linear {
@@ -33,17 +49,50 @@ impl Linear {
             weight: uniform_param(&[in_features, out_features], bound, device),
             bias: bias.then(|| uniform_param(&[out_features], bound, device)),
             int8: None,
+            lora: None,
         }
     }
 
     /// Wrap existing tensors (`weight` `[in, out]`).
     pub fn from_weight(weight: Tensor, bias: Option<Tensor>) -> Self {
-        Linear { weight, bias, int8: None }
+        Linear { weight, bias, int8: None, lora: None }
     }
 
     /// Whether [`Linear::quantize_int8`] has been applied.
     pub fn is_quantized(&self) -> bool {
         self.int8.is_some()
+    }
+
+    /// Attach a trainable LoRA adapter of rank `rank` (`scale = alpha / rank`)
+    /// and freeze the layer's own weight and bias, for parameter-efficient
+    /// fine-tuning. The output is unchanged until the adapter is trained
+    /// (`B` starts at zero). Works on int8-quantized layers too (QLoRA-style).
+    /// The adapter is saved as `lora_a` / `lora_b`.
+    pub fn add_lora(&mut self, rank: usize, alpha: f32) {
+        assert!(rank > 0, "LoRA rank must be positive");
+        let (k, n) = match &self.int8 {
+            Some((q, _)) => (q.shape()[0], q.shape()[1]),
+            None => (self.weight.shape()[0], self.weight.shape()[1]),
+        };
+        let dev = self.bias.as_ref().map_or_else(|| self.weight.device(), Tensor::device);
+        self.weight.set_requires_grad(false);
+        if let Some(b) = &self.bias {
+            b.set_requires_grad(false);
+        }
+        self.lora = Some(Lora {
+            a: uniform_param(&[k, rank], 1.0 / (k as f32).sqrt(), dev),
+            b: Tensor::zeros(&[rank, n], dev).requires_grad_(),
+            scale: alpha / rank as f32,
+        });
+    }
+
+    /// Fold the adapter into the weight (`W += A @ B * scale`) and remove it;
+    /// the weight stays frozen. Not possible on an int8 layer.
+    pub fn merge_lora(&mut self) {
+        let Some(l) = self.lora.take() else { return };
+        assert!(self.int8.is_none(), "cannot merge LoRA into an int8 weight");
+        let merged = no_grad(|| &self.weight + &(l.a.matmul(&l.b) * l.scale).to_dtype(self.weight.dtype()));
+        self.weight.set_storage(merged.storage());
     }
 
     /// Replace the weight by a symmetric per-output-channel int8 copy
@@ -76,6 +125,14 @@ impl Module for Linear {
             Some((q, s)) => x.matmul_int8(q, s),
             None => x.matmul(&self.weight), // half under autocast
         };
+        let y = match &self.lora {
+            Some(l) => {
+                let d = x.matmul(&l.a).matmul(&l.b) * l.scale;
+                let d = d.to_dtype(y.dtype());
+                y + d
+            }
+            None => y,
+        };
         match &self.bias {
             Some(b) => {
                 let b = b.to_dtype(y.dtype());
@@ -91,6 +148,10 @@ impl Module for Linear {
         }
         if let Some(b) = &self.bias {
             v.push(("bias".to_string(), b.clone()));
+        }
+        if let Some(l) = &self.lora {
+            v.push(("lora_a".to_string(), l.a.clone()));
+            v.push(("lora_b".to_string(), l.b.clone()));
         }
         v
     }
@@ -273,6 +334,7 @@ impl Module for BatchNorm2d {
 }
 
 /// Layer normalization over the last dimension.
+#[derive(Clone)]
 pub struct LayerNorm {
     /// Learned scale `[dim]`.
     pub weight: Tensor,
@@ -303,6 +365,7 @@ impl Module for LayerNorm {
 }
 
 /// Lookup table of `num` vectors of size `dim`.
+#[derive(Clone)]
 pub struct Embedding {
     /// `[num, dim]` table.
     pub weight: Tensor,
@@ -384,6 +447,7 @@ activation!(Tanh, tanh, "Hyperbolic tangent element-wise.");
 activation!(Sigmoid, sigmoid, "Logistic sigmoid element-wise.");
 
 /// Two-layer MLP used inside transformer blocks: Linear -> GELU -> Linear.
+#[derive(Clone)]
 pub struct FeedForward {
     /// `[dim, hidden]` input projection.
     pub fc1: Linear,
@@ -410,6 +474,7 @@ impl Module for FeedForward {
 }
 
 /// RMS normalization over the last dimension with a learned scale (Llama).
+#[derive(Clone)]
 pub struct RMSNorm {
     /// Learned scale `[dim]`.
     pub weight: Tensor,
@@ -435,6 +500,7 @@ impl Module for RMSNorm {
 
 /// Gated feed-forward (Shazeer 2020) used by Llama:
 /// `down_proj(silu(gate_proj(x)) * up_proj(x))`, all without bias.
+#[derive(Clone)]
 pub struct SwiGLU {
     /// `[dim, hidden]` gate projection (SiLU branch).
     pub gate_proj: Linear,
