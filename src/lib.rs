@@ -12,6 +12,7 @@
 //! * [`checkpoint`] — resumable training checkpoints (model + optimizer + RNG)
 //! * [`nn::gpt2`] / [`tokenizer`] / [`generation`] — pretrained GPT-2, BPE, sampling
 //! * [`nn::llama`] — Llama-family decoder (RMSNorm, RoPE, SwiGLU, GQA), Hugging Face compatible
+//! * [`nn::resnet`] / [`nn::vit`] / [`nn::seq2seq`] — ResNet, Vision Transformer, encoder-decoder Transformer
 //! * [`data`] — `Dataset` / `DataLoader` with multi-threaded prefetching
 //! * [`metrics`] — running averages, accuracy, throughput
 //! * [`backend`] — the device abstraction (CPU today; CUDA and MPS plug in

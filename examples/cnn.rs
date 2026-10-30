@@ -6,12 +6,16 @@
 //! t10k-labels-idx1-ubyte); otherwise generates a synthetic shapes dataset.
 //!
 //!     cargo run --release --example cnn
-//!     cargo run --release --example cnn -- --resume        # continue from runs/cnn/last.safetensors
+//!     cargo run --release --example cnn -- --resume        # continue from runs/<model>/last.safetensors
 //!     cargo run --release --features mps --example cnn -- --device mps
+//!     cargo run --release --example cnn -- --model resnet  # small ResNet (cnn | resnet | vit)
+//!     cargo run --release --example cnn -- --model vit     # Vision Transformer (4x4 patches)
 
 use rustnn::checkpoint::{self, TrainState};
 use rustnn::data::{Batch, ClassificationData, DataLoader};
 use rustnn::metrics::{Accuracy, RunningMean, Throughput};
+use rustnn::nn::resnet::{ResNet, ResNetConfig};
+use rustnn::nn::vit::{ViT, ViTConfig};
 use rustnn::nn::{self, Module, Sequential};
 use rustnn::optim::lr::{CosineLr, LrScheduler};
 use rustnn::optim::{Adam, Optimizer};
@@ -19,7 +23,11 @@ use rustnn::prelude::*;
 use rustnn::{rand, serialize};
 use std::path::Path;
 
-const CKPT: &str = "runs/cnn/last.safetensors";
+/// `--model cnn|resnet|vit` (default cnn).
+fn model_arg() -> String {
+    let args: Vec<String> = std::env::args().collect();
+    args.iter().position(|a| a == "--model").map_or("cnn".into(), |i| args[i + 1].clone())
+}
 
 /// `--device cpu|mps|cuda|auto` (or the `RUSTNN_DEVICE` env var); defaults to CPU.
 fn device_arg() -> Device {
@@ -75,7 +83,16 @@ fn synthetic(n: usize) -> ClassificationData {
     ClassificationData::new(images, labels, &[1, s, s])
 }
 
-fn build_model(size: usize, classes: usize, device: Device) -> Sequential {
+fn build_model(kind: &str, size: usize, classes: usize, device: Device) -> Box<dyn Module> {
+    match kind {
+        "cnn" => Box::new(build_cnn(size, classes, device)),
+        "resnet" => Box::new(ResNet::new(ResNetConfig::small(1, &[16, 32, 64], 1, classes), device)),
+        "vit" => Box::new(ViT::new(ViTConfig::tiny(size, 4, 1, classes, 64, 4, 4), device)),
+        other => panic!("--model expects cnn, resnet or vit, got {other}"),
+    }
+}
+
+fn build_cnn(size: usize, classes: usize, device: Device) -> Sequential {
     let flat = 16 * (size / 4) * (size / 4);
     Sequential::new()
         .add(nn::Conv2d::new(1, 8, 3, 1, 1, device))
@@ -98,7 +115,7 @@ fn images(b: &Batch, size: usize) -> Tensor {
     b.inputs.reshape(&[b.inputs.shape()[0], 1, size, size])
 }
 
-fn evaluate(model: &Sequential, loader: &DataLoader<ClassificationData, Batch>, size: usize) -> f32 {
+fn evaluate(model: &dyn Module, loader: &DataLoader<ClassificationData, Batch>, size: usize) -> f32 {
     model.eval();
     let mut acc = Accuracy::new();
     no_grad(|| {
@@ -114,7 +131,9 @@ fn main() {
     rand::manual_seed(0);
     let device = device_arg();
     let resume = std::env::args().any(|a| a == "--resume");
-    println!("device: {device}");
+    let kind = model_arg();
+    let ckpt = format!("runs/{kind}/last.safetensors");
+    println!("device: {device}, model: {kind}");
     let dir = Path::new("data/mnist");
     let (train, test, classes, epochs) = match (load_mnist(dir, "train"), load_mnist(dir, "t10k")) {
         (Some(a), Some(b)) => {
@@ -136,16 +155,16 @@ fn main() {
         .num_workers(2);
     let test_loader = DataLoader::new(test, 256, ClassificationData::collate(device));
 
-    let model = build_model(size, classes, device);
+    let model = build_model(&kind, size, classes, device);
     println!("model parameters: {}", model.num_parameters());
     let mut opt = Adam::new(model.parameters(), 2e-3);
     let total_steps = epochs * train_loader.len();
     let sched = CosineLr { base_lr: 2e-3, min_lr: 1e-4, warmup: 20, total: total_steps };
 
     let mut state = TrainState::default();
-    if resume && Path::new(CKPT).exists() {
-        state = checkpoint::load(CKPT, &model, &mut opt).expect("load checkpoint");
-        println!("resumed from {CKPT}: epoch {}, step {}", state.epoch, state.step);
+    if resume && Path::new(&ckpt).exists() {
+        state = checkpoint::load(&ckpt, &model, &mut opt).expect("load checkpoint");
+        println!("resumed from {ckpt}: epoch {}, step {}", state.epoch, state.step);
     }
 
     while (state.epoch as usize) < epochs {
@@ -167,9 +186,9 @@ fn main() {
         state.epoch += 1;
         let acc = evaluate(&model, &test_loader, size);
         state.extra.insert("test_acc".into(), format!("{acc:.4}"));
-        checkpoint::save(CKPT, &model, &opt, &state).expect("save checkpoint");
+        checkpoint::save(&ckpt, &model, &opt, &state).expect("save checkpoint");
         println!(
-            "epoch {}: train loss {:.4}, test acc {:.2}%, {:.0} img/s, lr {:.5}  (checkpoint: {CKPT})",
+            "epoch {}: train loss {:.4}, test acc {:.2}%, {:.0} img/s, lr {:.5}  (checkpoint: {ckpt})",
             state.epoch,
             loss_avg.mean(),
             100.0 * acc,
@@ -179,9 +198,9 @@ fn main() {
     }
 
     // export inference weights (safetensors: loadable from PyTorch / HF too), reload, evaluate
-    let path = "cnn.safetensors";
-    serialize::save(path, &model).expect("save");
-    let restored = build_model(size, classes, device);
-    serialize::load(path, &restored).expect("load");
-    println!("reloaded model test acc: {:.2}% (weights in {path})", 100.0 * evaluate(&restored, &test_loader, size));
+    let path = format!("{kind}.safetensors");
+    serialize::save(&path, &model).expect("save");
+    let restored = build_model(&kind, size, classes, device);
+    serialize::load(&path, &restored).expect("load");
+    println!("reloaded model test acc: {:.2}% (weights in {path})", 100.0 * evaluate(&*restored, &test_loader, size));
 }

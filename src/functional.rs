@@ -35,6 +35,24 @@ pub fn cross_entropy(logits: &Tensor, targets: impl IntoIndices, label_smoothing
     }
 }
 
+/// Cross-entropy like [`cross_entropy`] (no smoothing), averaged only over
+/// rows whose target is not `ignore_index` (e.g. padding).
+pub fn cross_entropy_ignore(logits: &Tensor, targets: impl IntoIndices, ignore_index: usize) -> Tensor {
+    assert_eq!(logits.rank(), 2, "cross_entropy_ignore expects [N, C] logits");
+    let n = logits.shape()[0];
+    let dev = logits.device();
+    let t = targets.into_indices(dev).to_vec_i32();
+    assert_eq!(t.len(), n, "cross_entropy_ignore: {} targets for {n} rows", t.len());
+    // ignored rows may hold any id: gather class 0 and give it weight 0
+    let keep: Vec<f32> = t.iter().map(|&x| if x as usize == ignore_index { 0.0 } else { 1.0 }).collect();
+    let safe: Vec<i32> = t.iter().map(|&x| if x as usize == ignore_index { 0 } else { x }).collect();
+    let count = keep.iter().sum::<f32>().max(1.0);
+    let keep = Tensor::from_vec(keep, &[n, 1], dev);
+    let lsm = logits.to_dtype(crate::DType::F32).log_softmax(-1);
+    let nll = (lsm.gather(1, &Tensor::from_vec_i32(safe, &[n, 1], dev)) * &keep).sum_all();
+    nll * (-1.0 / count)
+}
+
 /// Mean squared error.
 pub fn mse_loss(pred: &Tensor, target: &Tensor) -> Tensor {
     let d = pred - target;
@@ -88,6 +106,19 @@ fn pool_patches(x: &Tensor, k: usize, stride: usize, padding: usize) -> (Tensor,
 pub fn max_pool2d(x: &Tensor, kernel: usize, stride: usize) -> Tensor {
     let (p, out) = pool_patches(x, kernel, stride, 0);
     p.max(1, false).reshape(&out)
+}
+
+/// 2D max pooling with implicit `-inf` padding of `padding` on each side
+/// (like `torch.nn.functional.max_pool2d(..., padding=p)`).
+pub fn max_pool2d_padded(x: &Tensor, kernel: usize, stride: usize, padding: usize) -> Tensor {
+    if padding == 0 {
+        return max_pool2d(x, kernel, stride);
+    }
+    assert!(padding <= kernel / 2, "max_pool2d: padding {padding} must be at most half the kernel {kernel}");
+    let (p, out) = pool_patches(x, kernel, stride, padding);
+    // im2col pads with zeros: mask those positions out with a very negative value
+    let valid = crate::no_grad(|| pool_patches(&Tensor::ones(x.shape(), x.device()), kernel, stride, padding).0);
+    p.masked_fill(&valid.lt_scalar(0.5), -1e30).max(1, false).reshape(&out)
 }
 
 /// 2D average pooling (square kernel).
@@ -213,6 +244,14 @@ pub fn causal_mask_offset(tq: usize, past: usize, device: crate::Device) -> Tens
         }
     }
     Tensor::from_vec(m, &[tq, tk], device)
+}
+
+/// Additive key-padding mask `[B, 1, 1, T]` for `tokens` `[B, T]`: `-1e9`
+/// where the token is `pad_id`, `0` elsewhere (broadcasts over heads and queries).
+pub fn padding_mask(tokens: &Tensor, pad_id: usize) -> Tensor {
+    let (b, t) = (tokens.shape()[0], tokens.shape()[1]);
+    let m: Vec<f32> = tokens.to_vec_i32().iter().map(|&x| if x as usize == pad_id { -1e9 } else { 0.0 }).collect();
+    Tensor::from_vec(m, &[b, 1, 1, t], tokens.device())
 }
 
 /// Scaled dot-product attention. `q`: `[.., Tq, D]`, `k`, `v`: `[.., Tk, D]`,

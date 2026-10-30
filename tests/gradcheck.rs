@@ -97,6 +97,7 @@ fn nn_functions() {
     gradcheck("softmax", &[&[3, 5]], |x| F::softmax(&x[0], -1));
     gradcheck("log_softmax", &[&[3, 5]], |x| F::log_softmax(&x[0], 1));
     gradcheck("cross_entropy", &[&[4, 3]], |x| F::cross_entropy(&x[0], &[0usize, 2, 1, 2], 0.1));
+    gradcheck("cross_entropy_ignore", &[&[4, 3]], |x| F::cross_entropy_ignore(&x[0], &[0usize, 9, 1, 2], 9));
     gradcheck("mse", &[&[4], &[4]], |x| F::mse_loss(&x[0], &x[1]));
     gradcheck("bce_logits", &[&[5]], |x| {
         F::binary_cross_entropy_with_logits(&x[0], &Tensor::from_slice(&[0., 1., 1., 0., 1.], &[5]).to(dev()))
@@ -125,6 +126,7 @@ fn convolution_and_pooling() {
     gradcheck("conv2d_stride2", &[&[1, 1, 6, 6], &[2, 1, 2, 2]], |x| F::conv2d(&x[0], &x[1], None, 2, 0));
     gradcheck("max_pool", &[&[1, 2, 4, 4]], |x| F::max_pool2d(&x[0], 2, 2));
     gradcheck("avg_pool", &[&[1, 2, 4, 4]], |x| F::avg_pool2d(&x[0], 2, 2));
+    gradcheck("max_pool_padded", &[&[1, 2, 5, 5]], |x| F::max_pool2d_padded(&x[0], 3, 2, 1));
 }
 
 #[test]

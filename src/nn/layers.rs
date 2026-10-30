@@ -107,10 +107,15 @@ pub struct Conv2d {
 
 impl Conv2d {
     pub fn new(in_ch: usize, out_ch: usize, kernel: usize, stride: usize, padding: usize, device: Device) -> Self {
+        Self::with_bias(in_ch, out_ch, kernel, stride, padding, true, device)
+    }
+
+    /// Like [`Conv2d::new`]; `bias = false` for convolutions followed by batch norm.
+    pub fn with_bias(in_ch: usize, out_ch: usize, kernel: usize, stride: usize, padding: usize, bias: bool, device: Device) -> Self {
         let bound = 1.0 / ((in_ch * kernel * kernel) as f32).sqrt();
         Conv2d {
             weight: uniform_param(&[out_ch, in_ch, kernel, kernel], bound, device),
-            bias: Some(uniform_param(&[out_ch], bound, device)),
+            bias: bias.then(|| uniform_param(&[out_ch], bound, device)),
             stride,
             padding,
         }
@@ -133,17 +138,32 @@ impl Module for Conv2d {
 pub struct MaxPool2d {
     pub kernel: usize,
     pub stride: usize,
+    /// Implicit `-inf` padding on each side.
+    pub padding: usize,
 }
 
 impl MaxPool2d {
     pub fn new(kernel: usize, stride: usize) -> Self {
-        MaxPool2d { kernel, stride }
+        MaxPool2d { kernel, stride, padding: 0 }
+    }
+
+    pub fn with_padding(kernel: usize, stride: usize, padding: usize) -> Self {
+        MaxPool2d { kernel, stride, padding }
     }
 }
 
 impl Module for MaxPool2d {
     fn forward(&self, x: &Tensor) -> Tensor {
-        F::max_pool2d(x, self.kernel, self.stride)
+        F::max_pool2d_padded(x, self.kernel, self.stride, self.padding)
+    }
+}
+
+/// Global average pooling `[N, C, H, W]` -> `[N, C]`.
+pub struct GlobalAvgPool;
+
+impl Module for GlobalAvgPool {
+    fn forward(&self, x: &Tensor) -> Tensor {
+        F::adaptive_avg_pool_1x1(x)
     }
 }
 
