@@ -193,6 +193,24 @@ let loss = F::cross_entropy_ignore(&logits.reshape(&[b * t, v]), &tgt_out, PAD);
 let out = s2s.greedy(&src_ids, BOS, Some(EOS), 50);                  // 解碼端 self-attention 用 KV cache
 ```
 
+### 二階導數
+
+```rust
+use ruai::autograd;
+
+// gradient penalty（WGAN-GP）：對輸入的梯度再對參數微分
+let x = x.detach().requires_grad_();
+let gx = autograd::grad(&d.forward(&x).sum_all(), &[&x], true)[0].clone().unwrap();  // create_graph = true
+let norm = (&gx * &gx).sum(1, false).sqrt();
+let penalty = (norm.add_scalar(-1.0).powf(2.0)).mean_all();
+penalty.backward();                                   // 梯度傳到 d 的參數
+
+// 或像 PyTorch 的 backward(create_graph=True)
+loss.backward_create_graph();                         // 之後 x.grad() 本身可再微分
+```
+
+每個運算的反向函式在 `create_graph` 時改用可微分的運算（平常仍走融合 kernel），`tests/second_order.rs` 以有限差分檢查各運算的 Hessian-向量積。
+
 ### 混合精度（AMP）
 
 ```rust
@@ -228,7 +246,7 @@ autocast 規則（同 PyTorch）：matmul / Linear / Conv 以半精度執行；s
 | int8 | `DType::I8`、`Linear::quantize_int8`（逐輸出通道對稱量化）、`GPT2::quantize_int8`；`matmul_int8` 原語在 CPU / MPS / CUDA 都有直接讀 int8 的融合 kernel（記憶體流量為 f32 的 1/4），大 batch 時改為反量化 + GEMM |
 | 混合精度 | `autocast(F16 \| BF16, ..)`、`GradScaler`（動態 loss scaling、溢位跳步、狀態可存進 checkpoint）、`Module::to_dtype` |
 | Tensor | 任意維度、NumPy 廣播、`reshape/view/permute/transpose/unsqueeze/flatten/expand`、運算子多載 (`&a + &b`, `a * 2.0`) |
-| Autograd | 動態計算圖、拓撲排序反向傳播、梯度累加、`no_grad()` / `NoGradGuard`、`detach()` |
+| Autograd | 動態計算圖、拓撲排序反向傳播、梯度累加、`no_grad()` / `NoGradGuard` / `enable_grad()`、`detach()`；**二階導數**：`backward_create_graph()`、`autograd::grad(output, inputs, create_graph)`（不動 `.grad`，可做 Hessian-向量積、gradient penalty、MAML） |
 | 運算 | `+ - * /`、`exp log sqrt powf abs tanh sigmoid relu gelu silu sin cos maximum`、`sum mean var max min argmax`、`minimum clamp where_cond masked_fill`、batched `matmul`、`index_select gather narrow select cat stack`、`im2col` |
 | functional | `softmax`、`log_softmax`、`cross_entropy`（含 label smoothing）、`mse_loss`、`bce_with_logits`、`conv2d`、`max/avg_pool2d`、`max_pool2d_padded`、`layer_norm`、`rms_norm`、`dropout`、`scaled_dot_product_attention`、`causal_mask`、正弦位置編碼、RoPE（`rope_cos_sin` / `apply_rope`）、`repeat_kv` |
 | nn | `Linear`、`RMSNorm`、`SwiGLU`、`Conv2d`（可無 bias）、`MaxPool2d`（可 padding）、`GlobalAvgPool`、`AvgPool2d`、`BatchNorm2d`、`LayerNorm`、`Embedding`、`Dropout`、`Flatten`、`ReLU/GELU/Tanh/Sigmoid`、`Sequential`、`FeedForward`、`MultiHeadAttention`（自注意力 / 交叉注意力）、`TransformerBlock`（Pre-LN，可選 causal）、`GPT` |
@@ -371,6 +389,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - `tests/quant.rs`：int4 打包與獨立計算的反量化逐元素相同、融合 kernel 與預設（主機反量化 + GEMM）一致、Llama / GPT-2 的 int4 誤差、int4 底模上的 LoRA 可訓練；`tests/devices.rs` 另含 `matmul_int4` / `dequant_int4` 在 GPU 與 CPU 的對照
 - `tests/attention.rs`：融合 attention 與組合式在各種 mask（無、causal、padding、每個 head、完整、單列）、`dv ≠ d`、半精度、autocast 下一致，梯度一致，任意分塊大小結果相同，長序列大 logits 數值穩定；`tests/devices.rs` 另含 GPU 與 CPU 的 attention 對照
 - `tests/views.rs` / `tests/kvcache.rs`：view 不複製且與主機計算一致、view 是快照、matmul 直接讀轉置與 strided view、各 dtype；KV cache 容量加倍、回傳 view、先前的 view 與 clone 不受之後寫入影響、梯度可經 cache 回傳、100 步解碼與完整前向一致
+- `tests/second_order.rs`：逐元素、各種 matmul、softmax / log_softmax / cross-entropy、layer / RMS norm、embedding + gather、conv2d、融合 attention、gradient checkpointing 的 Hessian-向量積與有限差分一致；`backward_create_graph` 與 `autograd::grad` 的語意；gradient penalty 傳到參數的梯度與數值微分一致
 - `tests/training.rs`：MLP 學會 XOR、CNN（含 BatchNorm）收斂、GPT 記住序列、存檔/載入 round-trip
 
 ## 版本規劃
@@ -392,13 +411,13 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v1.3 | LoRA（含 int8 底模）、gradient checkpointing、`freeze` / `trainable_parameters` | ✅ |
 | v1.4 | 分組 int4 權重量化（CPU / MPS / CUDA 融合 kernel，可在其上訓練 LoRA） | ✅ |
 | v1.5 | 融合 attention（CPU：FlashAttention 式分塊；其他後端：分塊 GEMM，記憶體有上限）、MPS 量化 matvec 加速 | ✅ |
-| v2.0 | 不複製的 strided view、預先配置的 KV cache（解碼 CPU 約 1.4 倍、MPS 約 6 倍）、二階導數 | 進行中（view、KV cache 完成） |
+| v2.0 | 不複製的 strided view、預先配置的 KV cache（解碼 CPU 約 1.4 倍、MPS 約 6 倍）、二階導數（`create_graph`、`autograd::grad`） | ✅ |
 
 ## 目前限制
 
 - 半精度在 CPU 上是儲存格式（內部轉 f32 計算），不會更快
 - `index_add` / `scatter_add` / 融合 kernel 在 GPU 上只有 f32 版本，半精度輸入會先轉 f32（autocast 下本來就以 f32 執行）
-- 反向傳播不建立計算圖（不支援二階導數）
+- 二階導數經過融合 attention 與 gradient checkpointing 時會重算一次前向
 - GPU 上的 attention 是分塊 GEMM，不是單一融合 kernel（真正的 GPU FlashAttention 需要 simdgroup 矩陣分塊）；backward 會重算並暫時建立 scores
 - MPS：小運算受派送開銷限制
 - CUDA 後端尚未在 NVIDIA 實機上執行過（見上方說明與 `scripts/verify_cuda.sh`）

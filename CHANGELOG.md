@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.0 (in progress)
+## 2.0.0
 
 - Strided views: tensors are a buffer plus `(shape, strides, offset)`; `permute`, `transpose`,
   `t`, `narrow`, `select`, `expand` (stride 0), `unsqueeze`, `squeeze` and `reshape` of
@@ -20,6 +20,13 @@
 - Llama grouped-query attention folds the query heads sharing a key/value head into extra query
   rows instead of repeating the keys and values.
 - `Tensor::from_storage_strided`.
+- Second-order gradients: `Tensor::backward_create_graph` and `autograd::grad` / `grad_with`
+  (gradients of chosen tensors, returned instead of accumulated into `.grad`, optionally with
+  their own graph); `ruai::enable_grad`. Every op's backward function switches to
+  differentiable ops while a graph is being built (fused kernels otherwise), and
+  `index_add` / `scatter_add` / `col2im` adjoints are differentiable ops. Gradient
+  checkpointing and fused attention now return their gradients through `autograd::grad`
+  instead of a nested `backward`.
 - Test fixes: GPU reduction tolerance scales with the reduced length; the seq2seq training test
   allows for GPU atomic-add nondeterminism.
 

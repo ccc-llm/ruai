@@ -532,38 +532,81 @@ impl Tensor {
     /// Reverse-mode differentiation with an explicit seed gradient (same shape as `self`); leaf gradients accumulate into `.grad()`.
     pub fn backward_with(&self, seed: Tensor) {
         assert!(self.requires_grad(), "backward() on a tensor that does not require grad");
-        assert_eq!(seed.shape(), self.shape(), "seed gradient shape mismatch");
-        let _guard = NoGradGuard::new();
-        let _no_autocast = AutocastGuard::new(None);
+        run_backward(&[(self.clone(), seed)], false, None);
+    }
 
-        // Topological order (parents before children) via iterative DFS.
-        let mut order: Vec<Tensor> = Vec::new();
-        let mut visited: HashSet<usize> = HashSet::new();
-        let mut stack: Vec<(Tensor, bool)> = vec![(self.clone(), false)];
-        while let Some((t, expanded)) = stack.pop() {
-            if expanded {
-                order.push(t);
-                continue;
+    /// Like [`Tensor::backward`], but the accumulated `.grad` tensors carry
+    /// their own autograd graph, so they can be differentiated again (second
+    /// derivatives, gradient penalties). Like `backward(create_graph=True)`.
+    pub fn backward_create_graph(&self) {
+        assert!(self.requires_grad(), "backward() on a tensor that does not require grad");
+        run_backward(&[(self.clone(), Tensor::ones_like(self))], true, None);
+    }
+}
+
+/// The reverse-mode engine. Propagates `seed` gradients from each root to
+/// everything it depends on, in reverse topological order.
+///
+/// * `create_graph`: run the backward functions with gradient recording on,
+///   so the resulting gradients are differentiable themselves.
+/// * `capture`: return the total gradient of each of these tensors (leaves
+///   or not) instead of accumulating into the leaves' `.grad`.
+pub(crate) fn run_backward(roots: &[(Tensor, Tensor)], create_graph: bool, capture: Option<&[Tensor]>) -> Vec<Option<Tensor>> {
+    for (r, seed) in roots {
+        assert_eq!(seed.shape(), r.shape(), "seed gradient shape mismatch");
+    }
+    let _grad_mode = (!create_graph).then(NoGradGuard::new);
+    let _enabled = create_graph.then(|| {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                GRAD_ENABLED.with(|g| g.set(self.0));
             }
-            if !visited.insert(t.id()) {
-                continue;
-            }
-            stack.push((t.clone(), true));
-            if let Some(node) = &t.0.node {
-                for p in &node.parents {
-                    if p.requires_grad() && !visited.contains(&p.id()) {
-                        stack.push((p.clone(), false));
-                    }
+        }
+        Restore(GRAD_ENABLED.with(|g| g.replace(true)))
+    });
+    let _no_autocast = AutocastGuard::new(None);
+
+    // Topological order (parents before children) via iterative DFS.
+    let mut order: Vec<Tensor> = Vec::new();
+    let mut visited: HashSet<usize> = HashSet::new();
+    let mut stack: Vec<(Tensor, bool)> = roots.iter().filter(|(r, _)| r.requires_grad()).map(|(r, _)| (r.clone(), false)).collect();
+    while let Some((t, expanded)) = stack.pop() {
+        if expanded {
+            order.push(t);
+            continue;
+        }
+        if !visited.insert(t.id()) {
+            continue;
+        }
+        stack.push((t.clone(), true));
+        if let Some(node) = &t.0.node {
+            for p in &node.parents {
+                if p.requires_grad() && !visited.contains(&p.id()) {
+                    stack.push((p.clone(), false));
                 }
             }
         }
+    }
 
-        let mut grads: HashMap<usize, Tensor> = HashMap::new();
-        grads.insert(self.id(), seed);
-        for t in order.iter().rev() {
-            let Some(g) = grads.remove(&t.id()) else { continue };
-            match &t.0.node {
-                None => {
+    let targets: HashMap<usize, usize> = capture.unwrap_or(&[]).iter().enumerate().map(|(i, t)| (t.id(), i)).collect();
+    let mut captured: Vec<Option<Tensor>> = vec![None; targets.len()];
+    let mut grads: HashMap<usize, Tensor> = HashMap::new();
+    for (r, seed) in roots {
+        let acc = match grads.remove(&r.id()) {
+            Some(old) => &old + seed,
+            None => seed.clone(),
+        };
+        grads.insert(r.id(), acc);
+    }
+    for t in order.iter().rev() {
+        let Some(g) = grads.remove(&t.id()) else { continue };
+        if let Some(&i) = targets.get(&t.id()) {
+            captured[i] = Some(g.clone());
+        }
+        match &t.0.node {
+            None => {
+                if capture.is_none() {
                     // leaf: accumulate into .grad
                     let new = match t.grad() {
                         Some(old) => &old + &g,
@@ -571,35 +614,36 @@ impl Tensor {
                     };
                     t.set_grad(Some(new));
                 }
-                Some(node) => {
-                    let pgrads = (node.backward)(&g);
-                    debug_assert_eq!(pgrads.len(), node.parents.len(), "{}: wrong number of grads", node.name);
-                    for (p, pg) in node.parents.iter().zip(pgrads) {
-                        let Some(mut pg) = pg else { continue };
-                        if !p.requires_grad() {
-                            continue;
-                        }
-                        if pg.dtype() != p.dtype() {
-                            pg = pg.to_dtype(p.dtype());
-                        }
-                        assert_eq!(
-                            pg.shape(),
-                            p.shape(),
-                            "{}: gradient shape {:?} != input shape {:?}",
-                            node.name,
-                            pg.shape(),
-                            p.shape()
-                        );
-                        let acc = match grads.remove(&p.id()) {
-                            Some(old) => &old + &pg,
-                            None => pg,
-                        };
-                        grads.insert(p.id(), acc);
+            }
+            Some(node) => {
+                let pgrads = (node.backward)(&g);
+                debug_assert_eq!(pgrads.len(), node.parents.len(), "{}: wrong number of grads", node.name);
+                for (p, pg) in node.parents.iter().zip(pgrads) {
+                    let Some(mut pg) = pg else { continue };
+                    if !p.requires_grad() {
+                        continue;
                     }
+                    if pg.dtype() != p.dtype() {
+                        pg = pg.to_dtype(p.dtype());
+                    }
+                    assert_eq!(
+                        pg.shape(),
+                        p.shape(),
+                        "{}: gradient shape {:?} != input shape {:?}",
+                        node.name,
+                        pg.shape(),
+                        p.shape()
+                    );
+                    let acc = match grads.remove(&p.id()) {
+                        Some(old) => &old + &pg,
+                        None => pg,
+                    };
+                    grads.insert(p.id(), acc);
                 }
             }
         }
     }
+    captured
 }
 
 impl fmt::Debug for Tensor {

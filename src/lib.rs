@@ -2,6 +2,7 @@
 //!
 //! A small PyTorch-like deep learning engine:
 //!
+//! * [`autograd`] — functional gradients and second derivatives (`create_graph`)
 //! * [`Tensor`] — n-dimensional arrays (F32 / F16 / BF16 / I32 / I8) on CPU,
 //!   Apple GPU (`mps` feature) or NVIDIA GPU (`cuda` feature), with
 //!   reverse-mode autograd
@@ -52,6 +53,7 @@
 #![warn(missing_docs)]
 
 pub mod amp;
+pub mod autograd;
 pub mod backend;
 pub mod checkpoint;
 pub mod data;

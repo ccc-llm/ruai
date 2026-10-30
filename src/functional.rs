@@ -357,19 +357,18 @@ fn fused_attention(q: &Tensor, k: &Tensor, v: &Tensor, mask: Option<&Tensor>, sp
     let needs: Vec<bool> = inputs.iter().map(Tensor::requires_grad).collect();
     Tensor::from_op(out, shape, inputs.to_vec(), "attention", move |g| {
         // recompute with differentiable ops and backpropagate through them
-        let xs: Vec<Tensor> = inputs
-            .iter()
-            .zip(&needs)
-            .map(|(t, &r)| if r { t.detach().requires_grad_() } else { t.detach() })
-            .collect();
+        // (from the real inputs when the gradient must be differentiable)
+        let create = crate::is_grad_enabled();
+        let xs: Vec<Tensor> = if create {
+            inputs.to_vec()
+        } else {
+            inputs.iter().zip(&needs).map(|(t, &r)| if r { t.detach().requires_grad_() } else { t.detach() }).collect()
+        };
         let y = crate::enable_grad(|| {
             let _ac = crate::tensor::AutocastGuard::new(autocast);
             attention_composed(&xs[0], &xs[1], &xs[2], mask.as_ref(), 0.0, false)
         });
-        if y.requires_grad() {
-            y.backward_with(g.to_dtype(y.dtype()));
-        }
-        xs.iter().zip(&needs).map(|(x, &r)| if r { x.grad() } else { None }).collect()
+        crate::autograd::grad_with(&y, g.to_dtype(y.dtype()), &[&xs[0], &xs[1], &xs[2]], create)
     })
 }
 
@@ -409,29 +408,28 @@ where
     let detached: Vec<Tensor> = xs.iter().map(Tensor::detach).collect();
     let out = crate::no_grad(|| f(&detached));
     let needs: Vec<bool> = xs.iter().map(Tensor::requires_grad).collect();
+    let params: Vec<Tensor> = params.into_iter().filter(Tensor::requires_grad).collect();
+    let originals = xs.clone();
     let mut parents = xs;
-    parents.extend(params.into_iter().filter(Tensor::requires_grad));
-    let n_parents = parents.len();
+    parents.extend(params.iter().cloned());
     Tensor::from_op(out.storage(), out.shape().to_vec(), parents, "grad_checkpoint", move |g| {
+        // building a differentiable gradient: recompute from the real inputs
+        // so the graph reaches upstream; otherwise from fresh leaves
+        let create = crate::is_grad_enabled();
         let current = rand::state();
         rand::set_state(rng_state);
-        let xs: Vec<Tensor> = detached
-            .iter()
-            .zip(&needs)
-            .map(|(t, &r)| if r { t.detach().requires_grad_() } else { t.detach() })
-            .collect();
+        let xs: Vec<Tensor> = if create {
+            originals.clone()
+        } else {
+            detached.iter().zip(&needs).map(|(t, &r)| if r { t.detach().requires_grad_() } else { t.detach() }).collect()
+        };
         let y = crate::enable_grad(|| {
             let _ac = crate::tensor::AutocastGuard::new(autocast);
             f(&xs)
         });
         rand::set_state(current);
-        if y.requires_grad() {
-            // parameter gradients accumulate directly into their `.grad`
-            y.backward_with(g.to_dtype(y.dtype()));
-        }
-        let mut grads: Vec<Option<Tensor>> = xs.iter().zip(&needs).map(|(x, &r)| if r { x.grad() } else { None }).collect();
-        grads.resize(n_parents, None);
-        grads
+        let targets: Vec<&Tensor> = xs.iter().chain(&params).collect();
+        crate::autograd::grad_with(&y, g.to_dtype(y.dtype()), &targets, create)
     })
 }
 

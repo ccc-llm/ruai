@@ -10,6 +10,13 @@ fn need(t: &Tensor) -> bool {
     t.requires_grad()
 }
 
+/// Inside a backward function: whether gradients are being built with their
+/// own graph (`create_graph`), so they must use differentiable ops instead of
+/// raw kernels.
+fn graph() -> bool {
+    crate::tensor::is_grad_enabled()
+}
+
 fn same_device(a: &Tensor, b: &Tensor) {
     assert_eq!(a.device(), b.device(), "tensors are on different devices ({} vs {})", a.device(), b.device());
 }
@@ -68,7 +75,9 @@ impl Tensor {
         Tensor::from_storage(self.backend().unary(op, &self.storage()), self.shape().to_vec())
     }
 
-    fn unary_op<F>(&self, op: UnaryOp, name: &'static str, backward: F) -> Tensor
+    /// `backward(g, x, y)` gets the output `y`: a detached copy normally, or
+    /// `fwd(x)` recomputed with its graph when building a differentiable gradient.
+    fn unary_op<F>(&self, op: UnaryOp, name: &'static str, fwd: fn(&Tensor) -> Tensor, backward: F) -> Tensor
     where
         F: Fn(&Tensor, &Tensor, &Tensor) -> Tensor + Send + Sync + 'static,
     {
@@ -76,38 +85,39 @@ impl Tensor {
         let x = self.clone();
         let y = out.clone(); // detached copy of the output for the backward pass
         Tensor::from_op(out.storage(), out.shape().to_vec(), vec![self.clone()], name, move |g| {
+            let y = if graph() { fwd(&x) } else { y.clone() };
             vec![Some(backward(g, &x, &y))]
         })
     }
 
     /// Elementwise `-x`.
     pub fn neg(&self) -> Tensor {
-        self.unary_op(UnaryOp::Neg, "neg", |g, _, _| g.neg())
+        self.unary_op(UnaryOp::Neg, "neg", Tensor::neg, |g, _, _| g.neg())
     }
 
     /// Elementwise `e^x`.
     pub fn exp(&self) -> Tensor {
-        self.unary_op(UnaryOp::Exp, "exp", |g, _, y| g * y)
+        self.unary_op(UnaryOp::Exp, "exp", Tensor::exp, |g, _, y| g * y)
     }
 
     /// Elementwise natural logarithm.
     pub fn log(&self) -> Tensor {
-        self.unary_op(UnaryOp::Log, "log", |g, x, _| g / x)
+        self.unary_op(UnaryOp::Log, "log", Tensor::log, |g, x, _| g / x)
     }
 
     /// Elementwise square root.
     pub fn sqrt(&self) -> Tensor {
-        self.unary_op(UnaryOp::Sqrt, "sqrt", |g, _, y| g * &(y.unary_raw(UnaryOp::Recip) * 0.5))
+        self.unary_op(UnaryOp::Sqrt, "sqrt", Tensor::sqrt, |g, _, y| g * &(y.recip() * 0.5))
     }
 
     /// Elementwise `1 / x`.
     pub fn recip(&self) -> Tensor {
-        self.unary_op(UnaryOp::Recip, "recip", |g, _, y| (g * &(y * y)).neg())
+        self.unary_op(UnaryOp::Recip, "recip", Tensor::recip, |g, _, y| (g * &(y * y)).neg())
     }
 
     /// Elementwise `|x|` (gradient `sign(x)`, 0 at 0).
     pub fn abs(&self) -> Tensor {
-        self.unary_op(UnaryOp::Abs, "abs", |g, x, _| {
+        self.unary_op(UnaryOp::Abs, "abs", Tensor::abs, |g, x, _| {
             let sign = &x.gt_scalar(0.0) - &x.lt_scalar(0.0);
             g * &sign
         })
@@ -115,22 +125,33 @@ impl Tensor {
 
     /// Elementwise hyperbolic tangent.
     pub fn tanh(&self) -> Tensor {
-        self.unary_op(UnaryOp::Tanh, "tanh", |g, _, y| g * &((y * y).neg() + 1.0))
+        self.unary_op(UnaryOp::Tanh, "tanh", Tensor::tanh, |g, _, y| g * &((y * y).neg() + 1.0))
     }
 
     /// Elementwise logistic sigmoid `1 / (1 + e^-x)`.
     pub fn sigmoid(&self) -> Tensor {
-        self.unary_op(UnaryOp::Sigmoid, "sigmoid", |g, _, y| g * &(y * &(y.neg() + 1.0)))
+        self.unary_op(UnaryOp::Sigmoid, "sigmoid", Tensor::sigmoid, |g, _, y| g * &(y * &(y.neg() + 1.0)))
     }
 
     /// Elementwise `max(x, 0)`.
     pub fn relu(&self) -> Tensor {
-        self.unary_op(UnaryOp::Relu, "relu", |g, x, _| g * &x.gt_scalar(0.0))
+        self.unary_op(UnaryOp::Relu, "relu", Tensor::relu, |g, x, _| g * &x.gt_scalar(0.0))
     }
 
     /// GELU (tanh approximation), as used in GPT/BERT.
     pub fn gelu(&self) -> Tensor {
-        self.unary_op(UnaryOp::Gelu, "gelu", |g, x, _| g * &x.unary_raw(UnaryOp::GeluGrad))
+        self.unary_op(UnaryOp::Gelu, "gelu", Tensor::gelu, |g, x, _| {
+            if !graph() {
+                return g * &x.unary_raw(UnaryOp::GeluGrad);
+            }
+            // d/dx of 0.5 x (1 + tanh(u)), u = c (x + 0.044715 x³), from differentiable ops
+            const C: f32 = 0.797_884_6; // sqrt(2 / pi)
+            let x2 = x * x;
+            let t = ((x + &(&x2 * x) * 0.044715) * C).tanh();
+            let du = (x2 * (3.0 * 0.044715) + 1.0) * C;
+            let d = (&t + 1.0) * 0.5 + (x * &((&t * &t).neg() + 1.0)) * &du * 0.5;
+            g * &d
+        })
     }
 
     /// SiLU / swish: `x * sigmoid(x)` (composed, so it works on every backend).
@@ -140,12 +161,12 @@ impl Tensor {
 
     /// Elementwise sine.
     pub fn sin(&self) -> Tensor {
-        self.unary_op(UnaryOp::Sin, "sin", |g, x, _| g * &x.unary_raw(UnaryOp::Cos))
+        self.unary_op(UnaryOp::Sin, "sin", Tensor::sin, |g, x, _| g * &x.cos())
     }
 
     /// Elementwise cosine.
     pub fn cos(&self) -> Tensor {
-        self.unary_op(UnaryOp::Cos, "cos", |g, x, _| (g * &x.unary_raw(UnaryOp::Sin)).neg())
+        self.unary_op(UnaryOp::Cos, "cos", Tensor::cos, |g, x, _| (g * &x.sin()).neg())
     }
 
     // ------------------------------------------------------------------
@@ -238,6 +259,9 @@ impl Tensor {
         let s = a.backend().where_cond(&c.storage(), &ae.storage(), &bexp.storage());
         Tensor::from_op(s, shape, vec![ae, bexp], "where", move |g| {
             let z = Tensor::zeros_like(g);
+            if graph() {
+                return vec![Some(Tensor::where_cond(&c, g, &z)), Some(Tensor::where_cond(&c, &z, g))];
+            }
             let pick = |x: &Tensor, y: &Tensor| {
                 let s = g.backend().where_cond(&c.storage(), &x.storage(), &y.storage());
                 Tensor::from_storage(s, g.shape().to_vec())
@@ -257,7 +281,7 @@ impl Tensor {
         let out = self.binary_raw(BinaryOp::Pow, &e);
         let x = self.clone();
         Tensor::from_op(out.storage(), out.shape().to_vec(), vec![self.clone()], "powf", move |g| {
-            let d = x.binary_raw(BinaryOp::Pow, &Tensor::scalar(p - 1.0, x.device())) * p;
+            let d = if graph() { x.powf(p - 1.0) } else { x.binary_raw(BinaryOp::Pow, &Tensor::scalar(p - 1.0, x.device())) } * p;
             vec![Some(g * &d)]
         })
     }
@@ -612,16 +636,24 @@ impl Tensor {
         let out = a.matmul_raw(&b, false, true);
         Tensor::from_op(out.storage(), out.shape().to_vec(), vec![a.clone(), b.clone()], "matmul_nt", move |g| {
             // out = a bᵀ:  da = g b,  db = gᵀ a
-            let ga = need(&a).then(|| g.matmul_raw(&b, false, false).sum_to(a.shape()));
+            let mm = |x: &Tensor, y: &Tensor, tx: bool| {
+                if graph() {
+                    // differentiable, for second derivatives
+                    if tx { x.t().matmul(y) } else { x.matmul(y) }
+                } else {
+                    x.matmul_raw(y, tx, false)
+                }
+            };
+            let ga = need(&a).then(|| mm(g, &b, false).sum_to(a.shape()));
             let gb = need(&b).then(|| {
                 if b.rank() == 2 && a.rank() > 2 {
                     let k = a.dim(-1);
                     let n = g.dim(-1);
                     let af = a.reshape(&[a.numel() / k, k]);
                     let gf = g.reshape(&[g.numel() / n, n]);
-                    gf.matmul_raw(&af, true, false)
+                    mm(&gf, &af, true)
                 } else {
-                    g.matmul_raw(&a, true, false).sum_to(b.shape())
+                    mm(g, &a, true).sum_to(b.shape())
                 }
             });
             vec![ga, gb]
@@ -634,14 +666,18 @@ impl Tensor {
         let (a, b) = self.matmul_operands(other);
         let out = a.matmul_raw(&b, false, false);
         Tensor::from_op(out.storage(), out.shape().to_vec(), vec![a.clone(), b.clone()], "matmul", move |g| {
-            let ga = need(&a).then(|| g.matmul_raw(&b, false, true).sum_to(a.shape()));
+            // out = a b:  da = g bᵀ,  db = aᵀ g
+            let g2 = graph();
+            let ga = need(&a).then(|| if g2 { g.matmul_nt(&b) } else { g.matmul_raw(&b, false, true) }.sum_to(a.shape()));
             let gb = need(&b).then(|| {
                 if b.rank() == 2 && a.rank() > 2 {
                     let k = a.dim(-1);
                     let n = g.dim(-1);
                     let af = a.reshape(&[a.numel() / k, k]);
                     let gf = g.reshape(&[g.numel() / n, n]);
-                    af.matmul_raw(&gf, true, false)
+                    if g2 { af.t().matmul(&gf) } else { af.matmul_raw(&gf, true, false) }
+                } else if g2 {
+                    a.t().matmul(g).sum_to(b.shape())
                 } else {
                     a.matmul_raw(g, true, false).sum_to(b.shape())
                 }
@@ -709,10 +745,16 @@ impl Tensor {
         let (rows, cols) = (self.shape()[0], self.shape()[1]);
         let s = self.backend().index_select(&self.storage(), cols, &idx.storage());
         let n = idx.numel();
-        Tensor::from_op(s, vec![n, cols], vec![self.clone()], "index_select", move |g| {
-            let s = g.backend().index_add(&g.storage(), rows, cols, &idx.storage());
-            vec![Some(Tensor::from_storage(s, vec![rows, cols]))]
-        })
+        Tensor::from_op(s, vec![n, cols], vec![self.clone()], "index_select", move |g| vec![Some(g.index_add_rows(rows, &idx))])
+    }
+
+    /// Sum rows of `self` `[n, cols]` into a `[rows, cols]` zero table at
+    /// `idx` (the adjoint of [`Tensor::index_select`]; differentiable).
+    fn index_add_rows(&self, rows: usize, idx: &Tensor) -> Tensor {
+        let cols = self.dim(-1);
+        let s = self.backend().index_add(&self.storage(), rows, cols, &idx.storage());
+        let idx = idx.clone();
+        Tensor::from_op(s, vec![rows, cols], vec![self.clone()], "index_add", move |g| vec![Some(g.index_select(&idx))])
     }
 
     /// `out[.., j, ..] = self[.., idx[.., j, ..], ..]` along `dim`; `idx` has the
@@ -728,10 +770,16 @@ impl Tensor {
         let s = self.backend().gather(&self.storage(), self.shape(), ax, &idx.storage(), idx_len);
         let in_shape = self.shape().to_vec();
         let out_shape = idx.shape().to_vec();
-        Tensor::from_op(s, out_shape, vec![self.clone()], "gather", move |g| {
-            let s = g.backend().scatter_add(&g.storage(), &idx.storage(), idx_len, &in_shape, ax);
-            vec![Some(Tensor::from_storage(s, in_shape.clone()))]
-        })
+        Tensor::from_op(s, out_shape, vec![self.clone()], "gather", move |g| vec![Some(g.scatter_add_to(&idx, &in_shape, ax))])
+    }
+
+    /// Add `self` (shaped like `idx`) into a zero tensor of `shape` at `idx`
+    /// along `ax` (the adjoint of [`Tensor::gather`]; differentiable).
+    fn scatter_add_to(&self, idx: &Tensor, shape: &[usize], ax: usize) -> Tensor {
+        let idx_len = idx.shape()[ax];
+        let s = self.backend().scatter_add(&self.storage(), &idx.storage(), idx_len, shape, ax);
+        let idx = idx.clone();
+        Tensor::from_op(s, shape.to_vec(), vec![self.clone()], "scatter_add", move |g| vec![Some(g.gather(ax as isize, &idx))])
     }
 
     /// Elements `start..start+len` along `dim` (a view: only the offset changes).
@@ -845,7 +893,13 @@ impl Tensor {
         let shape = self.shape().to_vec();
         let s = self.backend().softmax(&self.storage(), &shape, ax);
         let y = Tensor::from_storage(s.clone(), shape.clone());
+        let x = self.clone();
         Tensor::from_op(s, shape.clone(), vec![self.clone()], "softmax", move |g| {
+            if graph() {
+                // dx = y (g - Σ g y), with y recomputed differentiably
+                let y = x.softmax(ax as isize);
+                return vec![Some(&y * &(g - &(g * &y).sum(ax as isize, true)))];
+            }
             let s = g.backend().softmax_backward(&y.storage(), &g.storage(), &shape, ax);
             vec![Some(Tensor::from_storage(s, shape.clone()))]
         })
@@ -861,7 +915,12 @@ impl Tensor {
         let shape = self.shape().to_vec();
         let s = self.backend().log_softmax(&self.storage(), &shape, ax);
         let y = Tensor::from_storage(s.clone(), shape.clone());
+        let x = self.clone();
         Tensor::from_op(s, shape.clone(), vec![self.clone()], "log_softmax", move |g| {
+            if graph() {
+                // dx = g - softmax(x) Σ g
+                return vec![Some(g - &(x.softmax(ax as isize) * g.sum(ax as isize, true)))];
+            }
             let s = g.backend().log_softmax_backward(&y.storage(), &g.storage(), &shape, ax);
             vec![Some(Tensor::from_storage(s, shape.clone()))]
         })
@@ -879,7 +938,16 @@ impl Tensor {
         let (xh, rstd) = self.backend().layer_norm(&self.storage(), rows, dim, eps);
         let shape = self.shape().to_vec();
         let xhat = Tensor::from_storage(xh.clone(), shape.clone());
+        let x = self.clone();
         Tensor::from_op(xh, shape.clone(), vec![self.clone()], "layer_norm", move |g| {
+            if graph() {
+                // dx = rstd (g - mean(g) - x̂ mean(g x̂)), from differentiable ops
+                let xc = &x - &x.mean(-1, true);
+                let rstd = (&xc * &xc).mean(-1, true).add_scalar(eps).sqrt().recip();
+                let xh = &xc * &rstd;
+                let inner = g - &g.mean(-1, true) - &xh * &(g * &xh).mean(-1, true);
+                return vec![Some(rstd * inner)];
+            }
             let s = g.backend().layer_norm_backward(&g.storage(), &xhat.storage(), &rstd, rows, dim);
             vec![Some(Tensor::from_storage(s, shape.clone()))]
         })
@@ -897,9 +965,15 @@ impl Tensor {
         let (oh, ow) = g.out_hw();
         let s = self.backend().im2col(&self.storage(), g);
         let in_shape = sh.to_vec();
-        Tensor::from_op(s, vec![g.n, g.c * kh * kw, oh * ow], vec![self.clone()], "im2col", move |grad| {
-            let s = grad.backend().col2im(&grad.storage(), g);
-            vec![Some(Tensor::from_storage(s, in_shape.clone()))]
+        Tensor::from_op(s, vec![g.n, g.c * kh * kw, oh * ow], vec![self.clone()], "im2col", move |grad| vec![Some(grad.col2im(g, &in_shape))])
+    }
+
+    /// Adjoint of [`Tensor::im2col`]: sum patch columns back into an image
+    /// `[N, C, H, W]` (differentiable).
+    fn col2im(&self, g: Conv2dGeom, shape: &[usize]) -> Tensor {
+        let s = self.backend().col2im(&self.storage(), g);
+        Tensor::from_op(s, shape.to_vec(), vec![self.clone()], "col2im", move |grad| {
+            vec![Some(grad.im2col(g.kh, g.kw, g.stride, g.padding))]
         })
     }
 
