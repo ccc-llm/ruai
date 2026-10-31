@@ -344,22 +344,22 @@ impl Tensor {
             Ok(T::from_vec(x.iter().zip(&y).map(|(p, q)| f(*p, *q)).collect(), &shape, Device::Cpu))
         };
         match op {
-            Op::Add => Ok(Tensor::op(a.add(&b), dt, "AddBackward0")),
+            Op::Add => Ok(Tensor::op(&a + &b, dt, "AddBackward0")),
             Op::Sub => {
                 if self.dt == DType::Bool && odt == DType::Bool {
                     return Err(rerr("Subtraction, the `-` operator, with two bool tensors is not supported. Use the `^` or `logical_xor()` operator instead."));
                 }
-                Ok(Tensor::op(a.sub(&b), dt, if reflected && scalar { "RsubBackward1" } else { "SubBackward0" }))
+                Ok(Tensor::op(&a - &b, dt, if reflected && scalar { "RsubBackward1" } else { "SubBackward0" }))
             }
-            Op::Mul => Ok(Tensor::op(a.mul(&b), dt, "MulBackward0")),
+            Op::Mul => Ok(Tensor::op(&a * &b, dt, "MulBackward0")),
             Op::Div => {
                 let name = if reflected && scalar { "MulBackward0" } else { "DivBackward0" };
-                Ok(Tensor::op(a.div(&b), DType::Float32, name))
+                Ok(Tensor::op(&a / &b, DType::Float32, name))
             }
             Op::Pow => {
                 if !reflected && scalar {
                     let p = ot.item();
-                    let r = if p == 2.0 { a.mul(&a) } else { a.powf(p) };
+                    let r = if p == 2.0 { &a * &a } else { a.powf(p) };
                     if int_like(dt) {
                         if p < 0.0 {
                             return Err(rerr("Integers to negative integer powers are not allowed."));
@@ -578,7 +578,7 @@ impl Tensor {
                         a[0], b[0], a[0], b[0]
                     )));
                 }
-                let r = self.t.mul(&o.t).sum_all();
+                let r = (&self.t * &o.t).sum_all();
                 Ok(Tensor::op(r, dt, "DotBackward0"))
             }
             (2, 2) => {

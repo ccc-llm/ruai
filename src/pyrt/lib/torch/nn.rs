@@ -100,7 +100,7 @@ impl Module {
                 let xt = if d.len() == 1 { x.t.unsqueeze(0) } else { x.t.clone() };
                 let mut y = xt.matmul(&w.t.t());
                 if let Some(b) = b {
-                    y = y.add(&b.t);
+                    y = &y + &b.t;
                 }
                 if d.len() == 1 {
                     y = y.squeeze(0);
@@ -285,7 +285,7 @@ pub fn mse_loss(a: &Tensor, b: &Tensor) -> Result<Tensor, PyErr> {
 /// `F.l1_loss(input, target)`
 pub fn l1_loss(a: &Tensor, b: &Tensor) -> Result<Tensor, PyErr> {
     check_same(a, b)?;
-    Ok(Tensor::op(a.t.sub(&b.t).abs().mean_all(), DType::Float32, "MeanBackward0"))
+    Ok(Tensor::op((&a.t - &b.t).abs().mean_all(), DType::Float32, "MeanBackward0"))
 }
 /// `F.cross_entropy(logits, target)`: logits (N, C), int64 targets (N,)
 pub fn cross_entropy(a: &Tensor, b: &Tensor) -> Result<Tensor, PyErr> {
