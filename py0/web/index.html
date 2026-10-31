@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>py0 Playground</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #deded8;
+    --accent: #2f6fdb; --accent-text: #ffffff; --err: #b3261e; --code-bg: #fbfbfa;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161615; --panel: #1f1f1d; --text: #ecece8; --muted: #9a9a93; --line: #34342f;
+      --accent: #6f9ef0; --accent-text: #0e0e0d; --err: #f2867d; --code-bg: #1a1a18;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 20px 24px 8px; max-width: 1200px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; font-weight: 650; }
+  header p { margin: 0; color: var(--muted); font-size: 14px; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 24px 24px; max-width: 1200px; margin: 0 auto; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; padding: 16px; } header { padding: 16px 16px 4px; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column; min-width: 0; }
+  .bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .bar .label { font-weight: 600; font-size: 13px; margin-right: auto; }
+  select, button { font: inherit; font-size: 13px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); padding: 4px 8px; }
+  button.run { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; padding: 4px 14px; cursor: pointer; }
+  button.run:disabled { opacity: .5; cursor: default; }
+  textarea, pre { font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; margin: 0; }
+  textarea { flex: 1; min-height: 420px; resize: vertical; white-space: pre; overflow: auto; border: 0; padding: 12px; background: var(--code-bg); color: var(--text); border-radius: 0 0 10px 10px; tab-size: 4; outline: none; }
+  pre { flex: 1; min-height: 160px; padding: 12px; white-space: pre-wrap; word-break: break-word; overflow: auto; }
+  #stderr { color: var(--err); border-top: 1px solid var(--line); min-height: 0; }
+  #stderr:empty { display: none; }
+  .stats { color: var(--muted); font-size: 12px; }
+  textarea#stdin { min-height: 60px; flex: 0; border-top: 1px solid var(--line); border-radius: 0 0 10px 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>py0 Playground</h1>
+  <p>Typed Python compiled to WebAssembly in your browser: the ruai translator runs as wasm, emits a WasmGC module, and the page runs it. No server, no Rust toolchain.</p>
+</header>
+<main>
+  <section>
+    <div class="bar">
+      <span class="label">Program</span>
+      <select id="example" aria-label="Example program"></select>
+      <button class="run" id="run" disabled>Run</button>
+    </div>
+    <textarea id="src" spellcheck="false" aria-label="py0 source"></textarea>
+  </section>
+  <section>
+    <div class="bar"><span class="label">Output</span><span class="stats" id="stats">loading the compiler…</span></div>
+    <pre id="stdout"></pre>
+    <pre id="stderr"></pre>
+    <textarea id="stdin" spellcheck="false" placeholder="input() reads lines from here" aria-label="standard input"></textarea>
+  </section>
+</main>
+<script type="module" src="playground.mjs"></script>
+</body>
+</html>

@@ -31,7 +31,14 @@ jobs:
       - run: python -m pip install gymnasium numpy scikit-learn matplotlib
       # torch (CPU build): tests/py0/torch compares py0's torch package with it
       - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      # py0 → WebAssembly (WasmGC) runs on Node.js: tests/py0.rs compares it with CPython
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
       - run: cargo test --release
+      # the py0 → wasm compiler itself builds for browsers (py0/web)
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo build --release --example py0_wasm --target wasm32-unknown-unknown --no-default-features --features py
       # py0 → a Python extension module (PyO3), compared with CPython
       - run: sh tests/py0/pyo3/run.sh
         env:

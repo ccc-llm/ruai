@@ -18,6 +18,7 @@ pub mod modules;
 pub mod own;
 pub mod project;
 pub mod pyo3;
+pub mod wasm;
 pub mod stubgen;
 
 pub use diag::Error;
@@ -93,6 +94,22 @@ pub fn translate(src: &str) -> Result<String, Error> {
     let own = own::analyze(&prog)?;
     let exc = exc::analyze(&prog)?;
     gen::generate(&prog, &own, &exc)
+}
+
+/// Compile a program file (and the local modules it imports) to WebAssembly,
+/// without Rust (see [`wasm`]).
+pub fn wasm_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    front::set_program_dir(path.parent().map(|p| p.to_path_buf()));
+    let c = modules::combine(path).map_err(|(f, _, e)| format!("{}:{}: {}", f.display(), e.line, e.msg))?;
+    let prog = front::lower_modules(&c.src, &front::default_stub_dirs(), &c.modules).map_err(|e| {
+        let (f, _, line) = c.locate(e.line);
+        format!("{}:{}: {}", f.display(), line, e.msg)
+    })?;
+    own::analyze(&prog).map_err(|e| {
+        let (f, _, line) = c.locate(e.line);
+        format!("{}:{}: {}", f.display(), line, e.msg)
+    })?;
+    wasm::compile(&prog).map_err(|e| format!("{}: {}", path.display(), e))
 }
 
 /// Translate a program file (and the local modules it imports).

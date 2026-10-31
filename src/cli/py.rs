@@ -20,7 +20,12 @@ commands:
   stub  --python MODULE [-o FILE]
                              draft py0lib/MODULE.pyi for a Python library, called
                              through the embedded CPython (`# python: MODULE`)
+  wasm  FILE.py [-o OUT.wasm] compile to WebAssembly without Rust (WasmGC); also writes
+                             ruai_wasm.mjs, its host: node ruai_wasm.mjs OUT.wasm
+  wasm  --run FILE.py        compile to WebAssembly and run it with Node.js
   test  [FILES|DIRS...]      differential test against CPython (default tests/py0/)
+  test  --wasm [FILES|DIRS...]
+                             the same for the WebAssembly backend (needs Node.js 22+)
   fuzz  [N] [SEED]           N random programs (default 200) against CPython;
                              failures are kept in target/py0-cache/fuzz-fail/
 
@@ -59,6 +64,15 @@ pub fn main(args: &[String]) -> i32 {
             };
             pyo3_module(&args[1], out)
         }
+        Some("wasm") if args.len() == 3 && args[1] == "--run" => wasm_run(&args[2]),
+        Some("wasm") if args.len() >= 2 => {
+            let out = match args.iter().position(|a| a == "-o") {
+                Some(i) if i + 1 < args.len() => Some(PathBuf::from(&args[i + 1])),
+                _ => None,
+            };
+            wasm(&args[1], out)
+        }
+        Some("test") if args.get(1).map(|s| s.as_str()) == Some("--wasm") => test_wasm(&args[2..]),
         Some("test") => test(&args[1..]),
         Some("fuzz") => fuzz(
             args.get(1).and_then(|n| n.parse().ok()).unwrap_or(200),
@@ -75,6 +89,130 @@ pub fn main(args: &[String]) -> i32 {
             }
         }
     }
+}
+
+/// `ruai py wasm FILE.py [-o OUT.wasm]`
+fn wasm(file: &str, out: Option<PathBuf>) -> i32 {
+    let bytes = match ruai::py::wasm_file(Path::new(file)) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("{}", e);
+            return 1;
+        }
+    };
+    let out = out.unwrap_or_else(|| Path::new(file).with_extension("wasm"));
+    let host = out.parent().unwrap_or(Path::new(".")).join("ruai_wasm.mjs");
+    if let Err(e) = std::fs::write(&out, &bytes).and_then(|_| std::fs::write(&host, ruai::py::wasm::HOST_JS)) {
+        eprintln!("error: {}", e);
+        return 1;
+    }
+    println!("wrote {} ({} bytes) and {}: node {} {}", out.display(), bytes.len(), host.display(), host.display(), out.display());
+    0
+}
+
+/// Write a program's wasm and the host to a temporary directory → (host, wasm).
+fn wasm_temp(file: &Path, dir: &Path) -> Result<(PathBuf, PathBuf), String> {
+    let bytes = ruai::py::wasm_file(file)?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let host = dir.join("ruai_wasm.mjs");
+    if !host.exists() || std::fs::read_to_string(&host).ok().as_deref() != Some(ruai::py::wasm::HOST_JS) {
+        std::fs::write(&host, ruai::py::wasm::HOST_JS).map_err(|e| e.to_string())?;
+    }
+    let out = dir.join(format!("{}.wasm", project::crate_name(file)));
+    std::fs::write(&out, bytes).map_err(|e| e.to_string())?;
+    Ok((host, out))
+}
+
+/// `ruai py wasm --run FILE.py`
+fn wasm_run(file: &str) -> i32 {
+    let dir = std::env::temp_dir().join(format!("ruai-wasm-{}", std::process::id()));
+    let (host, out) = match wasm_temp(Path::new(file), &dir) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("{}", e);
+            return 1;
+        }
+    };
+    let code = match Command::new("node").arg(&host).arg(&out).status() {
+        Ok(s) => s.code().unwrap_or(1),
+        Err(e) => {
+            eprintln!("error: cannot run node: {}", e);
+            1
+        }
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    code
+}
+
+/// `ruai py test --wasm`: each program compiled to wasm, run with Node.js,
+/// compared with CPython; programs the backend does not support are counted.
+fn test_wasm(args: &[String]) -> i32 {
+    let py = project::python();
+    let dir = cache_target().join("wasmtest");
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut pythons = ReferencePythons::new(&py);
+    let (mut pass, mut fails, mut unsupported) = (0, 0, 0);
+    let mut reasons: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut jobs = vec![];
+    for f in files(args) {
+        let src = std::fs::read_to_string(&f).unwrap();
+        if src.starts_with("# error: ") {
+            continue;
+        }
+        let Some(fpy) = pythons.for_program(&src) else { continue };
+        let sub = dir.join(project::crate_name(f.parent().unwrap_or(Path::new("."))));
+        match wasm_temp(&f, &sub) {
+            Ok((host, out)) => jobs.push((f, host, out, fpy)),
+            Err(e) if e.contains("does not support") => {
+                unsupported += 1;
+                let why = e.split("does not support ").nth(1).unwrap_or(&e).trim_end_matches(" yet").to_string();
+                *reasons.entry(why).or_default() += 1;
+            }
+            Err(e) => {
+                println!("FAIL {}: {}", f.display(), e);
+                fails += 1;
+            }
+        }
+    }
+    let results: Vec<(project::Run, project::Run)> = std::thread::scope(|sc| {
+        let hs: Vec<_> = jobs
+            .iter()
+            .map(|(f, host, out, py)| {
+                sc.spawn(move || {
+                    let input = std::fs::read(f.with_extension("in")).unwrap_or_default();
+                    let a = project::run(Command::new(py).arg(f).env("PYTHONPATH", project::python_path()).env("MPLBACKEND", "Agg"), &input);
+                    let b = project::run(Command::new("node").arg(host).arg(out), &input);
+                    (a, b)
+                })
+            })
+            .collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    for ((f, _, _, _), (a, b)) in jobs.iter().zip(results) {
+        if a.stdout == b.stdout && a.code == b.code && (a.code == 0 || a.exc == b.exc) {
+            pass += 1;
+            continue;
+        }
+        fails += 1;
+        println!("FAIL {} (exit {} vs {}; {} vs {})", f.display(), a.code, b.code, a.exc, b.exc);
+        let (sa, sb) = (String::from_utf8_lossy(&a.stdout), String::from_utf8_lossy(&b.stdout));
+        for (i, (x, y)) in sa.lines().zip(sb.lines()).enumerate() {
+            if x != y {
+                println!("  line {}: python: {}\n  line {}: wasm:   {}", i + 1, x, i + 1, y);
+                break;
+            }
+        }
+        if sa.lines().count() != sb.lines().count() {
+            println!("  python printed {} lines, wasm {}", sa.lines().count(), sb.lines().count());
+        }
+    }
+    if std::env::var("RUAI_WASM_REASONS").is_ok() {
+        for (r, n) in &reasons {
+            println!("  unsupported ({}): {}", n, r);
+        }
+    }
+    println!("wasm: {} of {} programs match {}; {} not supported by the wasm backend yet; {} failed", pass, jobs.len(), py, unsupported, fails);
+    (fails > 0) as i32
 }
 
 fn translate(file: &str) -> Option<String> {

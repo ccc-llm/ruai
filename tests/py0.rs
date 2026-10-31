@@ -28,6 +28,28 @@ fn corpus_matches_cpython() {
     assert!(out.status.success(), "ruai py test failed\n{stdout}\n{stderr}");
 }
 
+/// The WebAssembly backend (`ruai py test --wasm`): every program it compiles
+/// must print what CPython prints. Needs Node.js 22+ (WasmGC); skipped without it.
+#[test]
+fn wasm_corpus_matches_cpython() {
+    let Some(py) = python() else {
+        eprintln!("skipping: no Python >= 3.12 found");
+        return;
+    };
+    let node = Command::new("node").args(["-e", "process.exit(+process.versions.node.split('.')[0] >= 22 ? 0 : 1)"]).output();
+    if !node.is_ok_and(|o| o.status.success()) {
+        eprintln!("skipping: no Node.js 22+ found");
+        return;
+    }
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/py0");
+    let out = Command::new(env!("CARGO_BIN_EXE_ruai")).args(["py", "test", "--wasm", dir]).env("PY2RS_PYTHON", &py).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "ruai py test --wasm failed\n{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
+    // most of the corpus compiles (programs using Rust-backed packages do not)
+    let n: usize = stdout.lines().last().and_then(|l| l.strip_prefix("wasm: ")).and_then(|l| l.split(' ').next()).and_then(|n| n.parse().ok()).unwrap_or(0);
+    assert!(n >= 200, "only {n} programs compiled to wasm\n{stdout}");
+}
+
 #[test]
 fn run_emit_check() {
     let dir = std::env::temp_dir().join(format!("ruai_py0_{}", std::process::id()));

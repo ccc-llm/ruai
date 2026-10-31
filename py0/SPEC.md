@@ -119,6 +119,10 @@ CPython (feature `pyrt-python`); `= ...` defaults leave the argument to Python; 
 may raise any builtin exception; `Object` is an opaque Python object that accepts any value
 (see README).
 
+WebAssembly: `ruai py wasm` compiles the same language to WasmGC without Rust; a program
+it cannot compile yet is reported ("the wasm backend does not support ..."), and every
+program it compiles behaves as with the Rust backend (see README).
+
 Rust crates: `from rust.CRATE import X` with a stub `CRATE.pyi` (see README).
 
 ## 7. Ownership

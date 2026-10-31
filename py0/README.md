@@ -179,6 +179,23 @@ unknown is `Object`, which accepts any value. Stubs are found next to the progra
 its modules (`PY0_PYTHON`, else python3.14 / 3.13 / 3.12 / python3) and runs with its
 packages, so that Python must be installed where the program runs.
 
+## WebAssembly
+
+`ruai py wasm FILE.py [-o OUT.wasm]` compiles a program straight to WebAssembly, without
+Rust: a WasmGC module (GC structs and arrays for objects, lists, dicts, sets, tuples and
+strings; wasm exceptions for Python's) plus `ruai_wasm.mjs`, the JavaScript host that
+runs it in a browser (`run(bytes, {stdout, stderr, stdin})`) or with Node.js 22+
+(`node ruai_wasm.mjs OUT.wasm`). `ruai py wasm --run FILE.py` compiles and runs.
+`ruai py test --wasm` compares the programs that compile with CPython.
+
+The translator itself builds for `wasm32-unknown-unknown` (`examples/py0_wasm.rs`, a C
+interface: `alloc`, `compile`, `out_ptr`, `out_len`), so `web/` is a playground that
+compiles py0 in the browser: `sh py0/web/build.sh`, then serve `py0/web/` over HTTP.
+
+Not yet supported by the wasm backend: generators, functions as values (lambdas work as
+`key=` arguments), `nonlocal`, files, `re`, `heapq`, `itertools`, `random`, exception
+fields, and the packages implemented in Rust.
+
 ## Rust crates
 
 `from rust.CRATE import Name` uses a Rust crate. Its declarations come from a stub,

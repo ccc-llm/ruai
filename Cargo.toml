@@ -1,6 +1,6 @@
 [package]
 name = "ruai"
-version = "4.2.0"
+version = "4.3.0"
 edition = "2021"
 description = "A Swiss-army AI toolkit in Rust: a PyTorch-like engine (autograd, GPU, GPT-2/Llama), Gymnasium environments, py0 (typed Python compiled to Rust, with numpy / sklearn / torch subsets) and LLM agent teams, in one git-style `ruai` command"
 license = "MIT"
@@ -106,3 +106,9 @@ opt-level = 2
 [dev-dependencies]
 # tests compare floats read from Python's JSON output exactly
 serde_json = { version = "1", features = ["float_roundtrip"] }
+
+# The py0 → WebAssembly compiler for browsers (py0/web/build.sh)
+[[example]]
+name = "py0_wasm"
+crate-type = ["cdylib"]
+required-features = ["py"]

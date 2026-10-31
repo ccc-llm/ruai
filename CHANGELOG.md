@@ -1,5 +1,24 @@
 # Changelog
 
+## 4.3.0
+
+- **py0 → WebAssembly without Rust** (`ruai::py::wasm`): the typed IR compiled to a
+  WasmGC module. Classes are GC structs (subclasses are struct subtypes, methods
+  dispatch on a class id), lists are growable typed arrays, dicts and sets are
+  insertion-ordered hash tables, strings are UTF-8 arrays, Python exceptions are wasm
+  exceptions (`try` / `except` / `else` / `finally`, uncaught → traceback and exit 1).
+  The runtime (Python's int semantics with overflow checks, floor division and modulo,
+  slicing, `str` / `repr` of every type, sorting with keys, comprehensions, f-strings,
+  ...) is generated into the module; a small JavaScript host (`ruai_wasm.mjs`) does
+  output and input, float repr and format specs (correctly rounded, as CPython),
+  `int()` / `float()` parsing, math with Python's domain errors and the str methods.
+- `ruai py wasm FILE.py [-o OUT.wasm]`, `ruai py wasm --run FILE.py` (Node.js 22+),
+  `ruai py test --wasm`: 221 of the 263 corpus programs compile and all match CPython.
+- **The compiler in the browser**: the translator builds for `wasm32-unknown-unknown`
+  (`examples/py0_wasm.rs`); `py0/web/` is a playground that compiles py0 to wasm in the
+  page and runs it (`sh py0/web/build.sh`).
+- CI: Node.js 24 for the wasm tests, and the wasm32 build of the compiler.
+
 ## 4.2.0
 
 - **`ruai::plot`** (feature `plot`, in the defaults, no dependencies): figures and axes

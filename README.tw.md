@@ -287,6 +287,16 @@ plt.show()          # 在瀏覽器中開啟，畫在 <canvas> 上
 
 `ruai.plot`（Rust 中為 `ruai::plot`，feature `plot`，無相依套件）提供 matplotlib.pyplot 的 API：`plot`（格式字串如 `"r--o"`）、`scatter`、`bar`（含類別軸）、`hist`、`imshow`、`text`、`axhline` / `axvline`、標題、軸標籤、範圍、圖例、格線、`subplots` / `subplot`，以及 `Figure` / `Axes` / `Line2D` 物件。自動縮放與刻度採用 matplotlib 的規則（5% 邊界、sticky edges、`MaxNLocator`），所以 `get_xlim()` / `get_xticks()` 與 matplotlib 數值相同，`tests/py0/plot/` 逐一對照。`plt.show()` 產生含 canvas 的 HTML 頁面並以瀏覽器開啟（`MPLBACKEND=agg` 時不開啟）；`savefig` 輸出 `.svg` 或 `.html`。同一程式在 CPython 下直接使用 matplotlib（`py0/python/ruai/plot.py`）。尚未支援：PNG 輸出、`subplots(n, m)` 的二維格子（請用 `subplot`）、colorbar、對數座標。
 
+### py0 → WebAssembly，在瀏覽器中編譯
+
+```bash
+ruai py wasm prog.py            # prog.wasm + ruai_wasm.mjs（宿主程式）
+node ruai_wasm.mjs prog.wasm    # 或：ruai py wasm --run prog.py
+sh py0/web/build.sh && python3 -m http.server -d py0/web 8000   # playground
+```
+
+py0 也能**不經過 Rust，直接編譯成 WebAssembly**：`ruai::py::wasm` 把型別化的 IR 轉成 WasmGC 模組（物件、list、dict、set、tuple 與字串都是 GC 的 struct 與 array；例外使用 wasm 的例外處理），執行期函式直接生成在模組內，再加上一個小小的 JavaScript 宿主（`ruai_wasm.mjs`）負責輸出、浮點數的格式化與解析、數學函式和 str 方法，行為與 CPython 一致（最短的浮點 repr、正確捨入的格式規格）。翻譯器本身可以編譯成 `wasm32-unknown-unknown`，所以 `py0/web/` 的 **playground** 在瀏覽器裡把 py0 編成 wasm（每個程式幾毫秒）並執行，不需要伺服器或工具鏈。`tests/py0/` 的 263 支程式中有 221 支能編成 wasm，且輸出全部與 CPython 相同（`ruai py test --wasm`）；尚未支援：generator、函式當值、`nonlocal`、檔案、`re`、`heapq` / `itertools` / `random`，以及以 Rust 實作的套件（numpy、sklearn、gymnasium、torch、ruai.plot）。
+
 ### 任何 Python 函式庫：Python 橋接
 
 ```python
@@ -425,7 +435,9 @@ src/
 ├── nn/              神經網路引擎（feature nn）
 ├── world/           Gymnasium 環境（feature world）
 ├── rng.rs           NumPy 相容亂數、MT19937
+├── plot/            matplotlib 風格的繪圖，輸出到 HTML canvas 或 SVG（feature plot）
 ├── py/              py0 翻譯器（feature py，原 py2rs）
+│   ├── wasm/        不經 Rust 的 py0 → WebAssembly（WasmGC）與其 JavaScript 宿主
 │   └── lib/         套件 stub（*.pyi）：標準函式庫、numpy、sklearn、gymnasium、torch
 ├── pyrt/            py0 程式的執行期（feature pyrt）
 │   └── lib/         以 Rust 實作的套件（pyrt-numpy、pyrt-sklearn、pyrt-gymnasium、pyrt-torch、pyrt-plot …）；python.rs：Python 橋接（pyrt-python）

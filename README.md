@@ -274,6 +274,16 @@ plt.show()          # opens the figure in the browser, drawn on a <canvas>
 
 `ruai.plot` (`ruai::plot` in Rust, feature `plot`, no dependencies) has matplotlib.pyplot's API: `plot` (format strings such as `"r--o"`), `scatter`, `bar` (also categorical), `hist`, `imshow`, `text`, `axhline` / `axvline`, titles, labels, limits, legends, grids, `subplots` / `subplot`, and `Figure` / `Axes` / `Line2D` objects. Autoscaling and ticks are matplotlib's (5% margins, sticky edges, `MaxNLocator`), so `get_xlim()` / `get_xticks()` give matplotlib's numbers; `tests/py0/plot/` compares them. `plt.show()` writes an HTML page with a canvas and opens it in the browser (nothing with `MPLBACKEND=agg`); `savefig` writes `.svg` or `.html`. Under CPython the same program runs on matplotlib itself (`py0/python/ruai/plot.py`). Not yet: PNG output, 2-D grids from `subplots(n, m)` (use `subplot`), colorbars, log scales.
 
+### py0 → WebAssembly, in the browser
+
+```bash
+ruai py wasm prog.py            # prog.wasm + ruai_wasm.mjs (its host)
+node ruai_wasm.mjs prog.wasm    # or: ruai py wasm --run prog.py
+sh py0/web/build.sh && python3 -m http.server -d py0/web 8000   # the playground
+```
+
+py0 also compiles **straight to WebAssembly, without Rust**: `ruai::py::wasm` turns the typed IR into a WasmGC module (objects, lists, dicts, sets, tuples and strings are GC structs and arrays; exceptions use wasm exception handling), with its runtime generated into the module and a small JavaScript host (`ruai_wasm.mjs`) for output, float formatting and parsing, math and str methods, which follow CPython exactly (shortest float repr, format specs with correctly rounded decimals). The translator itself builds for `wasm32-unknown-unknown`, so the **playground** in `py0/web/` compiles py0 to wasm inside the browser (a few milliseconds per program) and runs it; no server or toolchain is involved. 221 of the 263 programs of `tests/py0/` compile to wasm and all of them print what CPython prints (`ruai py test --wasm`); not yet supported: generators, functions as values, `nonlocal`, files, `re`, `heapq` / `itertools` / `random`, and the packages implemented in Rust (numpy, sklearn, gymnasium, torch, ruai.plot).
+
 ### Any Python library: the Python bridge
 
 ```python
@@ -425,7 +435,9 @@ src/
 ├── nn/              the neural network engine (feature nn)
 ├── world/           Gymnasium environments (feature world)
 ├── rng.rs           NumPy-compatible random numbers, MT19937
+├── plot/            matplotlib-style plots on an HTML canvas or SVG (feature plot)
 ├── py/              the py0 translator (feature py, formerly py2rs)
+│   ├── wasm/        py0 → WebAssembly (WasmGC) without Rust, and its JavaScript host
 │   └── lib/         package stubs (*.pyi): standard library, numpy, sklearn, gymnasium, torch
 ├── pyrt/            the runtime of py0 programs (feature pyrt)
 │   └── lib/         the packages in Rust (pyrt-numpy, pyrt-sklearn, pyrt-gymnasium, pyrt-torch, pyrt-plot, ...); python.rs: the Python bridge (pyrt-python)
@@ -560,7 +572,7 @@ cargo test --features mps --test devices           # every backend primitive: GP
 - `tests/second_order.rs`: Hessian-vector products of element-wise ops, all matmuls, softmax / log_softmax / cross-entropy, layer / RMS norm, embedding + gather, conv2d, fused attention and gradient checkpointing agree with finite differences; the semantics of `backward_create_graph` and `autograd::grad`; gradient penalties reach the parameters with the gradients of numerical differentiation
 - `tests/world.rs`: 6 environments × 4 seeds × 400 steps (with autoreset) compared step by step, bit for bit, with Gymnasium; vector environments, FrozenLake's text rendering, NumPy random numbers (seeds beyond 2⁶³, all `integers` ranges)
 - `tests/agent.rs`: `ruai agent`'s embedded translation is up to date; about 50 offline commands (the echo model) with interactive chats, and the output against a fake LLM server (`tests/agent/fake_llm.py`: OpenAI / Anthropic, streaming or not, native tool calls, HTTP 500 retries) are identical to CPython running the same py0 sources
-- `tests/py0.rs` + `tests/py0/`: py2rs's corpus, 259 programs (with `tests/py0/numpy/`, `sklearn/`, `gymnasium/`, `torch/` `plot/` and the Python bridge's `pybridge/` compared with the real NumPy, scikit-learn, Gymnasium and PyTorch; each program runs on a Python that has its packages), each translated, compiled and run, with the output, exit code and exception type of CPython 3.12+; 46 programs that must be rejected, with the expected messages; `tests/py0/pyo3/run.sh` checks the PyO3 extension modules
+- `tests/py0.rs` + `tests/py0/`: py2rs's corpus, 259 programs (with `tests/py0/numpy/`, `sklearn/`, `gymnasium/`, `torch/` `plot/` and the Python bridge's `pybridge/` compared; `ruai py test --wasm` runs the corpus through the WebAssembly backend on Node.js with the real NumPy, scikit-learn, Gymnasium and PyTorch; each program runs on a Python that has its packages), each translated, compiled and run, with the output, exit code and exception type of CPython 3.12+; 46 programs that must be rejected, with the expected messages; `tests/py0/pyo3/run.sh` checks the PyO3 extension modules
 - `tests/training.rs`: an MLP learns XOR, a CNN (with BatchNorm) converges, a GPT memorizes sequences, save/load round trips
 
 ## Stability

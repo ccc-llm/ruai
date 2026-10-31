@@ -20,6 +20,9 @@
 //!   and `ruai.plot`), and
 //!   `pyrt-python`, the bridge that calls real Python libraries through
 //!   embedded CPython.
+//!   `ruai::py::wasm` compiles py0 straight to WebAssembly (WasmGC) without
+//!   Rust, and itself builds for `wasm32-unknown-unknown` (a browser playground:
+//!   `py0/web/`).
 //! * feature `agent` — `ruai agent`, teams of LLM agents, written in py0.
 //! * [`plot`] (feature `plot`) — plots in matplotlib's style, drawn on an
 //!   HTML canvas or as SVG.
