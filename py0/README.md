@@ -119,17 +119,38 @@ An annotation the code contradicts (modifying a `Ref[...]`) is an error.
 
 `import M`, `import M as A` and `from M import x` also find **py0 packages**: stubs `M.pyi`
 in ruai's `src/py/lib/` (or in a directory listed in `PY0_LIB`), whose declarations map to Rust
-under `ruai::pyrt::lib::M`. ruai rewrites Python's standard library this way, module by
-module, each checked against CPython (`tests/py0/py/std_*.py`): `shlex`, `fnmatch`, `html`
-so far, besides the modules built into the translator (`math`, `collections`, `heapq`,
-`bisect`, `itertools`, `functools`, `random`, `re`, `sys`, `time`, `json.dumps`, `os.path`).
+under `ruai::pyrt::lib::M`. A stub declares classes, functions and constants in typed Python;
+a parameter typed `A | B` makes overloads (a generic Rust function), several `def`s of one
+name are overloads, `@rust("...")` gives a Rust path or an expression template, and
+`Result[T, OSError | ...]` raises CPython's exceptions.
+
+- **The standard library**, module by module, each checked against CPython
+  (`tests/py0/py/std_*.py`): `shlex`, `fnmatch`, `html`, `subprocess`, more of `os` /
+  `os.path` / `sys` / `time`, besides the modules built into the translator (`math`,
+  `collections`, `heapq`, `bisect`, `itertools`, `functools`, `random`, `re`, `sys`, `time`,
+  `json.dumps`, `os.path`).
+- **numpy**: float64 / float32 / int64 / bool arrays with NumPy 2's promotion,
+  broadcasting, views, masks and index arrays, reductions in NumPy's summation order,
+  `linalg`, `random.default_rng`; printing identical to NumPy's.
+- **sklearn**: linear and logistic regression, ridge, k-NN, Gaussian naive Bayes, KMeans,
+  PCA, scalers, `train_test_split` (the same split as scikit-learn), metrics, `load_iris`.
+- **gymnasium**: ruai's environments with Gymnasium's API, bit for bit.
+- **torch**: tensors with autograd on ruai's nn engine, `nn` modules, losses, `optim`,
+  `torch.no_grad()`, and PyTorch's random numbers for `torch.manual_seed`.
+- **ruai.json**, **ruai.http**: a typed JSON value and an HTTP(S) client, with CPython
+  stand-ins in `python/ruai/`.
+
+Under CPython the same programs import the real modules; `tests/py0/numpy`, `sklearn`,
+`gymnasium` and `torch` compare the two.
 
 ```python
 import shlex
 from fnmatch import fnmatch
 
+import numpy as np
+
 words: list[str] = shlex.split("cp 'my file.txt' backup/")
-print(words, fnmatch("my file.txt", "*.txt"))
+print(words, fnmatch("my file.txt", "*.txt"), np.arange(6).reshape(2, 3).sum(axis=0))
 ```
 
 ## Rust crates
@@ -162,10 +183,11 @@ the module prints what importing the Python file prints.
 
 `ruai py test [FILES|DIRS]` (default `tests/`) translates every program, builds them all
 in one Cargo package and compares stdout, exit code and exception type with CPython
-(`PY2RS_PYTHON`, else python3.14 / 3.13 / 3.12). Input comes from `NAME.in` if present.
-A program whose first line is `# error: TEXT` must be rejected with a message containing
-TEXT (`tests/err/`). The corpus has about 240 programs and 45 rejections; `ruai py fuzz`
-adds random programs.
+(`PY2RS_PYTHON`, else python3.14 / 3.13 / 3.12); a program that imports numpy, sklearn,
+gymnasium or torch runs on the first of those (or `python3`) that has them, and is skipped
+when none does. Input comes from `NAME.in` if present. A program whose first line is
+`# error: TEXT` must be rejected with a message containing TEXT (`tests/err/`). The corpus
+has about 260 programs and 46 rejections; `ruai py fuzz` adds random programs.
 
 ## Layout
 

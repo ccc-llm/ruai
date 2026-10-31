@@ -1,14 +1,18 @@
 [package]
 name = "ruai"
-version = "3.7.0"
+version = "4.0.0"
 edition = "2021"
-description = "A Swiss-army AI toolkit in Rust: a PyTorch-like engine (autograd, GPU, GPT-2/Llama), and a git-style `ruai` command"
+description = "A Swiss-army AI toolkit in Rust: a PyTorch-like engine (autograd, GPU, GPT-2/Llama), Gymnasium environments, py0 (typed Python compiled to Rust, with numpy / sklearn / torch subsets) and LLM agent teams, in one git-style `ruai` command"
 license = "MIT"
 repository = "https://github.com/ccc-llm/ruai"
 readme = "README.md"
-keywords = ["neural-network", "deep-learning", "autograd", "transformer", "gpu"]
-categories = ["science", "algorithms"]
+keywords = ["deep-learning", "autograd", "python", "reinforcement-learning", "llm"]
+categories = ["science", "algorithms", "compilers", "command-line-utilities"]
 exclude = ["/scripts", "/runs", "/data", "*.safetensors"]
+
+# docs.rs: the runtime packages too (the GPU backends need their hardware)
+[package.metadata.docs.rs]
+features = ["pyrt-http", "pyrt-numpy", "pyrt-sklearn", "pyrt-gymnasium", "pyrt-torch"]
 
 [dependencies]
 # --- nn: the deep learning engine

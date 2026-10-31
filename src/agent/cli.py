@@ -16,7 +16,7 @@ from repl import start_chat
 from runtime import Runtime
 from tools import Approver, ToolError, Workspace
 
-VERSION = "3.4.0"
+VERSION = "4.0.0"
 
 HELP = """用法: ruai agent <op> [選項]
 

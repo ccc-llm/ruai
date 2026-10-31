@@ -1,5 +1,20 @@
 # Changelog
 
+## 4.0.0
+
+The stable release of the toolkit that 3.x assembled: the `nn` engine, `world`, py0 with
+its packages (Python's standard library, numpy, sklearn, gymnasium, torch) and `ruai agent`.
+
+- **Semantic versioning** from here on for the Rust API of `ruai::nn` (and its re-exports),
+  `ruai::world` and `ruai::rng`, the `ruai` command line, and the py0 language and the
+  behavior of its packages. `ruai::py` and `ruai::pyrt` stay public for generated code, with
+  their Rust API following the translator (see Stability in the README and the crate docs).
+- **English documentation**: `README.md` is now English (the Chinese one is
+  `README.tw.md`), the crate docs describe every part and feature, py0's README lists its
+  packages, and docs.rs builds with the runtime package features.
+- Crate metadata (description, keywords, categories); `ruai agent --version` follows ruai.
+- No API changes from 3.7.0: code that builds with 3.7 builds with 4.0.
+
 ## 3.7.0
 
 - py0 package `gymnasium` (runtime feature `pyrt-gymnasium`): `gym.make`, `reset(seed=)`,
