@@ -110,7 +110,8 @@ Packages (`src/py/lib/*.pyi`, Rust in `ruai::pyrt::lib`): `shlex`, `fnmatch`, `h
 `numpy` (a subset of NumPy's ndarray: see `src/py/lib/numpy.pyi`), `sklearn.*` (a subset of
 scikit-learn: `src/py/lib/sklearn.*.pyi`), `gymnasium`, `torch` (a subset of PyTorch:
 `src/py/lib/torch*.pyi`), and ruai's own
-`ruai.json` (`Json`) and `ruai.http` (`request`). `open` also takes
+`ruai.json` (`Json`), `ruai.http` (`request`) and `ruai.plot` (matplotlib.pyplot's API:
+`src/py/lib/ruai.plot.pyi`). `open` also takes
 `errors="replace"`.
 
 Python libraries: a stub headed `# python: MODULE` calls the real module through embedded

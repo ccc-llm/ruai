@@ -1,5 +1,21 @@
 # Changelog
 
+## 4.2.0
+
+- **`ruai::plot`** (feature `plot`, in the defaults, no dependencies): figures and axes
+  in matplotlib's style — lines with format strings, scatter, bars (numeric and
+  categorical), histograms, images (viridis / gray), text, reference lines, titles,
+  labels, legends (`loc="best"`), grids, subplots. Limits and ticks follow matplotlib
+  (5% margins, sticky edges, `MaxNLocator` ported line by line), so `get_xlim` and
+  `get_xticks` agree with it. Rendered as SVG, or as an HTML page whose `<canvas>` a small
+  script draws (`render::CANVAS_JS`, usable in any page); `plot::show` opens the page in
+  the browser.
+- py0 package **`ruai.plot`** (runtime feature `pyrt-plot`): matplotlib.pyplot's API
+  (`import ruai.plot as plt`), with `plt.show()` opening the browser and `savefig` to
+  `.svg` / `.html`; the CPython stand-in is matplotlib. `tests/py0/plot/` compares the
+  two (the harness runs both with `MPLBACKEND=Agg`).
+- torch package: tensor arithmetic written with operators (`&a + &b`).
+
 ## 4.1.0
 
 - **The Python bridge**: py0 programs call real Python libraries. A stub headed

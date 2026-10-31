@@ -271,6 +271,22 @@ print(policy, logits, obs, reward)
 
 `import gymnasium as gym` 是 `ruai::world` 的環境套上 Gymnasium 的 Python API（觀測值是 float32 的 numpy 陣列，與 Gymnasium 逐位元相同）；`import torch` 是建在 ruai nn 引擎上的 PyTorch 子集：autograd、`nn.Linear` 等模組、`nn.Sequential`、損失函數、`optim.SGD` / `Adam`、`torch.no_grad()`。`torch.manual_seed` 重現 PyTorch 的亂數產生器（MT19937），所以 `rand`、`randn` 與 `nn.Linear` 的初始權重都與 PyTorch 相同；張量與模組的印出格式也一樣。`tests/py0/gymnasium/`、`tests/py0/torch/` 以真的 Gymnasium 與 PyTorch 對照（訓練迴圈在 PyTorch 預設的 4 位小數下相同）。差異：模型用 `nn.Sequential` 或持有各層的一般類別（不能繼承 `nn.Module`），`parameters()` 回傳 list；dtype 在 py0 中是字串；矩陣乘積與元素函數可能與 PyTorch 的 BLAS / 向量化實作在最後一位不同。
 
+### 繪圖：ruai.plot
+
+```python
+import numpy as np
+import ruai.plot as plt
+
+x = np.linspace(0, 2 * np.pi, 100)
+fig, ax = plt.subplots()
+ax.plot(x, np.sin(x), label="sin")
+ax.plot(x, np.cos(x), "--", label="cos")
+ax.legend()
+plt.show()          # 在瀏覽器中開啟，畫在 <canvas> 上
+```
+
+`ruai.plot`（Rust 中為 `ruai::plot`，feature `plot`，無相依套件）提供 matplotlib.pyplot 的 API：`plot`（格式字串如 `"r--o"`）、`scatter`、`bar`（含類別軸）、`hist`、`imshow`、`text`、`axhline` / `axvline`、標題、軸標籤、範圍、圖例、格線、`subplots` / `subplot`，以及 `Figure` / `Axes` / `Line2D` 物件。自動縮放與刻度採用 matplotlib 的規則（5% 邊界、sticky edges、`MaxNLocator`），所以 `get_xlim()` / `get_xticks()` 與 matplotlib 數值相同，`tests/py0/plot/` 逐一對照。`plt.show()` 產生含 canvas 的 HTML 頁面並以瀏覽器開啟（`MPLBACKEND=agg` 時不開啟）；`savefig` 輸出 `.svg` 或 `.html`。同一程式在 CPython 下直接使用 matplotlib（`py0/python/ruai/plot.py`）。尚未支援：PNG 輸出、`subplots(n, m)` 的二維格子（請用 `subplot`）、colorbar、對數座標。
+
 ### 任何 Python 函式庫：Python 橋接
 
 ```python
@@ -412,7 +428,7 @@ src/
 ├── py/              py0 翻譯器（feature py，原 py2rs）
 │   └── lib/         套件 stub（*.pyi）：標準函式庫、numpy、sklearn、gymnasium、torch
 ├── pyrt/            py0 程式的執行期（feature pyrt）
-│   └── lib/         以 Rust 實作的套件（pyrt-numpy、pyrt-sklearn、pyrt-gymnasium、pyrt-torch …）；python.rs：Python 橋接（pyrt-python）
+│   └── lib/         以 Rust 實作的套件（pyrt-numpy、pyrt-sklearn、pyrt-gymnasium、pyrt-torch、pyrt-plot …）；python.rs：Python 橋接（pyrt-python）
 └── agent/           以 py0 寫成的 `ruai agent`（翻譯成 cli/agent_gen.rs）
 nn/
 ├── backend/

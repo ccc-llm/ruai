@@ -137,11 +137,13 @@ name are overloads, `@rust("...")` gives a Rust path or an expression template, 
 - **gymnasium**: ruai's environments with Gymnasium's API, bit for bit.
 - **torch**: tensors with autograd on ruai's nn engine, `nn` modules, losses, `optim`,
   `torch.no_grad()`, and PyTorch's random numbers for `torch.manual_seed`.
+- **ruai.plot**: matplotlib.pyplot's API in Rust; `show()` draws on a canvas in the
+  browser, `savefig` writes SVG or HTML; limits and ticks as matplotlib's.
 - **ruai.json**, **ruai.http**: a typed JSON value and an HTTP(S) client, with CPython
   stand-ins in `python/ruai/`.
 
-Under CPython the same programs import the real modules; `tests/py0/numpy`, `sklearn`,
-`gymnasium` and `torch` compare the two.
+Under CPython the same programs import the real modules (matplotlib for `ruai.plot`);
+`tests/py0/numpy`, `sklearn`, `gymnasium`, `torch` and `plot` compare the two.
 
 ```python
 import shlex
@@ -208,7 +210,7 @@ the module prints what importing the Python file prints.
 `ruai py test [FILES|DIRS]` (default `tests/`) translates every program, builds them all
 in one Cargo package and compares stdout, exit code and exception type with CPython
 (`PY2RS_PYTHON`, else python3.14 / 3.13 / 3.12); a program that imports numpy, sklearn,
-gymnasium, torch or a bridged module runs on the first of those (or `python3`) that has them, and is skipped
+gymnasium, torch, ruai.plot (matplotlib) or a bridged module runs on the first of those (or `python3`) that has them, and is skipped
 when none does. Input comes from `NAME.in` if present. A program whose first line is
 `# error: TEXT` must be rejected with a message containing TEXT (`tests/err/`). The corpus
 has about 260 programs and 46 rejections; `ruai py fuzz` adds random programs.

@@ -14,6 +14,8 @@ pub mod os;
 #[cfg(feature = "pyrt-http")]
 pub mod ruai_http;
 pub mod ruai_json;
+#[cfg(feature = "pyrt-plot")]
+pub mod ruai_plot;
 pub mod shlex;
 #[cfg(feature = "pyrt-sklearn")]
 pub mod sklearn;

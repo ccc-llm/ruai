@@ -1,6 +1,6 @@
 [package]
 name = "ruai"
-version = "4.1.0"
+version = "4.2.0"
 edition = "2021"
 description = "A Swiss-army AI toolkit in Rust: a PyTorch-like engine (autograd, GPU, GPT-2/Llama), Gymnasium environments, py0 (typed Python compiled to Rust, with numpy / sklearn / torch subsets) and LLM agent teams, in one git-style `ruai` command"
 license = "MIT"
@@ -12,7 +12,7 @@ exclude = ["/scripts", "/runs", "/data", "*.safetensors"]
 
 # docs.rs: the runtime packages too (the GPU backends need their hardware)
 [package.metadata.docs.rs]
-features = ["pyrt-http", "pyrt-numpy", "pyrt-sklearn", "pyrt-gymnasium", "pyrt-torch"]
+features = ["pyrt-http", "pyrt-numpy", "pyrt-sklearn", "pyrt-gymnasium", "pyrt-torch", "pyrt-plot"]
 
 [dependencies]
 # --- nn: the deep learning engine
@@ -53,7 +53,7 @@ objc2-metal = { version = "0.3", optional = true }
 objc2-metal-performance-shaders = { version = "0.3", optional = true }
 
 [features]
-default = ["nn", "world", "py", "agent"]
+default = ["nn", "world", "py", "agent", "plot"]
 # The deep learning engine (ruai::nn, also re-exported at the crate root)
 nn = ["dep:rayon", "dep:matrixmultiply", "dep:half", "dep:safetensors", "dep:serde_json", "dep:fancy-regex", "dep:unicode-normalization"]
 # py0: the typed-Python translator (`ruai py`), and the runtime its programs use
@@ -63,6 +63,8 @@ pyrt = ["dep:indexmap", "dep:libc"]
 pyrt-re = ["pyrt", "dep:regex"]
 # `ruai.http` for py0 programs (HTTPS client)
 pyrt-http = ["pyrt", "dep:ureq"]
+# `ruai.plot` for py0 programs (matplotlib.pyplot's API on `plot`)
+pyrt-plot = ["pyrt-numpy", "plot"]
 # `numpy` for py0 programs (a subset of NumPy's ndarray)
 pyrt-numpy = ["pyrt"]
 # `sklearn` for py0 programs (a subset of scikit-learn, on numpy)
@@ -77,6 +79,8 @@ pyrt-python = ["pyrt", "dep:pyo3"]
 agent = ["py", "pyrt-http"]
 # Reinforcement-learning environments with the Gymnasium API (no dependencies)
 world = []
+# Plots in matplotlib's style on an HTML canvas or SVG (no dependencies)
+plot = []
 # GPU backends for nn: Apple Metal (mps) and NVIDIA (cuda)
 cuda = ["nn", "dep:cudarc"]
 mps = ["nn", "dep:objc2", "dep:objc2-foundation", "dep:objc2-metal", "dep:objc2-metal-performance-shaders"]

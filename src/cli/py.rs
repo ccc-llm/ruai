@@ -369,7 +369,8 @@ fn files(args: &[String]) -> Vec<PathBuf> {
 
 /// Differential test: every program must translate, build, and print exactly
 /// The reference Python of each program: the default one, or for a program
-/// that imports numpy, sklearn, gymnasium or torch, the first candidate that has them.
+/// that imports numpy, sklearn, gymnasium, torch or ruai.plot (matplotlib), the
+/// first candidate that has them.
 struct ReferencePythons {
     default: String,
     found: std::collections::HashMap<Vec<&'static str>, Option<String>>,
@@ -382,15 +383,17 @@ impl ReferencePythons {
 
     fn for_program(&mut self, src: &str) -> Option<String> {
         let mut needs: Vec<&'static str> = vec![];
-        for module in ["numpy", "sklearn", "gymnasium", "torch"] {
+        // a module the program imports → the module the reference Python needs
+        // (`ruai.plot` stands in for matplotlib)
+        for (module, need) in [("numpy", "numpy"), ("sklearn", "sklearn"), ("gymnasium", "gymnasium"), ("torch", "torch"), ("ruai.plot", "matplotlib")] {
             let uses = |l: &str| {
                 let l = l.trim_start();
                 [format!("import {}", module), format!("from {} ", module), format!("from {}.", module)]
                     .iter()
                     .any(|p| l.starts_with(p.as_str()))
             };
-            if src.lines().any(uses) {
-                needs.push(module);
+            if src.lines().any(uses) && !needs.contains(&need) {
+                needs.push(need);
             }
         }
         if needs.is_empty() {
@@ -524,8 +527,9 @@ fn test(args: &[String]) -> i32 {
                 let dir = &dir;
                 sc.spawn(move || {
                     let input = std::fs::read(f.with_extension("in")).unwrap_or_default();
-                    let a = project::run(Command::new(py).arg(f).env("PYTHONPATH", project::python_path()), &input);
-                    let b = project::run(&mut Command::new(dir.join("target/release").join(name)), &input);
+                    // plots: no windows, matplotlib's default resolution
+                    let a = project::run(Command::new(py).arg(f).env("PYTHONPATH", project::python_path()).env("MPLBACKEND", "Agg"), &input);
+                    let b = project::run(Command::new(dir.join("target/release").join(name)).env("MPLBACKEND", "Agg"), &input);
                     (a, b)
                 })
             })
@@ -624,8 +628,8 @@ fn fuzz(n: u64, seed: u64) -> i32 {
             .map(|(f, name)| {
                 let (py, dir) = (&py, &dir);
                 sc.spawn(move || {
-                    let a = project::run(Command::new(py).arg(f).env("PYTHONPATH", project::python_path()), b"");
-                    let b = project::run(&mut Command::new(dir.join("target/release").join(name)), b"");
+                    let a = project::run(Command::new(py).arg(f).env("PYTHONPATH", project::python_path()).env("MPLBACKEND", "Agg"), b"");
+                    let b = project::run(Command::new(dir.join("target/release").join(name)).env("MPLBACKEND", "Agg"), b"");
                     (a, b)
                 })
             })

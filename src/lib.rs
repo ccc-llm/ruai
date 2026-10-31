@@ -15,11 +15,14 @@
 //!   readable Rust: `ruai py run prog.py`. Translated programs depend on
 //!   `ruai` with only the [`pyrt`] runtime features: `pyrt` itself, and
 //!   `pyrt-re`, `pyrt-http`, `pyrt-numpy`, `pyrt-sklearn`, `pyrt-gymnasium`,
-//!   `pyrt-torch` for the packages of the same names (Python's standard
-//!   library and subsets of NumPy, scikit-learn, Gymnasium and PyTorch), and
+//!   `pyrt-torch`, `pyrt-plot` for the packages of the same names (Python's
+//!   standard library, subsets of NumPy, scikit-learn, Gymnasium and PyTorch,
+//!   and `ruai.plot`), and
 //!   `pyrt-python`, the bridge that calls real Python libraries through
 //!   embedded CPython.
 //! * feature `agent` — `ruai agent`, teams of LLM agents, written in py0.
+//! * [`plot`] (feature `plot`) — plots in matplotlib's style, drawn on an
+//!   HTML canvas or as SVG.
 //! * [`rng`] — NumPy-compatible random numbers (`SeedSequence`, `PCG64`) and
 //!   the MT19937 of NumPy's `RandomState` and PyTorch.
 //!
@@ -54,6 +57,8 @@ pub mod py;
 #[allow(missing_docs)]
 pub mod pyrt;
 pub mod rng;
+#[cfg(feature = "plot")]
+pub mod plot;
 #[cfg(feature = "world")]
 pub mod world;
 #[cfg(feature = "nn")]
