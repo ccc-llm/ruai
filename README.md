@@ -258,6 +258,21 @@ print(policy, logits, obs, reward)
 
 `import gymnasium as gym` is `ruai::world`'s environments with Gymnasium's Python API (observations are float32 numpy arrays, bit for bit as Gymnasium's). `import torch` is a subset of PyTorch on ruai's nn engine: autograd, `nn.Linear` and other modules, `nn.Sequential`, losses, `optim.SGD` / `Adam`, `torch.no_grad()`. `torch.manual_seed` reproduces PyTorch's random number generator (MT19937), so `rand`, `randn` and `nn.Linear`'s initial weights are PyTorch's; tensors and modules print as in PyTorch. `tests/py0/gymnasium/` and `tests/py0/torch/` compare with Gymnasium and PyTorch (training loops agree at PyTorch's default 4 decimals). Differences: models are `nn.Sequential` or plain classes holding layers (subclassing `nn.Module` is not supported) and `parameters()` returns a list; dtypes are strings in py0; matrix products and element functions may differ from PyTorch's BLAS / vectorized code in the last bit.
 
+### Any Python library: the Python bridge
+
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+
+x = np.linspace(0, 6.28, 50)
+fig, ax = plt.subplots(figsize=(6.0, 4.0))
+ax.plot(x, np.sin(x), "r-", label="sin")
+ax.legend()
+fig.savefig("sin.png")
+```
+
+Besides the packages rewritten in Rust, py0 can call **the real Python library**: a stub whose first line is `# python: MODULE` declares the module's functions and classes with py0 types, and each call goes to CPython embedded in the program (PyO3, runtime feature `pyrt-python`). Arguments and results convert both ways (int, float, bool, str, None, list, dict, tuple, numpy arrays); `= ...` as a default leaves the argument to Python's default; Python's exceptions become py0 exceptions with the same names. `matplotlib` and `matplotlib.pyplot` ship as curated stubs. For any other module, `ruai py stub --python MODULE` drafts one from `inspect` into `py0lib/MODULE.pyi` (looked up next to the program, in `./py0lib` and in `PY0_LIB`): annotated types map to py0's, unknown ones become `Object` (any Python object, accepting any value), so tighten the types by hand. The program is linked to the first Python that imports its modules (`PY0_PYTHON`, else python3.14 / 3.13 / 3.12 / python3) and uses that interpreter's packages at runtime. The tradeoffs: the program needs that Python installed to run, calls cost CPython's speed, and type checking reaches only as far as the stub. `tests/py0/pybridge/` compares bridged programs (matplotlib, and standard modules as examples) with CPython.
+
 ### LLM agent teams (agent)
 
 ```bash
@@ -397,7 +412,7 @@ src/
 ├── py/              the py0 translator (feature py, formerly py2rs)
 │   └── lib/         package stubs (*.pyi): standard library, numpy, sklearn, gymnasium, torch
 ├── pyrt/            the runtime of py0 programs (feature pyrt)
-│   └── lib/         the packages in Rust (pyrt-numpy, pyrt-sklearn, pyrt-gymnasium, pyrt-torch, ...)
+│   └── lib/         the packages in Rust (pyrt-numpy, pyrt-sklearn, pyrt-gymnasium, pyrt-torch, ...); python.rs: the Python bridge (pyrt-python)
 └── agent/           `ruai agent` in py0 (translated into cli/agent_gen.rs)
 nn/
 ├── backend/
@@ -529,7 +544,7 @@ cargo test --features mps --test devices           # every backend primitive: GP
 - `tests/second_order.rs`: Hessian-vector products of element-wise ops, all matmuls, softmax / log_softmax / cross-entropy, layer / RMS norm, embedding + gather, conv2d, fused attention and gradient checkpointing agree with finite differences; the semantics of `backward_create_graph` and `autograd::grad`; gradient penalties reach the parameters with the gradients of numerical differentiation
 - `tests/world.rs`: 6 environments × 4 seeds × 400 steps (with autoreset) compared step by step, bit for bit, with Gymnasium; vector environments, FrozenLake's text rendering, NumPy random numbers (seeds beyond 2⁶³, all `integers` ranges)
 - `tests/agent.rs`: `ruai agent`'s embedded translation is up to date; about 50 offline commands (the echo model) with interactive chats, and the output against a fake LLM server (`tests/agent/fake_llm.py`: OpenAI / Anthropic, streaming or not, native tool calls, HTTP 500 retries) are identical to CPython running the same py0 sources
-- `tests/py0.rs` + `tests/py0/`: py2rs's corpus, 259 programs (with `tests/py0/numpy/`, `sklearn/`, `gymnasium/` and `torch/` compared with the real NumPy, scikit-learn, Gymnasium and PyTorch; each program runs on a Python that has its packages), each translated, compiled and run, with the output, exit code and exception type of CPython 3.12+; 46 programs that must be rejected, with the expected messages; `tests/py0/pyo3/run.sh` checks the PyO3 extension modules
+- `tests/py0.rs` + `tests/py0/`: py2rs's corpus, 259 programs (with `tests/py0/numpy/`, `sklearn/`, `gymnasium/`, `torch/` and the Python bridge's `pybridge/` compared with the real NumPy, scikit-learn, Gymnasium and PyTorch; each program runs on a Python that has its packages), each translated, compiled and run, with the output, exit code and exception type of CPython 3.12+; 46 programs that must be rejected, with the expected messages; `tests/py0/pyo3/run.sh` checks the PyO3 extension modules
 - `tests/training.rs`: an MLP learns XOR, a CNN (with BatchNorm) converges, a GPT memorizes sequences, save/load round trips
 
 ## Stability

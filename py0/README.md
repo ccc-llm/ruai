@@ -153,6 +153,30 @@ words: list[str] = shlex.split("cp 'my file.txt' backup/")
 print(words, fnmatch("my file.txt", "*.txt"), np.arange(6).reshape(2, 3).sum(axis=0))
 ```
 
+## Python libraries (the Python bridge)
+
+A stub whose first line is `# python: MODULE` makes its declarations calls into the real
+Python module, through CPython embedded in the program (PyO3; runtime feature
+`pyrt-python`). The stub types the module for py0; values convert both ways (int, float,
+bool, str, None, list, dict, tuple, numpy arrays, and `Object`, an opaque Python object).
+A default written `...` leaves the argument out, so Python's default applies. Every call may
+raise, and Python's exceptions keep their names. Classes of the stub are Python objects
+with their methods, properties, operators and static methods.
+
+```python
+# py0lib/statistics.pyi
+# python: statistics
+def mean(data: list[float] | list[int]) -> float: ...
+```
+
+`ruai py stub --python MODULE [-o FILE]` drafts a stub with `inspect` (default
+`py0lib/MODULE.pyi`); unannotated parameters take the type of their default, anything else
+unknown is `Object`, which accepts any value. Stubs are found next to the program in
+`py0lib/`, in `./py0lib`, in `PY0_LIB` and in ruai's `src/py/lib/` (which has
+`matplotlib` and `matplotlib.pyplot`). The program links the first Python that imports
+its modules (`PY0_PYTHON`, else python3.14 / 3.13 / 3.12 / python3) and runs with its
+packages, so that Python must be installed where the program runs.
+
 ## Rust crates
 
 `from rust.CRATE import Name` uses a Rust crate. Its declarations come from a stub,
@@ -184,7 +208,7 @@ the module prints what importing the Python file prints.
 `ruai py test [FILES|DIRS]` (default `tests/`) translates every program, builds them all
 in one Cargo package and compares stdout, exit code and exception type with CPython
 (`PY2RS_PYTHON`, else python3.14 / 3.13 / 3.12); a program that imports numpy, sklearn,
-gymnasium or torch runs on the first of those (or `python3`) that has them, and is skipped
+gymnasium, torch or a bridged module runs on the first of those (or `python3`) that has them, and is skipped
 when none does. Input comes from `NAME.in` if present. A program whose first line is
 `# error: TEXT` must be rejected with a message containing TEXT (`tests/err/`). The corpus
 has about 260 programs and 46 rejections; `ruai py fuzz` adds random programs.

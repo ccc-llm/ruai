@@ -15,6 +15,29 @@ pub fn crates_of(rust: &str) -> Vec<String> {
     rust.lines().filter_map(|l| l.strip_prefix("// py2rs-crate: ")).map(String::from).collect()
 }
 
+/// Python modules a generated program calls (`// py0-python: matplotlib.pyplot`).
+pub fn python_modules_of(rust: &str) -> Vec<String> {
+    rust.lines().filter_map(|l| l.strip_prefix("// py0-python: ")).map(String::from).collect()
+}
+
+/// The interpreter (its absolute path) for programs calling these Python
+/// modules: `PY0_PYTHON`, else the first of the usual candidates that imports
+/// them all.
+pub fn python_for(modules: &[String]) -> Option<String> {
+    let candidates: Vec<String> = match std::env::var("PY0_PYTHON") {
+        Ok(p) => vec![p],
+        Err(_) => [python(), "python3.14".into(), "python3.13".into(), "python3.12".into(), "python3".into()].to_vec(),
+    };
+    let code = format!("import sys\n{}\nprint(sys.executable)", modules.iter().map(|m| format!("import {}", m)).collect::<Vec<_>>().join("\n"));
+    candidates.into_iter().find_map(|p| {
+        let o = Command::new(&p).args(["-c", &code]).output().ok()?;
+        if !o.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+    })
+}
+
 pub fn cargo_toml(name: &str, bins: &[String]) -> String {
     cargo_toml_with(name, bins, &[])
 }
@@ -83,6 +106,18 @@ pub fn write_project(dir: &Path, name: &str, rust: &str) -> std::io::Result<()> 
 pub fn build(dir: &Path, name: &str, target: &Path, quiet: bool) -> Result<PathBuf, String> {
     let mut c = Command::new("cargo");
     c.arg("build").arg("--release").current_dir(dir).env("CARGO_TARGET_DIR", target);
+    // a program calling Python modules links the interpreter that has them
+    let main = std::fs::read_to_string(dir.join("src/main.rs")).unwrap_or_default();
+    let modules = python_modules_of(&main);
+    if !modules.is_empty() {
+        let Some(py) = python_for(&modules) else {
+            return Err(format!(
+                "no Python interpreter imports {} (set PY0_PYTHON to one that does)",
+                modules.join(", ")
+            ));
+        };
+        c.env("PYO3_PYTHON", py);
+    }
     if quiet {
         c.arg("--quiet");
     }

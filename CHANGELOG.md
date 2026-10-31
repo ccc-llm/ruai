@@ -1,5 +1,25 @@
 # Changelog
 
+## 4.1.0
+
+- **The Python bridge**: py0 programs call real Python libraries. A stub headed
+  `# python: MODULE` turns its functions, classes, methods, properties, static methods
+  and `__call__` into calls through CPython embedded with PyO3 (runtime feature
+  `pyrt-python`, `ruai::pyrt::python`). Values convert both ways (int, float, bool, str,
+  None, list, dict, tuples, numpy arrays, opaque `Object`s); `= ...` defaults leave the
+  argument to Python's default; Python's exceptions are raised as py0 exceptions of the
+  same name.
+- `ruai py stub --python MODULE [-o FILE]` drafts such a stub with `inspect` (annotations
+  and defaults give the types, the rest is `Object`, which accepts any value).
+- Stubs are also looked up in `py0lib/` next to the program and in `./py0lib`; ruai ships
+  `matplotlib` and `matplotlib.pyplot`.
+- Bridged programs link the first Python that imports their modules (`PY0_PYTHON`, else
+  python3.14 / 3.13 / 3.12 / python3) and use its packages at runtime; `ruai py test` runs
+  them against that Python.
+- py0: string constants built with `+` and `*` at module level.
+- `tests/py0/pybridge/`: matplotlib and standard modules through the bridge, compared with
+  CPython.
+
 ## 4.0.0
 
 The stable release of the toolkit that 3.x assembled: the `nn` engine, `world`, py0 with

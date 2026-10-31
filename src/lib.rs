@@ -16,7 +16,9 @@
 //!   `ruai` with only the [`pyrt`] runtime features: `pyrt` itself, and
 //!   `pyrt-re`, `pyrt-http`, `pyrt-numpy`, `pyrt-sklearn`, `pyrt-gymnasium`,
 //!   `pyrt-torch` for the packages of the same names (Python's standard
-//!   library and subsets of NumPy, scikit-learn, Gymnasium and PyTorch).
+//!   library and subsets of NumPy, scikit-learn, Gymnasium and PyTorch), and
+//!   `pyrt-python`, the bridge that calls real Python libraries through
+//!   embedded CPython.
 //! * feature `agent` — `ruai agent`, teams of LLM agents, written in py0.
 //! * [`rng`] — NumPy-compatible random numbers (`SeedSequence`, `PCG64`) and
 //!   the MT19937 of NumPy's `RandomState` and PyTorch.

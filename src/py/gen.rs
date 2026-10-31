@@ -487,6 +487,9 @@ pub fn generate(p: &Program, o: &Own, x: &Exc) -> Res<String> {
     for c in &p.crates {
         crate_head += &format!("// py2rs-crate: {}\n", c);
     }
+    for m in &p.python_modules {
+        crate_head += &format!("// py0-python: {}\n", m);
+    }
     let mut uses_ext: Vec<String> = p.classes.iter().filter_map(|c| c.ext.clone()).filter(|x| x.contains("::")).collect();
     uses_ext.sort();
     uses_ext.dedup();
@@ -3696,7 +3699,7 @@ impl<'a> FGen<'a> {
             None => None,
         };
         let mut code = if x.rust.contains('{') {
-            let mut c = x.rust.clone();
+            let mut c = x.rust.replace("{ret}", &rty(&f.ret, self.p));
             if let Some(r) = &rv {
                 c = c.replace("{self}", r);
             }
@@ -4513,6 +4516,13 @@ impl<'a> FGen<'a> {
                 let x = self.val(&a[0])?;
                 let n = self.val(&a[1])?;
                 v(format!("pyrt::round2({}, {})", x.code, n.code))
+            }
+            // an argument of a Python stub that the call leaves out
+            "python.missing" => v("pyrt::python::Missing".to_string()),
+            // any value as a Python object
+            "python.object" => {
+                let x = self.borrow(&a[0])?;
+                v(format!("pyrt::python::object(&{})", x))
             }
             // numpy-style index (front::index_arg): tagged parts
             "index" => {

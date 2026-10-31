@@ -113,6 +113,11 @@ scikit-learn: `src/py/lib/sklearn.*.pyi`), `gymnasium`, `torch` (a subset of PyT
 `ruai.json` (`Json`) and `ruai.http` (`request`). `open` also takes
 `errors="replace"`.
 
+Python libraries: a stub headed `# python: MODULE` calls the real module through embedded
+CPython (feature `pyrt-python`); `= ...` defaults leave the argument to Python; every call
+may raise any builtin exception; `Object` is an opaque Python object that accepts any value
+(see README).
+
 Rust crates: `from rust.CRATE import X` with a stub `CRATE.pyi` (see README).
 
 ## 7. Ownership

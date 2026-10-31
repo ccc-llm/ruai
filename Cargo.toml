@@ -1,6 +1,6 @@
 [package]
 name = "ruai"
-version = "4.0.0"
+version = "4.1.0"
 edition = "2021"
 description = "A Swiss-army AI toolkit in Rust: a PyTorch-like engine (autograd, GPU, GPT-2/Llama), Gymnasium environments, py0 (typed Python compiled to Rust, with numpy / sklearn / torch subsets) and LLM agent teams, in one git-style `ruai` command"
 license = "MIT"
@@ -31,6 +31,8 @@ indexmap = { version = "2", optional = true }
 regex = { version = "1", optional = true }
 # ruai.http for py0 programs (an HTTP client with TLS)
 ureq = { version = "3", optional = true }
+# python: calling CPython libraries from py0 programs (an embedded interpreter)
+pyo3 = { version = "0.30", optional = true, features = ["auto-initialize"] }
 # --- py: the py0 → Rust translator (merged from py2rs)
 ruff_python_parser = { version = "0.0.20", optional = true }
 ruff_python_ast = { version = "0.0.20", optional = true }
@@ -69,6 +71,8 @@ pyrt-sklearn = ["pyrt-numpy"]
 pyrt-gymnasium = ["pyrt-numpy", "world"]
 # `torch` for py0 programs (a subset of PyTorch on the nn engine)
 pyrt-torch = ["pyrt-numpy", "nn"]
+# Python libraries for py0 programs through stubs with `# python: MODULE` (embeds CPython)
+pyrt-python = ["pyrt", "dep:pyo3"]
 # `ruai agent`: multi-agent LLM teams (agge, written in py0: src/agent/*.py)
 agent = ["py", "pyrt-http"]
 # Reinforcement-learning environments with the Gymnasium API (no dependencies)

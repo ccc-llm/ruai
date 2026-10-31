@@ -97,6 +97,7 @@ pub fn translate(src: &str) -> Result<String, Error> {
 
 /// Translate a program file (and the local modules it imports).
 pub fn translate_file(path: &std::path::Path) -> Result<String, modules::FileError> {
+    front::set_program_dir(path.parent().map(|p| p.to_path_buf()));
     let c = modules::combine(path)?;
     let r = (|| {
         let prog = front::lower_modules(&c.src, &front::default_stub_dirs(), &c.modules)?;

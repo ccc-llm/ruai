@@ -24,11 +24,11 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      # gymnasium, numpy, scikit-learn: tests/world.rs and tests/py0 compare against them
+      # gymnasium, numpy, scikit-learn, matplotlib: tests/world.rs and tests/py0 compare against them
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install gymnasium numpy scikit-learn
+      - run: python -m pip install gymnasium numpy scikit-learn matplotlib
       # torch (CPU build): tests/py0/torch compares py0's torch package with it
       - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
       - run: cargo test --release
@@ -43,6 +43,7 @@ jobs:
       - run: cargo check --no-default-features --features pyrt
       - run: cargo check --no-default-features --features py
       - run: cargo check --no-default-features --features agent
+      - run: cargo check --no-default-features --features pyrt-python
       # CUDA libraries are loaded at runtime, so the backend builds without a GPU
       - run: cargo check --all-targets --features cuda
       - run: cargo clippy --all-targets --features cuda
@@ -62,7 +63,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install gymnasium numpy scikit-learn
+      - run: python -m pip install gymnasium numpy scikit-learn matplotlib
       # GPU tests in tests/devices.rs run only if the runner exposes a Metal device
       - run: cargo test --release --features mps,accelerate
       - run: cargo clippy --all-targets --features mps,accelerate

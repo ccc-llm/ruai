@@ -35,8 +35,22 @@ pub fn package_dirs() -> Vec<std::path::PathBuf> {
     if let Ok(p) = std::env::var("PY0_LIB") {
         v.extend(std::env::split_paths(&p));
     }
+    // a program's own stubs (`ruai py stub --python M` writes there)
+    if let Some(d) = PROGRAM_DIR.with(|d| d.borrow().clone()) {
+        v.push(d.join("py0lib"));
+    }
+    v.push(std::path::PathBuf::from("py0lib"));
     v.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/py/lib"));
     v
+}
+
+thread_local! {
+    static PROGRAM_DIR: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The directory of the program being translated (its `py0lib/` has stubs too).
+pub fn set_program_dir(dir: Option<std::path::PathBuf>) {
+    PROGRAM_DIR.with(|d| *d.borrow_mut() = dir);
 }
 
 /// The stub of package `module`, if there is one.
@@ -94,6 +108,7 @@ pub fn lower_modules(src: &str, stub_dirs: &[std::path::PathBuf], modules: &[Str
         pending: vec![],
         type_env: HashMap::new(),
         overloads: HashMap::new(),
+        python_stub: None,
         local_funcs: vec![],
         tvars: Vec::new(),
         next_id: 0,
@@ -148,6 +163,8 @@ struct Front {
     type_env: HashMap<String, Ty>,
     /// a stub function with union parameters: its first instance -> all of them
     overloads: HashMap<FuncId, Vec<FuncId>>,
+    /// loading a stub of a Python module (`# python: MODULE`): the module
+    python_stub: Option<String>,
     /// nested functions defined in the functions being lowered: (name, the `funcs` entry it hides)
     local_funcs: Vec<Vec<(String, Option<FuncId>)>>,
     tvars: Vec<Option<Ty>>,
@@ -415,6 +432,14 @@ impl Front {
             let x = self.coerce(e, inner, what)?;
             return Ok(self.mk(line, w.clone(), ExprKind::SomeOf(Box::new(x))));
         }
+        // anything → a Python stub's `Object` (a Python object of no particular type)
+        if let Ty::Class(c) = &w {
+            let pc = &self.p.classes[*c];
+            if pc.name == "Object" && pc.ext.as_deref() == Some("ruai::pyrt::python::Object") && !matches!(have, Ty::Var(_)) {
+                let line = e.line;
+                return Ok(self.mk(line, w.clone(), ExprKind::Builtin("python.object", vec![e])));
+            }
+        }
         err(e.line, format!("{} must be {}, not {}", what, self.tn(&w), self.tn(&have)))
     }
 
@@ -608,6 +633,12 @@ impl Front {
             if !matches!(self.norm(&e.ty), Ty::Int | Ty::Float | Ty::Bool | Ty::Str) {
                 return err(line, "constants must be int, float, bool or str");
             }
+            // a string constant is a literal in Rust: `"ab" * 3`, `"a" + "b"` folded
+            if self.norm(&e.ty) == Ty::Str {
+                if let Some(v) = fold_str(&e, &self.p.consts) {
+                    e.kind = ExprKind::Str(v);
+                }
+            }
             self.p.consts.push(Const { name, value: e });
         }
         for (module, alias, names, line) in package_imports {
@@ -697,6 +728,17 @@ impl Front {
         if let Some(a) = alias {
             self.package_aliases.insert(a.to_string(), module.to_string());
         }
+        // `# python: MODULE`: a real Python module, called through the embedded interpreter
+        let python = text.lines().find_map(|l| l.trim().strip_prefix("# python:")).map(|l| l.trim().to_string());
+        if let Some(m) = &python {
+            if !self.p.crates.contains(&"pyrt/python".to_string()) {
+                self.p.crates.push("pyrt/python".into());
+            }
+            if !self.p.python_modules.contains(m) {
+                self.p.python_modules.push(m.clone());
+            }
+        }
+        let saved_python = std::mem::replace(&mut self.python_stub, python);
         let parsed = ruff_python_parser::parse_module(&text)
             .map_err(|e| Error::new(line, format!("{}: {}", path.display(), e.error)))?
             .into_syntax();
@@ -708,6 +750,7 @@ impl Front {
             None => StubNames::Only(names),
         };
         let r = self.stub_items_as(&prefix, module, &parsed.body, which);
+        self.python_stub = saved_python;
         self.in_stub = saved_stub;
         self.lines = saved_lines;
         self.src = saved_src;
@@ -830,8 +873,13 @@ impl Front {
                             }
                         }
                     }
-                    // the same Rust type declared by another stub: the same class
-                    if let Some(cid) = self.p.classes.iter().position(|c| c.ext.as_deref() == Some(path.as_str())) {
+                    if self.python_stub.is_some() {
+                        path = "ruai::pyrt::python::Object".to_string();
+                    }
+                    // the same Rust type declared by another stub: the same class (not Python objects)
+                    if let Some(cid) = self.p.classes.iter().position(|c| c.ext.as_deref() == Some(path.as_str()))
+                        .filter(|_| self.python_stub.is_none())
+                    {
                         if self.classes.insert(name.clone(), cid).is_some() {
                             // visible already (another import): it stays so
                             kept.insert(name.clone());
@@ -1068,6 +1116,13 @@ impl Front {
             default: None,
         });
         let mut all: Vec<&ast::ParameterWithDefault> = ps.posonlyargs.iter().chain(ps.args.iter()).collect();
+        // a Python stub: how each argument is passed (`""` positional, `"*"` spread, else the keyword)
+        let mut py_keys: Vec<String> = ps.posonlyargs.iter().map(|_| String::new()).collect();
+        py_keys.extend(ps.args.iter().map(|a| if a.default.is_some() { a.parameter.name.id.to_string() } else { String::new() }));
+        if ps.vararg.is_some() {
+            py_keys.push("*".into());
+        }
+        py_keys.extend(ps.kwonlyargs.iter().map(|a| a.parameter.name.id.to_string()));
         let star_at = all.len();
         all.extend(star.iter());
         all.extend(ps.kwonlyargs.iter());
@@ -1122,6 +1177,10 @@ impl Front {
                 return err(self.line(&p.parameter), "Ref / Mut / Own are for lists, dicts, sets, str and objects");
             }
             let default = match &p.default {
+                // a Python stub's `= ...`: left out unless given (Python's default applies)
+                Some(e) if self.python_stub.is_some() && matches!(&**e, AExpr::EllipsisLiteral(_)) => {
+                    Some(self.mk(line, ty.clone(), ExprKind::Builtin("python.missing", vec![])))
+                }
                 Some(e) => {
                     let ex = self.expr(e, Some(&ty))?;
                     let ex = self.coerce(ex, &ty, "default value")?;
@@ -1179,6 +1238,33 @@ impl Front {
             }
             None => Ty::None,
         };
+        if let (Some(x), Some(module)) = (ext.as_mut(), self.python_stub.clone()) {
+            if x.rust.is_empty() {
+                // the first parameter of a method is self
+                let skip = if class.is_some() && !is_static { 1 } else { 0 };
+                let keys = &py_keys[skip.min(py_keys.len())..];
+                let args: Vec<String> = keys.iter().enumerate().map(|(i, k)| format!("({:?}, pyrt::python::arg(&{{{}}}))", k, i)).collect();
+                let args = args.join(", ");
+                let name = d.name.id.to_string();
+                let cname = class.map(|c| self.p.classes[c].name.clone());
+                x.rust = match (cname, name.as_str()) {
+                    (Some(_), n) if property => format!("pyrt::python::get::<{{ret}}>(&{{self}}, {:?})", n),
+                    (Some(c), "__init__") => {
+                        format!("pyrt::python::call::<pyrt::python::Object>(&pyrt::python::module({:?}), {:?}, &[{}])", module, c, args)
+                    }
+                    (Some(c), n) if is_static => format!(
+                        "pyrt::python::call::<{{ret}}>(&pyrt::python::module_attr({:?}, {:?}), {:?}, &[{}])",
+                        module, c, n, args
+                    ),
+                    (Some(_), "__call__") => format!("pyrt::python::call::<{{ret}}>(&{{self}}, \"\", &[{}])", args),
+                    (Some(_), n) => format!("pyrt::python::call::<{{ret}}>(&{{self}}, {:?}, &[{}])", n, args),
+                    (None, n) => format!("pyrt::python::call::<{{ret}}>(&pyrt::python::module({:?}), {:?}, &[{}])", module, n, args),
+                };
+                // any Python exception may come out
+                x.result = true;
+                x.raises = EXCEPTIONS.iter().map(|e| e.to_string()).collect();
+            }
+        }
         if let Some(mut x) = ext {
             if x.rust.is_empty() {
                 let ty_name = class.and_then(|c| self.p.classes[c].ext.clone()).map(|p| p.rsplit("::").next().unwrap().to_string());
@@ -5093,5 +5179,29 @@ fn exc_names(e: &AExpr, out: &mut Vec<String>) {
             }
         }
         _ => out.clear(),
+    }
+}
+
+/// The value of a constant string expression (literals, `+`, `*` by an int).
+fn fold_str(e: &Expr, consts: &[Const]) -> Option<String> {
+    let int = |e: &Expr| -> Option<i64> {
+        match &e.kind {
+            ExprKind::Int(i) => Some(*i),
+            ExprKind::Const(k) => match consts[*k].value.kind {
+                ExprKind::Int(i) => Some(i),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    match &e.kind {
+        ExprKind::Str(s) => Some(s.clone()),
+        ExprKind::Const(k) => fold_str(&consts[*k].value, consts),
+        ExprKind::Bin(BinOp::Add, a, b) => Some(fold_str(a, consts)? + &fold_str(b, consts)?),
+        ExprKind::Bin(BinOp::Mul, a, b) => match (fold_str(a, consts), int(b), fold_str(b, consts), int(a)) {
+            (Some(s), Some(n), _, _) | (_, _, Some(s), Some(n)) => Some(s.repeat(n.max(0) as usize)),
+            _ => None,
+        },
+        _ => None,
     }
 }

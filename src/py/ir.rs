@@ -461,6 +461,8 @@ pub struct Program {
     pub main: FuncId,
     /// crates used through stubs: Cargo dependency lines (`regex = "1"`)
     pub crates: Vec<String>,
+    /// Python modules used through `# python:` stubs
+    pub python_modules: Vec<String>,
     /// `d[k]` of a defaultdict where k is the variable of a loop over d's keys:
     /// the key exists, nothing is inserted
     pub present: std::collections::HashSet<u32>,

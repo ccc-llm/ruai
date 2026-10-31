@@ -271,6 +271,21 @@ print(policy, logits, obs, reward)
 
 `import gymnasium as gym` 是 `ruai::world` 的環境套上 Gymnasium 的 Python API（觀測值是 float32 的 numpy 陣列，與 Gymnasium 逐位元相同）；`import torch` 是建在 ruai nn 引擎上的 PyTorch 子集：autograd、`nn.Linear` 等模組、`nn.Sequential`、損失函數、`optim.SGD` / `Adam`、`torch.no_grad()`。`torch.manual_seed` 重現 PyTorch 的亂數產生器（MT19937），所以 `rand`、`randn` 與 `nn.Linear` 的初始權重都與 PyTorch 相同；張量與模組的印出格式也一樣。`tests/py0/gymnasium/`、`tests/py0/torch/` 以真的 Gymnasium 與 PyTorch 對照（訓練迴圈在 PyTorch 預設的 4 位小數下相同）。差異：模型用 `nn.Sequential` 或持有各層的一般類別（不能繼承 `nn.Module`），`parameters()` 回傳 list；dtype 在 py0 中是字串；矩陣乘積與元素函數可能與 PyTorch 的 BLAS / 向量化實作在最後一位不同。
 
+### 任何 Python 函式庫：Python 橋接
+
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+
+x = np.linspace(0, 6.28, 50)
+fig, ax = plt.subplots(figsize=(6.0, 4.0))
+ax.plot(x, np.sin(x), "r-", label="sin")
+ax.legend()
+fig.savefig("sin.png")
+```
+
+除了以 Rust 重寫的套件，py0 也能呼叫**真正的 Python 函式庫**：第一行是 `# python: MODULE` 的 stub 用 py0 型別宣告該模組的函式與類別，每次呼叫都交給嵌入程式中的 CPython（PyO3，執行期 feature `pyrt-python`）。參數與結果雙向轉換（int、float、bool、str、None、list、dict、tuple、numpy 陣列）；預設值寫 `= ...` 表示交給 Python 自己的預設值；Python 的例外變成同名的 py0 例外。`matplotlib` 與 `matplotlib.pyplot` 附有整理好的 stub。其他模組可用 `ruai py stub --python MODULE` 以 `inspect` 產生草稿到 `py0lib/MODULE.pyi`（在程式旁、`./py0lib` 與 `PY0_LIB` 中尋找）：有標註的型別對應到 py0 型別，未知的成為 `Object`（任何 Python 物件，可接受任何值），再手動收緊型別。程式連結到第一個能 import 這些模組的 Python（`PY0_PYTHON`，否則 python3.14 / 3.13 / 3.12 / python3），執行時使用該直譯器的套件。取捨：執行時需要安裝那個 Python，呼叫是 CPython 的速度，型別檢查只到 stub 為止。`tests/py0/pybridge/` 以 CPython 對照橋接的程式（matplotlib，以及作為範例的標準模組）。
+
 ### 強化學習環境（world）
 
 ```rust
@@ -397,7 +412,7 @@ src/
 ├── py/              py0 翻譯器（feature py，原 py2rs）
 │   └── lib/         套件 stub（*.pyi）：標準函式庫、numpy、sklearn、gymnasium、torch
 ├── pyrt/            py0 程式的執行期（feature pyrt）
-│   └── lib/         以 Rust 實作的套件（pyrt-numpy、pyrt-sklearn、pyrt-gymnasium、pyrt-torch …）
+│   └── lib/         以 Rust 實作的套件（pyrt-numpy、pyrt-sklearn、pyrt-gymnasium、pyrt-torch …）；python.rs：Python 橋接（pyrt-python）
 └── agent/           以 py0 寫成的 `ruai agent`（翻譯成 cli/agent_gen.rs）
 nn/
 ├── backend/

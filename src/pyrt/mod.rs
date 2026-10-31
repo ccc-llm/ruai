@@ -20,6 +20,8 @@ pub mod out;
 pub use out::flush;
 pub mod generator;
 pub mod lib;
+#[cfg(feature = "pyrt-python")]
+pub mod python;
 pub use generator::Gen;
 pub mod spec;
 pub mod stdlib;

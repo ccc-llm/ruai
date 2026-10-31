@@ -17,6 +17,9 @@ commands:
   build FILE.py [-o DIR]     write a Cargo project (default FILE_rs/) and build it
   pyo3  FILE.py [-o DIR]     a Python extension module (PyO3): DIR/NAME.so
   stub  CRATE[@VERSION]      write stubs/CRATE.pyi from the crate's rustdoc JSON
+  stub  --python MODULE [-o FILE]
+                             draft py0lib/MODULE.pyi for a Python library, called
+                             through the embedded CPython (`# python: MODULE`)
   test  [FILES|DIRS...]      differential test against CPython (default tests/py0/)
   fuzz  [N] [SEED]           N random programs (default 200) against CPython;
                              failures are kept in target/py0-cache/fuzz-fail/
@@ -33,6 +36,13 @@ pub fn main(args: &[String]) -> i32 {
         Some("emit") if args.len() == 3 && args[2] == "--module" => emit(&args[1], true),
         Some("check") if args.len() == 2 => check(&args[1]),
         Some("explain") if args.len() == 2 => explain(&args[1]),
+        Some("stub") if args.len() >= 3 && args[1] == "--python" => {
+            let out = match args.iter().position(|a| a == "-o") {
+                Some(i) if i + 1 < args.len() => Some(PathBuf::from(&args[i + 1])),
+                _ => None,
+            };
+            python_stub(&args[2], out)
+        }
         Some("stub") if args.len() == 2 => stub(&args[1]),
         Some("build") if args.len() >= 2 => {
             let out = match args.iter().position(|a| a == "-o") {
@@ -116,6 +126,49 @@ pub fn as_module(rust: &str, file: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+/// `ruai py stub --python MODULE`: a draft stub of a Python module (by
+/// `inspect`, in the interpreter that has it), written to `py0lib/MODULE.pyi`
+/// (or `-o FILE`, `-o -` for stdout).
+fn python_stub(module: &str, out: Option<PathBuf>) -> i32 {
+    let Some(py) = project::python_for(&[module.to_string()]) else {
+        eprintln!("no Python interpreter imports {} (set PY0_PYTHON to one that does)", module);
+        return 1;
+    };
+    let script = std::env::temp_dir().join(format!("ruai_pystubgen_{}.py", std::process::id()));
+    if let Err(e) = std::fs::write(&script, include_str!("../py/pystubgen.py")) {
+        eprintln!("{}: {}", script.display(), e);
+        return 1;
+    }
+    let r = Command::new(&py).arg("-I").arg(&script).arg(module).output();
+    let _ = std::fs::remove_file(&script);
+    let o = match r {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            eprint!("{}", String::from_utf8_lossy(&o.stderr));
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("{}: {}", py, e);
+            return 1;
+        }
+    };
+    let text = String::from_utf8_lossy(&o.stdout).to_string();
+    let path = out.unwrap_or_else(|| PathBuf::from("py0lib").join(format!("{}.pyi", module)));
+    if path.as_os_str() == "-" {
+        print!("{}", text);
+        return 0;
+    }
+    if let Some(d) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        let _ = std::fs::create_dir_all(d);
+    }
+    if let Err(e) = std::fs::write(&path, text) {
+        eprintln!("{}: {}", path.display(), e);
+        return 1;
+    }
+    println!("{} (from {}; check the types)", path.display(), py);
+    0
 }
 
 /// Document the crate with rustdoc's JSON output and write `stubs/CRATE.pyi`.
@@ -373,10 +426,11 @@ fn test(args: &[String]) -> i32 {
     let mut bins: Vec<(PathBuf, String, String)> = vec![];
     let mut skipped = 0;
     let mut pythons = ReferencePythons::new(&py);
+    let mut bridged: Vec<(usize, Vec<String>)> = vec![];
     for f in files(args) {
         let src = std::fs::read_to_string(&f).unwrap();
         // programs that import numpy / sklearn run on a Python that has them
-        let Some(fpy) = pythons.for_program(&src) else {
+        let Some(mut fpy) = pythons.for_program(&src) else {
             skipped += 1;
             continue;
         };
@@ -399,11 +453,42 @@ fn test(args: &[String]) -> i32 {
                 fails += 1;
             }
             (Ok(rust), None) => {
+                // a program calling Python modules: decided below, for all of them together
+                let modules = project::python_modules_of(&rust);
+                if !modules.is_empty() {
+                    bridged.push((bins.len(), modules));
+                    fpy = String::new();
+                }
                 // directory + file name: the same name may appear in two areas
                 let dir_name = f.parent().and_then(|d| d.file_name()).map(|d| project::crate_name(Path::new(d))).unwrap_or_default();
                 let name = format!("t_{}_{}", dir_name, project::crate_name(&f));
                 std::fs::write(dir.join("src/bin").join(format!("{}.rs", name)), rust).unwrap();
                 bins.push((f, name, fpy));
+            }
+        }
+    }
+    // programs calling Python modules link one interpreter (one Cargo package):
+    // the first that imports all their modules, also their reference Python
+    let mut bridge_python: Option<String> = None;
+    if !bridged.is_empty() {
+        let mut all: Vec<String> = bridged.iter().flat_map(|(_, m)| m.clone()).collect();
+        all.sort();
+        all.dedup();
+        match project::python_for(&all) {
+            Some(py) => {
+                for (i, _) in &bridged {
+                    bins[*i].2 = py.clone();
+                }
+                bridge_python = Some(py);
+            }
+            None => {
+                let drop: Vec<usize> = bridged.iter().map(|(i, _)| *i).collect();
+                for &i in drop.iter().rev() {
+                    let (f, name, _) = bins.remove(i);
+                    let _ = std::fs::remove_file(dir.join("src/bin").join(format!("{}.rs", name)));
+                    println!("skip {} (no Python imports {})", f.display(), all.join(", "));
+                    skipped += 1;
+                }
             }
         }
     }
@@ -419,12 +504,12 @@ fn test(args: &[String]) -> i32 {
     }
     std::fs::write(dir.join("Cargo.toml"), project::cargo_toml_with("difftest", &names, &crates)).unwrap();
     if !bins.is_empty() {
-        let out = Command::new("cargo")
-            .args(["build", "--release", "--quiet"])
-            .current_dir(&dir)
-            .env("CARGO_TARGET_DIR", dir.join("target"))
-            .output()
-            .expect("cargo");
+        let mut cargo = Command::new("cargo");
+        cargo.args(["build", "--release", "--quiet"]).current_dir(&dir).env("CARGO_TARGET_DIR", dir.join("target"));
+        if let Some(py) = &bridge_python {
+            cargo.env("PYO3_PYTHON", py);
+        }
+        let out = cargo.output().expect("cargo");
         if !out.status.success() {
             println!("FAIL: generated Rust does not compile\n{}", String::from_utf8_lossy(&out.stderr));
             return 1;
