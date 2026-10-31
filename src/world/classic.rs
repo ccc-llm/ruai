@@ -72,6 +72,9 @@ impl Env for CartPole {
     fn action_space_mut(&mut self) -> &mut Space {
         &mut self.act_space
     }
+    fn observation_space_mut(&mut self) -> &mut Space {
+        &mut self.obs_space
+    }
 
     fn reset(&mut self, seed: Option<u64>) -> (Value, Info) {
         self.rng.reseed(seed);
@@ -166,6 +169,9 @@ impl Env for MountainCar {
     fn action_space_mut(&mut self) -> &mut Space {
         &mut self.act_space
     }
+    fn observation_space_mut(&mut self) -> &mut Space {
+        &mut self.obs_space
+    }
 
     fn reset(&mut self, seed: Option<u64>) -> (Value, Info) {
         self.rng.reseed(seed);
@@ -257,6 +263,9 @@ impl Env for Pendulum {
     }
     fn action_space_mut(&mut self) -> &mut Space {
         &mut self.act_space
+    }
+    fn observation_space_mut(&mut self) -> &mut Space {
+        &mut self.obs_space
     }
 
     fn reset(&mut self, seed: Option<u64>) -> (Value, Info) {
@@ -363,6 +372,9 @@ impl Env for Acrobot {
     }
     fn action_space_mut(&mut self) -> &mut Space {
         &mut self.act_space
+    }
+    fn observation_space_mut(&mut self) -> &mut Space {
+        &mut self.obs_space
     }
 
     fn reset(&mut self, seed: Option<u64>) -> (Value, Info) {

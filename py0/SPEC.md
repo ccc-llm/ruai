@@ -76,7 +76,7 @@ variables passed as values, unions outside parameters.
 
 `@dataclass` (also `frozen=True`) and plain classes with `__init__`; methods,
 `@staticmethod`, `@classmethod`, `@property` (read only), constant class attributes,
-`__str__` / `__repr__`, operator methods (`__add__`, `__sub__`, `__mul__`,
+`__str__` / `__repr__`, `__call__`, operator methods (`__add__`, `__sub__`, `__mul__`,
 `__truediv__`, `__floordiv__`, `__mod__`, `__pow__`, bitwise ones, the reflected `__r*__`
 forms, `__neg__`, `__pos__`, `__abs__`, `__eq__`, `__ne__`, `__lt__`, `__le__`, `__gt__`,
 `__ge__`, `__len__`, `__bool__`, `__getitem__`, `__setitem__`, `__contains__`), single
@@ -108,7 +108,8 @@ Packages (`src/py/lib/*.pyi`, Rust in `ruai::pyrt::lib`): `shlex`, `fnmatch`, `h
 `subprocess` (`run`), more of `os` / `os.path` / `sys` / `time` (`os.listdir`,
 `os.makedirs`, `os.environ.get`, `os.path.isdir`, `sys.stdin.isatty`, `time.strftime`, ...),
 `numpy` (a subset of NumPy's ndarray: see `src/py/lib/numpy.pyi`), `sklearn.*` (a subset of
-scikit-learn: `src/py/lib/sklearn.*.pyi`), and ruai's own
+scikit-learn: `src/py/lib/sklearn.*.pyi`), `gymnasium`, `torch` (a subset of PyTorch:
+`src/py/lib/torch*.pyi`), and ruai's own
 `ruai.json` (`Json`) and `ruai.http` (`request`). `open` also takes
 `errors="replace"`.
 

@@ -97,6 +97,47 @@ fn reduce(
     }
 }
 
+/// A float32 sum in NumPy's order (pairwise, float32 accumulators).
+fn pairwise32(a: &[f32]) -> f32 {
+    let n = a.len();
+    if n < 8 {
+        let mut r = 0.0f32;
+        for &x in a {
+            r += x;
+        }
+        r
+    } else if n <= 128 {
+        let mut r = [0.0f32; 8];
+        r.copy_from_slice(&a[..8]);
+        let mut i = 8;
+        while i < n - n % 8 {
+            for j in 0..8 {
+                r[j] += a[i + j];
+            }
+            i += 8;
+        }
+        let mut res = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
+        while i < n {
+            res += a[i];
+            i += 1;
+        }
+        res
+    } else {
+        let mut n2 = n / 2;
+        n2 -= n2 % 8;
+        pairwise32(&a[..n2]) + pairwise32(&a[n2..])
+    }
+}
+
+fn fsum32(l: &[Scalar], pw: bool) -> f32 {
+    let v: Vec<f32> = l.iter().map(|x| x.f() as f32).collect();
+    if pw {
+        0.0f32 + pairwise32(&v)
+    } else {
+        v.iter().fold(0.0f32, |s, x| s + x)
+    }
+}
+
 fn fsum(l: &[Scalar], pw: bool) -> f64 {
     let v: Vec<f64> = l.iter().map(|x| x.f()).collect();
     if pw {
@@ -194,6 +235,7 @@ impl NdArray {
         reduce(self, axis, k, &|l, pw| {
             Ok(match k {
                 Kind::Float => Scalar::F(fsum(l, pw)),
+                Kind::F32 => Scalar::F(fsum32(l, pw) as f64),
                 _ => Scalar::I(l.iter().fold(0i64, |s, x| s.wrapping_add(x.i()))),
             })
         })
@@ -204,16 +246,34 @@ impl NdArray {
         reduce(self, axis, k, &|l, _| {
             Ok(match k {
                 Kind::Float => Scalar::F(l.iter().fold(1.0, |s, x| s * x.f())),
+                Kind::F32 => Scalar::F(l.iter().fold(1.0f32, |s, x| s * x.f() as f32) as f64),
                 _ => Scalar::I(l.iter().fold(1i64, |s, x| s.wrapping_mul(x.i()))),
             })
         })
     }
     /// `a.mean(axis=None)`
     pub fn mean(&self, axis: Option<i64>) -> Result<NdArray, PyErr> {
+        if self.kind() == Kind::F32 {
+            return reduce(self, axis, Kind::F32, &|l, pw| Ok(Scalar::F((fsum32(l, pw) / l.len() as f32) as f64)));
+        }
         reduce(self, axis, Kind::Float, &|l, pw| Ok(Scalar::F(fsum(l, pw) / l.len() as f64)))
     }
     /// `a.var(axis=None, ddof=0)`
     pub fn var(&self, axis: Option<i64>, ddof: i64) -> Result<NdArray, PyErr> {
+        if self.kind() == Kind::F32 {
+            return reduce(self, axis, Kind::F32, &|l, pw| {
+                let mean = fsum32(l, pw) / l.len() as f32;
+                let sq: Vec<Scalar> = l
+                    .iter()
+                    .map(|x| {
+                        let d = x.f() as f32 - mean;
+                        Scalar::F((d * d) as f64)
+                    })
+                    .collect();
+                let n = l.len() as i64 - ddof;
+                Ok(Scalar::F((fsum32(&sq, pw) / n.max(0) as f32) as f64))
+            });
+        }
         reduce(self, axis, Kind::Float, &|l, pw| {
             let mean = fsum(l, pw) / l.len() as f64;
             let sq: Vec<Scalar> = l
@@ -290,6 +350,8 @@ impl NdArray {
                     acc = match (k, prod) {
                         (Kind::Float, false) => Scalar::F(acc.f() + x.f()),
                         (Kind::Float, true) => Scalar::F(acc.f() * x.f()),
+                        (Kind::F32, false) => Scalar::F((acc.f() as f32 + x.f() as f32) as f64),
+                        (Kind::F32, true) => Scalar::F((acc.f() as f32 * x.f() as f32) as f64),
                         (_, false) => Scalar::I(acc.i().wrapping_add(x.i())),
                         (_, true) => Scalar::I(acc.i().wrapping_mul(x.i())),
                     };
@@ -382,6 +444,13 @@ pub(crate) fn dot_lane(x: &[Scalar], y: &[Scalar], k: Kind) -> Scalar {
                 s += a.f() * b.f();
             }
             Scalar::F(s)
+        }
+        Kind::F32 => {
+            let mut s = 0.0f32;
+            for (a, b) in x.iter().zip(y) {
+                s += a.f() as f32 * b.f() as f32;
+            }
+            Scalar::F(s as f64)
         }
         Kind::Bool => Scalar::B(x.iter().zip(y).any(|(a, b)| a.b() && b.b())),
         Kind::Int => Scalar::I(x.iter().zip(y).fold(0i64, |s, (a, b)| s.wrapping_add(a.i().wrapping_mul(b.i())))),

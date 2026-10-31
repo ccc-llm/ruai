@@ -29,7 +29,7 @@ pub const SUPPORTED: &[&str] = &[
     "__or__", "__ror__", "__xor__", "__rxor__", "__lshift__", "__rlshift__", "__rshift__", "__rrshift__",
     "__neg__", "__pos__", "__abs__", "__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__", "__len__",
     "__bool__", "__getitem__", "__setitem__", "__contains__", "__matmul__", "__rmatmul__", "__invert__",
-    "__float__", "__int__", "__iter__",
+    "__float__", "__int__", "__iter__", "__call__", "__enter__", "__exit__",
 ];
 
 /// Special methods that decide equality / order (not in class hierarchies).

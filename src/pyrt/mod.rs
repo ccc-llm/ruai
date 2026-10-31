@@ -309,6 +309,16 @@ pub fn repr<T: Py + ?Sized>(x: &T) -> String {
 
 /// Python's shortest round-trip `repr(float)`.
 pub fn float_repr(x: f64) -> String {
+    repr_from(x, &format!("{:e}", x))
+}
+
+/// `repr` of a NumPy float32 (its own shortest digits, Python's layout).
+pub fn float32_repr(x: f32) -> String {
+    repr_from(x as f64, &format!("{:e}", x))
+}
+
+/// Python's float repr layout from the shortest digits `e` (`1.5e-3`).
+fn repr_from(x: f64, e: &str) -> String {
     if x.is_nan() {
         return "nan".into();
     }
@@ -318,7 +328,6 @@ pub fn float_repr(x: f64) -> String {
     if x == 0.0 {
         return if x.is_sign_negative() { "-0.0".into() } else { "0.0".into() };
     }
-    let e = format!("{:e}", x);
     let (mant, exp) = e.split_once('e').unwrap();
     let exp: i32 = exp.parse().unwrap();
     let neg = mant.starts_with('-');

@@ -11,9 +11,9 @@ const PRECISION: usize = 8;
 /// Digits of `|x|` in positional notation: the shortest repr, rounded to at
 /// most `PRECISION` fractional digits (Dragon4 `unique=True`), trailing zeros
 /// trimmed but the point kept: `1.`, `2.5`, `0.33333333`.
-fn positional(x: f64) -> (String, String) {
+fn positional(x: f64, f32: bool) -> (String, String) {
     let a = x.abs();
-    let mut s = format!("{}", a);
+    let mut s = if f32 { format!("{}", a as f32) } else { format!("{}", a) };
     if let Some(p) = s.find('.') {
         if s.len() - p - 1 > PRECISION {
             s = format!("{:.*}", PRECISION, a);
@@ -28,9 +28,9 @@ fn positional(x: f64) -> (String, String) {
 }
 
 /// Scientific digits of `|x|`: mantissa integer digit, fraction digits, exponent.
-fn scientific(x: f64) -> (String, String, i32) {
+fn scientific(x: f64, f32: bool) -> (String, String, i32) {
     let a = x.abs();
-    let mut s = format!("{:e}", a);
+    let mut s = if f32 { format!("{:e}", a as f32) } else { format!("{:e}", a) };
     if s.split_once('e').unwrap().0.split_once('.').is_some_and(|(_, f)| f.len() > PRECISION) {
         s = format!("{:.*e}", PRECISION, a);
     }
@@ -48,10 +48,10 @@ fn scientific(x: f64) -> (String, String, i32) {
 enum Fmt {
     Bool { scalar: bool },
     Int { width: usize },
-    Float { exp: bool, pad_left: usize, pad_right: usize, precision: usize, exp_size: usize },
+    Float { exp: bool, pad_left: usize, pad_right: usize, precision: usize, exp_size: usize, f32: bool },
 }
 
-fn float_fmt(vals: &[f64]) -> Fmt {
+fn float_fmt(vals: &[f64], f32: bool) -> Fmt {
     let finite: Vec<f64> = vals.iter().copied().filter(|x| x.is_finite()).collect();
     let nz: Vec<f64> = finite.iter().filter(|&&x| x != 0.0).map(|x| x.abs()).collect();
     let mut exp = false;
@@ -63,13 +63,13 @@ fn float_fmt(vals: &[f64]) -> Fmt {
     let (mut pad_left, mut pad_right, mut precision, mut exp_size) = (0, 0, PRECISION, 0);
     if finite.is_empty() {
     } else if exp {
-        let parts: Vec<(String, String, i32)> = finite.iter().map(|&x| scientific(x)).collect();
+        let parts: Vec<(String, String, i32)> = finite.iter().map(|&x| scientific(x, f32)).collect();
         precision = parts.iter().map(|p| p.1.len()).max().unwrap();
         exp_size = parts.iter().map(|p| p.2.unsigned_abs().to_string().len().max(2)).max().unwrap();
         pad_left = parts.iter().map(|p| p.0.len()).max().unwrap();
         pad_right = exp_size + 2 + precision;
     } else {
-        let parts: Vec<(String, String)> = finite.iter().map(|&x| positional(x)).collect();
+        let parts: Vec<(String, String)> = finite.iter().map(|&x| positional(x, f32)).collect();
         pad_left = parts.iter().map(|p| p.0.len()).max().unwrap();
         pad_right = parts.iter().map(|p| p.1.len()).max().unwrap();
     }
@@ -78,7 +78,7 @@ fn float_fmt(vals: &[f64]) -> Fmt {
         let offset = pad_right + 1;
         pad_left = pad_left.max(3usize.saturating_sub(offset)).max((3 + neginf).saturating_sub(offset));
     }
-    Fmt::Float { exp, pad_left, pad_right, precision, exp_size }
+    Fmt::Float { exp, pad_left, pad_right, precision, exp_size, f32 }
 }
 
 fn make_fmt(a: &NdArray, items: &[Scalar]) -> Fmt {
@@ -88,7 +88,7 @@ fn make_fmt(a: &NdArray, items: &[Scalar]) -> Fmt {
             let width = items.iter().map(|x| x.i().to_string().len()).max().unwrap_or(0);
             Fmt::Int { width }
         }
-        Kind::Float => float_fmt(&items.iter().map(|x| x.f()).collect::<Vec<_>>()),
+        k => float_fmt(&items.iter().map(|x| x.f()).collect::<Vec<_>>(), k == Kind::F32),
     }
 }
 
@@ -100,19 +100,19 @@ fn fmt_one(f: &Fmt, x: Scalar) -> String {
             (false, _) => "False".into(),
         },
         Fmt::Int { width } => format!("{:>w$}", x.i(), w = width),
-        Fmt::Float { exp, pad_left, pad_right, precision, exp_size } => {
+        Fmt::Float { exp, pad_left, pad_right, precision, exp_size, f32 } => {
             let v = x.f();
             if !v.is_finite() {
                 let s = if v.is_nan() { "nan".to_string() } else if v < 0.0 { "-inf".into() } else { "inf".into() };
                 return format!("{:>w$}", s, w = pad_left + pad_right + 1);
             }
             if exp {
-                let (int, frac, e) = scientific(v);
+                let (int, frac, e) = scientific(v, f32);
                 let frac = format!("{:0<p$}", frac, p = precision);
                 let sign = if e < 0 { '-' } else { '+' };
                 format!("{:>l$}.{}e{}{:0>es$}", int, frac, sign, e.unsigned_abs(), l = pad_left, es = exp_size)
             } else {
-                let (int, frac) = positional(v);
+                let (int, frac) = positional(v, f32);
                 format!("{:>l$}.{:<r$}", int, frac, l = pad_left, r = pad_right)
             }
         }
@@ -263,10 +263,11 @@ fn array2string(a: &NdArray, sep: &str, prefix: &str, suffix_len: usize) -> Stri
 }
 
 /// `str(x)` of a NumPy scalar (like the Python value).
-fn scalar_str(x: Scalar) -> String {
+fn scalar_str(x: Scalar, k: Kind) -> String {
     match x {
         Scalar::B(b) => if b { "True" } else { "False" }.into(),
         Scalar::I(i) => i.to_string(),
+        Scalar::F(f) if k == Kind::F32 => crate::pyrt::float32_repr(f as f32),
         Scalar::F(f) => crate::pyrt::float_repr(f),
     }
 }
@@ -274,7 +275,7 @@ fn scalar_str(x: Scalar) -> String {
 /// `str(a)`
 pub fn array_str(a: &NdArray) -> String {
     if a.shape.is_empty() {
-        return scalar_str(a.first());
+        return scalar_str(a.first(), a.kind());
     }
     array2string(a, " ", "", 0)
 }
@@ -285,6 +286,7 @@ pub fn array_repr(a: &NdArray) -> String {
         return match a.first() {
             Scalar::B(b) => if b { "np.True_" } else { "np.False_" }.into(),
             Scalar::I(i) => format!("np.int64({})", i),
+            Scalar::F(f) if a.kind() == Kind::F32 => format!("np.float32({})", crate::pyrt::float32_repr(f as f32)),
             Scalar::F(f) => format!("np.float64({})", crate::pyrt::float_repr(f)),
         };
     }
@@ -300,7 +302,7 @@ pub fn array_repr(a: &NdArray) -> String {
             extras.push(format!("shape={}", shape_str(&a.shape)));
         }
     }
-    if a.len() == 0 {
+    if a.len() == 0 || a.kind() == Kind::F32 {
         extras.push(format!("dtype={}", a.kind().name()));
     }
     if a.len() == 0 && a.shape != [0] {

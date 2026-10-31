@@ -810,6 +810,7 @@ impl Front {
     /// path, `label` the name used in messages.
     fn stub_items_as(&mut self, krate: &str, label: &str, body: &[AStmt], which: StubNames) -> Res<()> {
         let mut reused: HashSet<String> = HashSet::new();
+        let mut kept: HashSet<String> = HashSet::new();
         let no_names: Vec<String> = vec![];
         let names: &[String] = match &which {
             StubNames::Only(n) => n,
@@ -831,7 +832,10 @@ impl Front {
                     }
                     // the same Rust type declared by another stub: the same class
                     if let Some(cid) = self.p.classes.iter().position(|c| c.ext.as_deref() == Some(path.as_str())) {
-                        self.classes.insert(name.clone(), cid);
+                        if self.classes.insert(name.clone(), cid).is_some() {
+                            // visible already (another import): it stays so
+                            kept.insert(name.clone());
+                        }
                         reused.insert(name.clone());
                         continue;
                     }
@@ -941,7 +945,8 @@ impl Front {
             if let AStmt::ClassDef(d) = s {
                 let n = d.name.id.to_string();
                 if !names.contains(&n) {
-                    if let (Some(cid), StubNames::Qualified(a)) = (self.classes.remove(&n), &which) {
+                    let cid = if kept.contains(&n) { self.classes.get(&n).copied() } else { self.classes.remove(&n) };
+                    if let (Some(cid), StubNames::Qualified(a)) = (cid, &which) {
                         self.classes.insert(format!("{}.{}", a, n), cid);
                     }
                 }
@@ -2134,6 +2139,30 @@ impl Front {
             AStmt::With(w) => {
                 if w.is_async {
                     return err(line, "`async with` is not supported");
+                }
+                // `with obj:` for an object with __enter__ / __exit__ (`torch.no_grad()`):
+                // `ctx = obj; ctx.__enter__()`, then `try: body finally: ctx.__exit__()`
+                if let [it] = &w.items[..] {
+                    if it.optional_vars.is_none() {
+                        let ctx = self.expr(&it.context_expr, None)?;
+                        if let (Some(enter), Some(exit)) =
+                            (self.find_method(&ctx.ty, "__enter__"), self.find_method(&ctx.ty, "__exit__"))
+                        {
+                            let t = ctx.ty.clone();
+                            let v = self.new_var(&format!("ctx_{}", line), t.clone(), VarKind::Local);
+                            out.push(self.stmt_(line, StmtKind::Assign(Target::Var(v), ctx)));
+                            let var = |s: &mut Self| s.mk(line, t.clone(), ExprKind::Var(v));
+                            let e = var(self);
+                            let enter = self.call_dunder(e, enter, vec![], line)?;
+                            out.push(self.stmt_(line, StmtKind::Expr(enter)));
+                            let body = self.block(&w.body)?;
+                            let e = var(self);
+                            let exit = self.call_dunder(e, exit, vec![], line)?;
+                            let fin = vec![self.stmt_(line, StmtKind::Expr(exit))];
+                            out.push(self.stmt_(line, StmtKind::Try(body, vec![], vec![], fin)));
+                            return Ok(());
+                        }
+                    }
                 }
                 // `with open(p) as f:` → `f = open(p)`, the body, `f.close()`
                 let mut files = vec![];
@@ -3772,6 +3801,11 @@ impl Front {
                     if let Ty::Func(ps, r) = self.norm(&self.var(v).ty) {
                         return self.call_value(v, &ps, &r, args, line);
                     }
+                    // an object with __call__ (a torch module, a loss)
+                    if self.find_method(&self.var(v).ty, "__call__").is_some() {
+                        let obj = self.expr(&c.func, None)?;
+                        return self.call_object(obj, args, line);
+                    }
                     return err(line, format!("`{}` is not callable", name));
                 }
                 if let Some(&fid) = self.funcs.get(name) {
@@ -3862,10 +3896,36 @@ impl Front {
                     }
                 }
                 let recv = self.expr(&a.value, None)?;
+                // `self.fc(x)`: a field (or property) holding an object with __call__
+                if let Ty::Class(cid) | Ty::Obj(cid) = self.norm(&recv.ty) {
+                    let is_method = self.p.classes[cid].method(m).is_some_and(|f| !self.p.funcs[f].property);
+                    if !is_method {
+                        let obj = self.expr(&c.func, None)?;
+                        if self.find_method(&obj.ty, "__call__").is_some() {
+                            return self.call_object(obj, args, line);
+                        }
+                    }
+                }
                 self.method(recv, m, args, want, line)
             }
-            _ => err(line, "unsupported call"),
+            // `layers[0](x)`, `make()(x)`: an object with __call__
+            f => {
+                let obj = self.expr(f, None)?;
+                if self.find_method(&obj.ty, "__call__").is_some() {
+                    return self.call_object(obj, args, line);
+                }
+                err(line, "unsupported call")
+            }
         }
+    }
+
+    /// `obj(args)`: `obj.__call__(args)`
+    fn call_object(&mut self, obj: Expr, args: &ast::Arguments, line: u32) -> Res<Expr> {
+        let fid = self.find_method(&obj.ty, "__call__").unwrap();
+        let fid = self.pick_overload(fid, args, true, line)?;
+        let a = self.call_args(fid, args, true, line)?;
+        let t = self.p.funcs[fid].ret.clone();
+        Ok(self.mk(line, t, ExprKind::Method(Box::new(obj), fid, a)))
     }
 
     fn construct(&mut self, cid: ClassId, args: &ast::Arguments, line: u32) -> Res<Expr> {

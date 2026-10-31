@@ -197,6 +197,54 @@ impl Generator {
     }
 }
 
+/// The 32-bit Mersenne Twister seeded by `init_genrand` (Matsumoto and
+/// Nishimura): the generator of NumPy's legacy `RandomState(seed)` and of
+/// PyTorch's CPU generator (`torch.manual_seed`).
+#[derive(Clone)]
+pub struct Mt19937 {
+    mt: [u32; 624],
+    i: usize,
+}
+
+impl std::fmt::Debug for Mt19937 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Mt19937")
+    }
+}
+
+impl Mt19937 {
+    /// Seeded with the low 32 bits of `seed`.
+    pub fn new(seed: u32) -> Self {
+        let mut mt = [0u32; 624];
+        mt[0] = seed;
+        for i in 1..624 {
+            mt[i] = 1812433253u32.wrapping_mul(mt[i - 1] ^ (mt[i - 1] >> 30)).wrapping_add(i as u32);
+        }
+        Mt19937 { mt, i: 624 }
+    }
+
+    /// The next 32 random bits.
+    pub fn next_u32(&mut self) -> u32 {
+        if self.i >= 624 {
+            for k in 0..624 {
+                let y = (self.mt[k] & 0x8000_0000) | (self.mt[(k + 1) % 624] & 0x7fff_ffff);
+                let mut v = self.mt[(k + 397) % 624] ^ (y >> 1);
+                if y & 1 == 1 {
+                    v ^= 0x9908_b0df;
+                }
+                self.mt[k] = v;
+            }
+            self.i = 0;
+        }
+        let mut y = self.mt[self.i];
+        self.i += 1;
+        y ^= y >> 11;
+        y ^= (y << 7) & 0x9d2c_5680;
+        y ^= (y << 15) & 0xefc6_0000;
+        y ^ (y >> 18)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

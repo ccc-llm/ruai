@@ -229,6 +229,8 @@ pub trait Env: Send {
     fn action_space(&self) -> &Space;
     /// The space of actions, mutable (to seed or sample it).
     fn action_space_mut(&mut self) -> &mut Space;
+    /// The observation space, to seed or sample it.
+    fn observation_space_mut(&mut self) -> &mut Space;
     /// Start an episode; `Some(seed)` re-seeds the environment's generator.
     fn reset(&mut self, seed: Option<u64>) -> (Value, Info);
     /// Apply an action.

@@ -57,7 +57,7 @@ impl NdArray {
                 "The numpy boolean negative, the `-` operator, is not supported, use the `~` operator or the logical_not function instead.",
             )),
             Kind::Int => Ok(map(self, Kind::Int, |x| Scalar::I(x.i().wrapping_neg()))),
-            Kind::Float => Ok(map(self, Kind::Float, |x| Scalar::F(-x.f()))),
+            Kind::Float | Kind::F32 => Ok(map(self, self.kind(), |x| Scalar::F(-x.f()))),
         }
     }
     /// `+a`
@@ -73,7 +73,7 @@ impl NdArray {
         match self.kind() {
             Kind::Bool => Ok(map(self, Kind::Bool, |x| Scalar::B(!x.b()))),
             Kind::Int => Ok(map(self, Kind::Int, |x| Scalar::I(!x.i()))),
-            Kind::Float => Err(terr(
+            Kind::Float | Kind::F32 => Err(terr(
                 "ufunc 'invert' not supported for the input types, and the inputs could not be safely coerced to any supported types according to the casting rule ''safe''",
             )),
         }
@@ -101,14 +101,14 @@ pub fn absolute(a: &NdArray) -> NdArray {
     match a.kind() {
         Kind::Bool => map(a, Kind::Bool, |x| x),
         Kind::Int => map(a, Kind::Int, |x| Scalar::I(x.i().wrapping_abs())),
-        Kind::Float => map_f(a, f64::abs),
+        Kind::Float | Kind::F32 => map_f(a, f64::abs),
     }
 }
 
 /// `np.sign(a)`
 pub fn sign(a: &NdArray) -> NdArray {
     match a.kind() {
-        Kind::Float => map_f(a, |x| if x.is_nan() { x } else if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 }),
+        Kind::Float | Kind::F32 => map_f(a, |x| if x.is_nan() { x } else if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 }),
         k => map(a, k.max(Kind::Int), |x| Scalar::I(x.i().signum())),
     }
 }
@@ -116,7 +116,7 @@ pub fn sign(a: &NdArray) -> NdArray {
 /// `np.floor`, `np.ceil`, `np.trunc`, `np.rint`: integers stay integers.
 fn int_keeping(a: &NdArray, f: fn(f64) -> f64) -> NdArray {
     match a.kind() {
-        Kind::Float => map_f(a, f),
+        Kind::Float | Kind::F32 => map_f(a, f),
         k => map(a, k, |x| x),
     }
 }
@@ -142,7 +142,7 @@ pub fn rint(a: &NdArray) -> NdArray {
 pub fn round(a: &NdArray, decimals: i64) -> NdArray {
     let d = decimals;
     match a.kind() {
-        Kind::Float => map_f(a, move |x| {
+        Kind::Float | Kind::F32 => map_f(a, move |x| {
             if d >= 0 {
                 let p = 10f64.powi(d as i32);
                 (x * p).round_ties_even() / p
@@ -192,7 +192,7 @@ float_fns! {
 /// `np.square(a)`
 pub fn square(a: &NdArray) -> NdArray {
     match a.kind() {
-        Kind::Float => map_f(a, |x| x * x),
+        Kind::Float | Kind::F32 => map_f(a, |x| x * x),
         k => map(a, k.max(Kind::Int), |x| Scalar::I(x.i().wrapping_mul(x.i()))),
     }
 }

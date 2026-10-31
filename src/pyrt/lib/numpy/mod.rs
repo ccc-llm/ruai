@@ -28,6 +28,7 @@ pub use reduce::unique;
 pub enum Kind {
     Bool,
     Int,
+    F32,
     #[default]
     Float,
 }
@@ -37,6 +38,7 @@ impl Kind {
         match self {
             Kind::Bool => "bool",
             Kind::Int => "int64",
+            Kind::F32 => "float32",
             Kind::Float => "float64",
         }
     }
@@ -45,6 +47,7 @@ impl Kind {
             "bool" | "bool_" | "?" => Kind::Bool,
             "int" | "int64" | "i8" | "int_" | "long" => Kind::Int,
             "float" | "float64" | "f8" | "double" => Kind::Float,
+            "float32" | "f4" | "single" => Kind::F32,
             _ => return Err(PyErr::new(TYPE_ERROR, format!("data type '{}' not understood", s))),
         })
     }
@@ -98,6 +101,7 @@ impl Scalar {
         match k {
             Kind::Bool => Scalar::B(self.b()),
             Kind::Int => Scalar::I(self.i()),
+            Kind::F32 => Scalar::F(self.f() as f32 as f64),
             Kind::Float => Scalar::F(self.f()),
         }
     }
@@ -108,6 +112,7 @@ impl Scalar {
 pub enum Data {
     Bool(Vec<bool>),
     Int(Vec<i64>),
+    F32(Vec<f32>),
     Float(Vec<f64>),
 }
 
@@ -116,6 +121,7 @@ impl Data {
         match self {
             Data::Bool(_) => Kind::Bool,
             Data::Int(_) => Kind::Int,
+            Data::F32(_) => Kind::F32,
             Data::Float(_) => Kind::Float,
         }
     }
@@ -123,6 +129,7 @@ impl Data {
         match self {
             Data::Bool(v) => v.len(),
             Data::Int(v) => v.len(),
+            Data::F32(v) => v.len(),
             Data::Float(v) => v.len(),
         }
     }
@@ -130,6 +137,7 @@ impl Data {
         match self {
             Data::Bool(v) => Scalar::B(v[i]),
             Data::Int(v) => Scalar::I(v[i]),
+            Data::F32(v) => Scalar::F(v[i] as f64),
             Data::Float(v) => Scalar::F(v[i]),
         }
     }
@@ -138,6 +146,7 @@ impl Data {
         match self {
             Data::Bool(v) => v[i] = x.b(),
             Data::Int(v) => v[i] = x.i(),
+            Data::F32(v) => v[i] = x.f() as f32,
             Data::Float(v) => v[i] = x.f(),
         }
     }
@@ -145,6 +154,7 @@ impl Data {
         match k {
             Kind::Bool => Data::Bool(xs.map(|x| x.b()).collect()),
             Kind::Int => Data::Int(xs.map(|x| x.i()).collect()),
+            Kind::F32 => Data::F32(xs.map(|x| x.f() as f32).collect()),
             Kind::Float => Data::Float(xs.map(|x| x.f()).collect()),
         }
     }
@@ -222,7 +232,11 @@ impl NdArray {
         NdArray { data: Rc::new(RefCell::new(data)), shape, strides, offset: 0, scalar: false }
     }
     pub(crate) fn from_scalar(x: Scalar) -> NdArray {
-        let mut a = NdArray::from_data(Data::from_scalars(x.kind(), std::iter::once(x)), vec![]);
+        NdArray::scalar_of(x, x.kind())
+    }
+    /// A NumPy scalar of kind `k`.
+    pub(crate) fn scalar_of(x: Scalar, k: Kind) -> NdArray {
+        let mut a = NdArray::from_data(Data::from_scalars(k, std::iter::once(x)), vec![]);
         a.scalar = true;
         a
     }
@@ -539,6 +553,11 @@ impl ShapeArg for i64 {
         vec![*self]
     }
 }
+impl ShapeArg for (i64,) {
+    fn dims(&self) -> Vec<i64> {
+        vec![self.0]
+    }
+}
 impl ShapeArg for (i64, i64) {
     fn dims(&self) -> Vec<i64> {
         vec![self.0, self.1]
@@ -711,39 +730,39 @@ pub fn asarray(x: impl IntoArray, dtype: &Option<String>) -> Result<NdArray, PyE
     array(x, dtype)
 }
 
-fn filled(shape: Vec<usize>, x: Scalar) -> NdArray {
+fn filled(shape: Vec<usize>, x: Scalar, k: Kind) -> NdArray {
     let n = shape.iter().product();
-    NdArray::from_data(Data::from_scalars(x.kind(), std::iter::repeat_n(x, n)), shape)
+    NdArray::from_data(Data::from_scalars(k, std::iter::repeat_n(x, n)), shape)
 }
 
 /// `np.zeros(shape, dtype="float64")`
 pub fn zeros(shape: impl ShapeArg, dtype: &Option<String>) -> Result<NdArray, PyErr> {
     let k = kind_arg(dtype)?.unwrap_or(Kind::Float);
-    Ok(filled(shape_of(&shape)?, Scalar::I(0).cast(k)))
+    Ok(filled(shape_of(&shape)?, Scalar::I(0), k))
 }
 /// `np.ones(shape, dtype="float64")`
 pub fn ones(shape: impl ShapeArg, dtype: &Option<String>) -> Result<NdArray, PyErr> {
     let k = kind_arg(dtype)?.unwrap_or(Kind::Float);
-    Ok(filled(shape_of(&shape)?, Scalar::I(1).cast(k)))
+    Ok(filled(shape_of(&shape)?, Scalar::I(1), k))
 }
 /// `np.full(shape, fill_value, dtype=None)`
 pub fn full(shape: impl ShapeArg, fill: impl Operand, dtype: &Option<String>) -> Result<NdArray, PyErr> {
     let x = fill.scalar_value().ok_or_else(|| verr("fill_value must be a scalar"))?;
     let k = kind_arg(dtype)?.unwrap_or(x.kind());
-    Ok(filled(shape_of(&shape)?, x.cast(k)))
+    Ok(filled(shape_of(&shape)?, x, k))
 }
 /// `np.zeros_like(a)`
 pub fn zeros_like(a: &NdArray) -> NdArray {
-    filled(a.shape.clone(), Scalar::I(0).cast(a.kind()))
+    filled(a.shape.clone(), Scalar::I(0), a.kind())
 }
 /// `np.ones_like(a)`
 pub fn ones_like(a: &NdArray) -> NdArray {
-    filled(a.shape.clone(), Scalar::I(1).cast(a.kind()))
+    filled(a.shape.clone(), Scalar::I(1), a.kind())
 }
 /// `np.full_like(a, x)`
 pub fn full_like(a: &NdArray, fill: impl Operand) -> NdArray {
     let x = fill.scalar_value().unwrap_or(Scalar::F(0.0));
-    filled(a.shape.clone(), x.cast(a.kind()))
+    filled(a.shape.clone(), x, a.kind())
 }
 /// `np.eye(n, m=None, k=0)`
 pub fn eye(n: i64, m: Option<i64>, k: i64) -> Result<NdArray, PyErr> {

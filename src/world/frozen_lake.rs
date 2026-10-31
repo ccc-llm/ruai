@@ -126,6 +126,9 @@ impl Env for FrozenLake {
     fn action_space_mut(&mut self) -> &mut Space {
         &mut self.act_space
     }
+    fn observation_space_mut(&mut self) -> &mut Space {
+        &mut self.obs_space
+    }
 
     fn reset(&mut self, seed: Option<u64>) -> (Value, Info) {
         self.rng.reseed(seed);

@@ -35,6 +35,9 @@ impl Env for TimeLimit {
     fn action_space_mut(&mut self) -> &mut Space {
         self.env.action_space_mut()
     }
+    fn observation_space_mut(&mut self) -> &mut Space {
+        self.env.observation_space_mut()
+    }
     fn reset(&mut self, seed: Option<u64>) -> (Value, Info) {
         self.elapsed = 0;
         self.env.reset(seed)
@@ -79,6 +82,9 @@ impl Env for RecordEpisodeStatistics {
     }
     fn action_space_mut(&mut self) -> &mut Space {
         self.env.action_space_mut()
+    }
+    fn observation_space_mut(&mut self) -> &mut Space {
+        self.env.observation_space_mut()
     }
     fn reset(&mut self, seed: Option<u64>) -> (Value, Info) {
         (self.ret, self.len) = (0.0, 0);

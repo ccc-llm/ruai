@@ -1,5 +1,28 @@
 # Changelog
 
+## 3.7.0
+
+- py0 package `gymnasium` (runtime feature `pyrt-gymnasium`): `gym.make`, `reset(seed=)`,
+  `step`, `render()` (FrozenLake `"ansi"`), `action_space` / `observation_space` (`n`,
+  `shape`, `low`, `high`, `seed`, `sample`, `contains`) on the environments of `ruai::world`,
+  so episodes match Gymnasium bit for bit, observations print as its float32 arrays.
+- py0 package `torch` (`torch`, `torch.nn`, `torch.nn.functional`, `torch.optim`; runtime
+  feature `pyrt-torch`, on the `nn` engine): float32 / int64 / bool tensors with autograd,
+  arithmetic with broadcasting, `@`, reductions, shapes, indexing, `torch.no_grad()`,
+  `nn.Linear` / `ReLU` / `Sigmoid` / `Tanh` / `Softmax` / `Flatten` / `Sequential`,
+  `MSELoss` / `L1Loss` / `CrossEntropyLoss`, `optim.SGD` (momentum, weight decay) and
+  `optim.Adam` with PyTorch's update formulas. `torch.manual_seed` reproduces PyTorch's
+  generator (MT19937: `rand`, `randn` in both of its code paths, `nn.Linear`'s initial
+  weights), tensors and modules print as in PyTorch (`grad_fn=<AddmmBackward0>`,
+  `Parameter containing:`), errors carry its messages.
+- py0 numpy: float32 arrays (`dtype="float32"`, NumPy 2 promotion, float32 arithmetic and
+  pairwise sums, `np.float32` printing); 1-tuples as shapes.
+- py0: objects with `__call__` (`model(x)`, `self.fc(x)`, `layers[0](x)`), and
+  `with obj:` for stub objects with `__enter__` / `__exit__` (`with torch.no_grad():`).
+- `ruai::rng::Mt19937` (shared by sklearn's `RandomState` and torch);
+  `ruai::nn::set_grad_enabled`; `world::Env::observation_space_mut`.
+- `tests/py0/gymnasium/`, `tests/py0/torch/`: compared with Gymnasium 1.3 and PyTorch 2.12.
+
 ## 3.6.0
 
 - py0 packages `sklearn.*` (runtime feature `pyrt-sklearn`, on the numpy arrays): a subset of

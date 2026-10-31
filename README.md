@@ -251,6 +251,24 @@ print(model, model.score(sc.transform(Xte), yte))
 
 `from sklearn.X import Y` 在 py0 中是以 Rust 實作、建在 numpy 陣列上的 scikit-learn 子集（`src/pyrt/lib/sklearn/`）：`LinearRegression`、`Ridge`、`LogisticRegression`、`KNeighborsClassifier` / `Regressor`、`GaussianNB`、`KMeans`、`PCA`、`StandardScaler`、`MinMaxScaler`、`train_test_split`、常用指標與 `load_iris`。演算法依照 scikit-learn（相同的置中、求解器的最佳解、PCA 的正負號慣例、`train_test_split` 用同樣的 `RandomState` 亂數，所以切分完全相同），`tests/py0/sklearn/` 以真的 scikit-learn 對照輸出。差異：scikit-learn 提早停止的迭代求解器（lbfgs）只在其容許誤差內相同；k-NN 距離剛好相等時可能選到不同的鄰居；`KMeans` 需要給初始中心（`init=陣列`）；`target_names` 是 list。
 
+### py0 的 gymnasium 與 torch
+
+```python
+import gymnasium as gym
+import torch
+import torch.nn as nn
+
+torch.manual_seed(0)
+policy = nn.Sequential(nn.Linear(4, 32), nn.Tanh(), nn.Linear(32, 2))
+env = gym.make("CartPole-v1")
+obs, info = env.reset(seed=42)
+logits = policy(torch.from_numpy(obs))
+obs, reward, terminated, truncated, info = env.step(int(logits.argmax()))
+print(policy, logits, obs, reward)
+```
+
+`import gymnasium as gym` 是 `ruai::world` 的環境套上 Gymnasium 的 Python API（觀測值是 float32 的 numpy 陣列，與 Gymnasium 逐位元相同）；`import torch` 是建在 ruai nn 引擎上的 PyTorch 子集：autograd、`nn.Linear` 等模組、`nn.Sequential`、損失函數、`optim.SGD` / `Adam`、`torch.no_grad()`。`torch.manual_seed` 重現 PyTorch 的亂數產生器（MT19937），所以 `rand`、`randn` 與 `nn.Linear` 的初始權重都與 PyTorch 相同；張量與模組的印出格式也一樣。`tests/py0/gymnasium/`、`tests/py0/torch/` 以真的 Gymnasium 與 PyTorch 對照（訓練迴圈在 PyTorch 預設的 4 位小數下相同）。差異：模型用 `nn.Sequential` 或持有各層的一般類別（不能繼承 `nn.Module`），`parameters()` 回傳 list；dtype 在 py0 中是字串；矩陣乘積與元素函數可能與 PyTorch 的 BLAS / 向量化實作在最後一位不同。
+
 ### 強化學習環境（world）
 
 ```rust
@@ -508,7 +526,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - `tests/second_order.rs`：逐元素、各種 matmul、softmax / log_softmax / cross-entropy、layer / RMS norm、embedding + gather、conv2d、融合 attention、gradient checkpointing 的 Hessian-向量積與有限差分一致；`backward_create_graph` 與 `autograd::grad` 的語意；gradient penalty 傳到參數的梯度與數值微分一致
 - `tests/world.rs`：6 個環境 × 4 個 seed × 400 步（含 autoreset）與 gymnasium 逐步、逐位元比對，向量環境、FrozenLake 文字算繪、NumPy 亂數（含 2⁶³ 以上的 seed、各種 `integers` 範圍）
 - `tests/agent.rs`：`ruai agent` 的嵌入翻譯是最新的；離線（echo 模型）約 50 個指令與互動對話、以及對假 LLM 伺服器（`tests/agent/fake_llm.py`：OpenAI / Anthropic、串流與否、原生 tool call、HTTP 500 重試）的輸出都與 CPython 執行同一份 py0 原始碼逐字相同
-- `tests/py0.rs` + `tests/py0/`：py2rs 的語料——255 支程式（含 `tests/py0/numpy/` 對照真的 NumPy、`tests/py0/sklearn/` 對照 scikit-learn；每支程式在有它所需套件的 Python 上對照）逐一翻譯、編譯、執行，輸出、exit code 與例外類型都要與 CPython 3.12+ 相同；46 支應被拒絕的程式要以預期訊息拒絕；`tests/py0/pyo3/run.sh` 檢查 PyO3 擴充模組
+- `tests/py0.rs` + `tests/py0/`：py2rs 的語料——259 支程式（含 `tests/py0/numpy/`、`sklearn/`、`gymnasium/`、`torch/` 分別對照真的 NumPy、scikit-learn、Gymnasium、PyTorch；每支程式在有它所需套件的 Python 上對照）逐一翻譯、編譯、執行，輸出、exit code 與例外類型都要與 CPython 3.12+ 相同；46 支應被拒絕的程式要以預期訊息拒絕；`tests/py0/pyo3/run.sh` 檢查 PyO3 擴充模組
 - `tests/training.rs`：MLP 學會 XOR、CNN（含 BatchNorm）收斂、GPT 記住序列、存檔/載入 round-trip
 
 ## 版本規劃
@@ -538,7 +556,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v3.4 | `ruai agent`：以 py0 改寫 agge 並嵌入 `ruai`；py0 新增 `os` / `sys` / `time` 擴充、`subprocess`、`ruai.json`、`ruai.http`、`Result[T, OSError]` | ✅ |
 | v3.5 | py0 的 `numpy` 子集（ndarray、廣播、索引與 view、歸約、`linalg`、`random`，輸出與 NumPy 逐字相同）；stub 的 union 參數與 overload | ✅ |
 | v3.6 | py0 的 `sklearn` 子集（線性模型、羅吉斯迴歸、k-NN、naive Bayes、KMeans、PCA、前處理、`train_test_split`、指標、iris） | ✅ |
-| v3.7 | py0 的 gymnasium 與 nn 套件 | |
+| v3.7 | py0 的 `gymnasium`（world 環境，與 Gymnasium 逐位元相同）與 `torch` 子集（nn 引擎上的 autograd、`nn` 模組、損失、`optim`，`manual_seed` 與 PyTorch 相同的亂數）；numpy 支援 float32 | ✅ |
 | v4.0 | 穩定版、英文文件 | |
 
 ## 目前限制

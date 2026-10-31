@@ -72,7 +72,7 @@ pub use backend::DType;
 pub use device::Device;
 pub use modules::*;
 pub use ops::IntoIndices;
-pub use tensor::{autocast, autocast_dtype, enable_grad, is_grad_enabled, no_grad, NoGradGuard, Tensor};
+pub use tensor::{autocast, autocast_dtype, enable_grad, is_grad_enabled, no_grad, set_grad_enabled, NoGradGuard, Tensor};
 
 /// Commonly used items: `use ruai::prelude::*;`
 pub mod prelude {

@@ -131,6 +131,12 @@ pub fn is_grad_enabled() -> bool {
     GRAD_ENABLED.with(|g| g.get())
 }
 
+/// Switch gradient recording on or off; returns the previous setting
+/// (like `torch.set_grad_enabled`).
+pub fn set_grad_enabled(on: bool) -> bool {
+    GRAD_ENABLED.with(|g| g.replace(on))
+}
+
 /// RAII guard that disables graph construction while alive (like `torch.no_grad()`).
 pub struct NoGradGuard {
     prev: bool,

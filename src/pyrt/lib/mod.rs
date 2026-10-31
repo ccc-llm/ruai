@@ -4,6 +4,8 @@
 //! `src/py/lib/NAME.pyi`, so a py0 program simply writes `import shlex`.
 
 pub mod fnmatch;
+#[cfg(feature = "pyrt-gymnasium")]
+pub mod gymnasium;
 pub mod html;
 mod html_tables;
 #[cfg(feature = "pyrt-numpy")]
@@ -18,3 +20,5 @@ pub mod sklearn;
 pub mod subprocess;
 pub mod sys;
 pub mod time;
+#[cfg(feature = "pyrt-torch")]
+pub mod torch;

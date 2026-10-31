@@ -61,13 +61,21 @@ impl Arg {
 /// The result kind of combining two operands (NEP 50 promotion).
 fn promote(a: &Arg, b: &Arg) -> Kind {
     match (a, b) {
-        (Arg::A(x), Arg::A(y)) => x.kind().max(y.kind()),
+        (Arg::A(x), Arg::A(y)) => {
+            let (p, q) = (x.kind().min(y.kind()), x.kind().max(y.kind()));
+            // int64 and float32 meet in float64
+            if p == Kind::Int && q == Kind::F32 {
+                Kind::Float
+            } else {
+                q
+            }
+        }
         (Arg::A(x), Arg::S(s)) | (Arg::S(s), Arg::A(x)) => {
             let k = x.kind();
             match s.kind() {
                 Kind::Bool => k,
                 Kind::Int => k.max(Kind::Int),
-                Kind::Float => Kind::Float,
+                _ => k.max(Kind::F32).max(if k >= Kind::F32 { k } else { Kind::Float }),
             }
         }
         (Arg::S(x), Arg::S(y)) => x.kind().max(y.kind()),
@@ -210,7 +218,7 @@ fn apply(op: Op, k: Kind, x: Scalar, y: Scalar) -> Result<Scalar, PyErr> {
         })
     };
     if matches!(op, Op::Lt | Op::Le | Op::Gt | Op::Ge | Op::Eq | Op::Ne) {
-        return Ok(B(if k == Kind::Float {
+        return Ok(B(if k >= Kind::F32 {
             let (a, b) = (x.f(), y.f());
             match a.partial_cmp(&b) {
                 Some(o) => cmp(o).unwrap(),
@@ -221,6 +229,11 @@ fn apply(op: Op, k: Kind, x: Scalar, y: Scalar) -> Result<Scalar, PyErr> {
         }));
     }
     match k {
+        // float32: computed in float64, rounded (exact for + - * / and sqrt)
+        Kind::F32 => Ok(match apply(op, Kind::Float, x, y)? {
+            F(v) => F(v as f32 as f64),
+            s => s,
+        }),
         Kind::Bool => match op {
             Op::Add | Op::Or | Op::Max => Ok(B(x.b() || y.b())),
             Op::Mul | Op::And | Op::Min => Ok(B(x.b() && y.b())),
@@ -304,7 +317,7 @@ pub(crate) fn binary(op: Op, a: &Arg, b: &Arg) -> Result<NdArray, PyErr> {
     let xs = broadcast_items(a, &shape);
     let ys = broadcast_items(b, &shape);
     // `x ** 2` on a float array squares (NumPy's fast path)
-    let square = op == Op::Pow && k == Kind::Float && matches!(b, Arg::S(s) if s.f() == 2.0);
+    let square = op == Op::Pow && k >= Kind::F32 && matches!(b, Arg::S(s) if s.f() == 2.0);
     let mut out = Vec::with_capacity(xs.len());
     for (x, y) in xs.into_iter().zip(ys) {
         out.push(if square {
@@ -315,7 +328,9 @@ pub(crate) fn binary(op: Op, a: &Arg, b: &Arg) -> Result<NdArray, PyErr> {
     }
     let rk = match op {
         Op::Lt | Op::Le | Op::Gt | Op::Ge | Op::Eq | Op::Ne => Kind::Bool,
+        Op::Div | Op::Atan2 if k == Kind::F32 => Kind::F32,
         Op::Div | Op::Atan2 => Kind::Float,
+        _ if k == Kind::F32 => Kind::F32,
         _ => out.first().map(|s| s.kind()).unwrap_or(if k == Kind::Bool && !matches!(op, Op::Add | Op::Mul | Op::And | Op::Or | Op::Xor | Op::Max | Op::Min) { Kind::Int } else { k }),
     };
     let mut r = NdArray::from_data(Data::from_scalars(rk, out.into_iter()), shape);
@@ -332,7 +347,8 @@ pub(crate) fn map(a: &NdArray, out: Kind, f: impl Fn(Scalar) -> Scalar) -> NdArr
 
 /// A float function (`np.sqrt`, `np.exp`, ...): ints and bools become floats.
 pub(crate) fn map_f(a: &NdArray, f: impl Fn(f64) -> f64) -> NdArray {
-    map(a, Kind::Float, |x| Scalar::F(f(x.f())))
+    let k = if a.kind() == Kind::F32 { Kind::F32 } else { Kind::Float };
+    map(a, k, |x| Scalar::F(f(x.f())))
 }
 
 pub(crate) fn axis_index(axis: i64, nd: usize) -> Result<usize, PyErr> {
@@ -478,7 +494,7 @@ fn resolve(a: &NdArray, parts: &[Ix]) -> Result<Target, PyErr> {
                             }));
                         }
                     }
-                    Kind::Float => {
+                    Kind::Float | Kind::F32 => {
                         return Err(ierr("arrays used as indices must be of integer (or boolean) type"));
                     }
                 }
@@ -617,7 +633,7 @@ fn resolve(a: &NdArray, parts: &[Ix]) -> Result<Target, PyErr> {
 
 pub(crate) fn get(a: &NdArray, parts: &[Ix]) -> Result<NdArray, PyErr> {
     match resolve(a, parts)? {
-        Target::View(v) if v.shape.is_empty() => Ok(NdArray::from_scalar(v.first())),
+        Target::View(v) if v.shape.is_empty() => Ok(NdArray::scalar_of(v.first(), v.kind())),
         Target::View(v) => Ok(v),
         Target::Gather { shape, offsets, data } => {
             let d = data.data.borrow();

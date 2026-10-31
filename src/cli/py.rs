@@ -316,7 +316,7 @@ fn files(args: &[String]) -> Vec<PathBuf> {
 
 /// Differential test: every program must translate, build, and print exactly
 /// The reference Python of each program: the default one, or for a program
-/// that imports numpy / sklearn, the first candidate that has them.
+/// that imports numpy, sklearn, gymnasium or torch, the first candidate that has them.
 struct ReferencePythons {
     default: String,
     found: std::collections::HashMap<Vec<&'static str>, Option<String>>,
@@ -329,8 +329,14 @@ impl ReferencePythons {
 
     fn for_program(&mut self, src: &str) -> Option<String> {
         let mut needs: Vec<&'static str> = vec![];
-        for (module, line) in [("numpy", "import numpy"), ("sklearn", "from sklearn")] {
-            if src.lines().any(|l| l.trim_start().starts_with(line)) {
+        for module in ["numpy", "sklearn", "gymnasium", "torch"] {
+            let uses = |l: &str| {
+                let l = l.trim_start();
+                [format!("import {}", module), format!("from {} ", module), format!("from {}.", module)]
+                    .iter()
+                    .any(|p| l.starts_with(p.as_str()))
+            };
+            if src.lines().any(uses) {
                 needs.push(module);
             }
         }
