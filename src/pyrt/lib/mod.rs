@@ -13,6 +13,8 @@ pub mod os;
 pub mod ruai_http;
 pub mod ruai_json;
 pub mod shlex;
+#[cfg(feature = "pyrt-sklearn")]
+pub mod sklearn;
 pub mod subprocess;
 pub mod sys;
 pub mod time;

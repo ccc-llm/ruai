@@ -107,7 +107,8 @@ replacements are rejected (the regex crate differs from Python there).
 Packages (`src/py/lib/*.pyi`, Rust in `ruai::pyrt::lib`): `shlex`, `fnmatch`, `html`,
 `subprocess` (`run`), more of `os` / `os.path` / `sys` / `time` (`os.listdir`,
 `os.makedirs`, `os.environ.get`, `os.path.isdir`, `sys.stdin.isatty`, `time.strftime`, ...),
-`numpy` (a subset of NumPy's ndarray: see `src/py/lib/numpy.pyi`), and ruai's own
+`numpy` (a subset of NumPy's ndarray: see `src/py/lib/numpy.pyi`), `sklearn.*` (a subset of
+scikit-learn: `src/py/lib/sklearn.*.pyi`), and ruai's own
 `ruai.json` (`Json`) and `ruai.http` (`request`). `open` also takes
 `errors="replace"`.
 

@@ -702,13 +702,13 @@ impl Front {
             .into_syntax();
         let saved_lines = std::mem::replace(&mut self.lines, LineIndex::from_source_text(&text));
         let saved_src = std::mem::replace(&mut self.src, text.clone());
-        self.in_stub = Some(prefix.clone());
+        let saved_stub = self.in_stub.replace(prefix.clone());
         let which = match alias {
             Some(a) => StubNames::Qualified(a),
             None => StubNames::Only(names),
         };
         let r = self.stub_items_as(&prefix, module, &parsed.body, which);
-        self.in_stub = None;
+        self.in_stub = saved_stub;
         self.lines = saved_lines;
         self.src = saved_src;
         r.map_err(|e| Error::new(line, format!("in {}: line {}: {}", path.display(), e.line, e.msg)))
@@ -809,6 +809,7 @@ impl Front {
     /// Declare a stub's classes and functions; `krate` is the Rust module
     /// path, `label` the name used in messages.
     fn stub_items_as(&mut self, krate: &str, label: &str, body: &[AStmt], which: StubNames) -> Res<()> {
+        let mut reused: HashSet<String> = HashSet::new();
         let no_names: Vec<String> = vec![];
         let names: &[String] = match &which {
             StubNames::Only(n) => n,
@@ -828,6 +829,12 @@ impl Front {
                             }
                         }
                     }
+                    // the same Rust type declared by another stub: the same class
+                    if let Some(cid) = self.p.classes.iter().position(|c| c.ext.as_deref() == Some(path.as_str())) {
+                        self.classes.insert(name.clone(), cid);
+                        reused.insert(name.clone());
+                        continue;
+                    }
                     let cid = self.p.classes.len();
                     self.p.classes.push(Class {
                         name: name.clone(),
@@ -846,6 +853,15 @@ impl Front {
                     });
                     // all classes of the stub are known while it is read
                     self.classes.insert(name.clone(), cid);
+                }
+                // `from numpy import ndarray`: another package's names
+                AStmt::ImportFrom(i)
+                    if i.module.as_ref().is_some_and(|m| m.id.as_str() != "rust" && package_stub(m.id.as_str()).is_some()) =>
+                {
+                    let m = i.module.as_ref().unwrap().id.to_string();
+                    let ns: Vec<String> = i.names.iter().map(|a| a.name.id.to_string()).collect();
+                    let line = self.line(s);
+                    self.load_package(&m, None, &ns, line)?;
                 }
                 AStmt::FunctionDef(_) | AStmt::ImportFrom(_) | AStmt::Import(_) | AStmt::Pass(_) => {}
                 _ if is_docstring(s) => {}
@@ -874,6 +890,7 @@ impl Front {
         let mut defined: HashMap<String, FuncId> = HashMap::new();
         for s in body {
             match s {
+                AStmt::ClassDef(d) if reused.contains(d.name.id.as_str()) => {}
                 AStmt::ClassDef(d) => {
                     let cid = self.p.classes.iter().rposition(|c| c.name == d.name.id.as_str()).unwrap();
                     for m in &d.body {

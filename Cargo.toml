@@ -1,6 +1,6 @@
 [package]
 name = "ruai"
-version = "3.5.0"
+version = "3.6.0"
 edition = "2021"
 description = "A Swiss-army AI toolkit in Rust: a PyTorch-like engine (autograd, GPU, GPT-2/Llama), and a git-style `ruai` command"
 license = "MIT"
@@ -59,6 +59,8 @@ pyrt-re = ["pyrt", "dep:regex"]
 pyrt-http = ["pyrt", "dep:ureq"]
 # `numpy` for py0 programs (a subset of NumPy's ndarray)
 pyrt-numpy = ["pyrt"]
+# `sklearn` for py0 programs (a subset of scikit-learn, on numpy)
+pyrt-sklearn = ["pyrt-numpy"]
 # `ruai agent`: multi-agent LLM teams (agge, written in py0: src/agent/*.py)
 agent = ["py", "pyrt-http"]
 # Reinforcement-learning environments with the Gymnasium API (no dependencies)

@@ -315,6 +315,42 @@ fn files(args: &[String]) -> Vec<PathBuf> {
 }
 
 /// Differential test: every program must translate, build, and print exactly
+/// The reference Python of each program: the default one, or for a program
+/// that imports numpy / sklearn, the first candidate that has them.
+struct ReferencePythons {
+    default: String,
+    found: std::collections::HashMap<Vec<&'static str>, Option<String>>,
+}
+
+impl ReferencePythons {
+    fn new(default: &str) -> Self {
+        ReferencePythons { default: default.to_string(), found: Default::default() }
+    }
+
+    fn for_program(&mut self, src: &str) -> Option<String> {
+        let mut needs: Vec<&'static str> = vec![];
+        for (module, line) in [("numpy", "import numpy"), ("sklearn", "from sklearn")] {
+            if src.lines().any(|l| l.trim_start().starts_with(line)) {
+                needs.push(module);
+            }
+        }
+        if needs.is_empty() {
+            return Some(self.default.clone());
+        }
+        let default = self.default.clone();
+        self.found
+            .entry(needs.clone())
+            .or_insert_with(|| {
+                let import = format!("import {}", needs.join(", "));
+                [default.as_str(), "python3.14", "python3.13", "python3.12", "python3"]
+                    .into_iter()
+                    .find(|p| Command::new(p).args(["-c", &import]).output().is_ok_and(|o| o.status.success()))
+                    .map(String::from)
+            })
+            .clone()
+    }
+}
+
 /// what CPython prints (stdout, exit code, exception type); programs whose
 /// first line is `# error: TEXT` must be rejected with a message containing TEXT.
 fn test(args: &[String]) -> i32 {
@@ -328,16 +364,16 @@ fn test(args: &[String]) -> i32 {
     let dir = dir.canonicalize().unwrap();
     let mut fails = 0;
     let mut rejected = 0;
-    let mut bins: Vec<(PathBuf, String)> = vec![];
-    // programs that import numpy need it in the reference Python
-    let has_numpy = Command::new(&py).args(["-c", "import numpy"]).output().is_ok_and(|o| o.status.success());
+    let mut bins: Vec<(PathBuf, String, String)> = vec![];
     let mut skipped = 0;
+    let mut pythons = ReferencePythons::new(&py);
     for f in files(args) {
         let src = std::fs::read_to_string(&f).unwrap();
-        if !has_numpy && src.lines().any(|l| l.trim() == "import numpy as np" || l.trim() == "import numpy") {
+        // programs that import numpy / sklearn run on a Python that has them
+        let Some(fpy) = pythons.for_program(&src) else {
             skipped += 1;
             continue;
-        }
+        };
         let expect = src.lines().next().and_then(|l| l.strip_prefix("# error: ")).map(|s| s.trim().to_string());
         match (ruai::py::translate_file(&f).map_err(|e| e.2), expect) {
             (Ok(_), Some(want)) => {
@@ -361,7 +397,7 @@ fn test(args: &[String]) -> i32 {
                 let dir_name = f.parent().and_then(|d| d.file_name()).map(|d| project::crate_name(Path::new(d))).unwrap_or_default();
                 let name = format!("t_{}_{}", dir_name, project::crate_name(&f));
                 std::fs::write(dir.join("src/bin").join(format!("{}.rs", name)), rust).unwrap();
-                bins.push((f, name));
+                bins.push((f, name, fpy));
             }
         }
     }
@@ -393,8 +429,8 @@ fn test(args: &[String]) -> i32 {
     let results: Vec<(project::Run, project::Run)> = std::thread::scope(|sc| {
         let hs: Vec<_> = bins
             .iter()
-            .map(|(f, name)| {
-                let (py, dir) = (&py, &dir);
+            .map(|(f, name, py)| {
+                let dir = &dir;
                 sc.spawn(move || {
                     let input = std::fs::read(f.with_extension("in")).unwrap_or_default();
                     let a = project::run(Command::new(py).arg(f).env("PYTHONPATH", project::python_path()), &input);
@@ -405,7 +441,7 @@ fn test(args: &[String]) -> i32 {
             .collect();
         hs.into_iter().map(|h| h.join().unwrap()).collect()
     });
-    for ((f, _), (a, b)) in bins.iter().zip(results) {
+    for ((f, _, _), (a, b)) in bins.iter().zip(results) {
         if a.stdout == b.stdout && a.code == b.code && (a.code == 0 || a.exc == b.exc) {
             pass += 1;
             continue;
@@ -427,10 +463,15 @@ fn test(args: &[String]) -> i32 {
         "{} of {} programs match {}; {} rejected as expected; {} failed{}",
         pass,
         bins.len(),
-        py,
+        {
+            let mut used: Vec<&str> = bins.iter().map(|b| b.2.as_str()).collect();
+            used.sort();
+            used.dedup();
+            if used.is_empty() { py.clone() } else { used.join(" / ") }
+        },
         rejected,
         fails,
-        if skipped > 0 { format!("; {} skipped (no numpy in {})", skipped, py) } else { String::new() }
+        if skipped > 0 { format!("; {} skipped (no Python with their packages)", skipped) } else { String::new() }
     );
     if fails > 0 {
         1

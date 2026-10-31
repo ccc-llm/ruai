@@ -229,6 +229,14 @@ impl NdArray {
     pub(crate) fn floats(v: Vec<f64>, shape: Vec<usize>) -> NdArray {
         NdArray::from_data(Data::Float(v), shape)
     }
+    /// The dimensions.
+    pub fn dims(&self) -> &[usize] {
+        &self.shape
+    }
+    /// A new int64 array.
+    pub fn ints(v: Vec<i64>, shape: Vec<usize>) -> NdArray {
+        NdArray::from_data(Data::Int(v), shape)
+    }
     pub(crate) fn kind(&self) -> Kind {
         self.data.borrow().kind()
     }
@@ -914,3 +922,13 @@ macro_rules! py_text {
 }
 
 py_text!(NdArray, Shape, DType, random::Generator);
+
+/// A float sum in NumPy's order (pairwise), as `np.sum` of a contiguous array.
+pub fn pairwise_sum(v: &[f64]) -> f64 {
+    0.0 + reduce::pairwise(v)
+}
+
+/// A float mean in NumPy's order, as `np.mean`.
+pub fn pairwise_mean(v: &[f64]) -> f64 {
+    pairwise_sum(v) / v.len() as f64
+}

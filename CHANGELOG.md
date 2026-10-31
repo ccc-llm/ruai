@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.6.0
+
+- py0 packages `sklearn.*` (runtime feature `pyrt-sklearn`, on the numpy arrays): a subset of
+  scikit-learn with its algorithms and printing: `linear_model` (`LinearRegression`
+  by minimum-norm least squares, `Ridge` by Cholesky, `LogisticRegression` binary and
+  multinomial), `preprocessing` (`StandardScaler`, `MinMaxScaler`), `neighbors`
+  (`KNeighborsClassifier`, `KNeighborsRegressor`), `naive_bayes.GaussianNB`,
+  `cluster.KMeans` (Lloyd from given centers), `decomposition.PCA` (with scikit-learn's sign
+  convention), `model_selection.train_test_split` (NumPy's legacy RandomState permutation,
+  so splits are identical), `metrics` (`accuracy_score`, `mean_squared_error`,
+  `mean_absolute_error`, `r2_score`, `confusion_matrix`) and `datasets.load_iris`.
+  Estimators print like scikit-learn (`Ridge(alpha=0.5)`), raise `NotFittedError` and its
+  messages. `tests/py0/sklearn/` checks 3 programs against scikit-learn.
+- py0 stubs can import other packages' names (`from numpy import ndarray`); a class with the
+  same Rust type in two stubs is one class.
+- `ruai py test` runs each program on a reference Python that has the packages it imports
+  (numpy, sklearn), and skips it when there is none.
+
 ## 3.5.0
 
 - py0 package `numpy` (`import numpy as np`, runtime feature `pyrt-numpy`): `ndarray` of

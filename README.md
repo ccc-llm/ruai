@@ -234,6 +234,23 @@ print(np.round(w, 3), x[x[:, 0] > 0.9].shape, round(float(np.abs(x @ w - y).mean
 
 `import numpy as np` 在 py0 中是以 Rust 實作的 NumPy 子集（`src/pyrt/lib/numpy/`）：float64 / int64 / bool 陣列、NumPy 2 的型別提升與廣播、切片是共用記憶體的 view、布林遮罩與索引陣列、沿軸的歸約（`sum` 採用 NumPy 的 pairwise 加總順序）、`linalg`、與 NumPy 逐位元相同的 `random.default_rng`；`print` / `repr` 與 NumPy 的 `arrayprint` 逐字相同。同一支程式用 CPython 執行時就是真的 NumPy，`tests/py0/numpy/` 逐支比對。因為 py0 是靜態型別：`a[i]` 與歸約的結果是 0 維陣列（NumPy scalar），需要 Python float 時寫 `float(a.sum())`；`a.shape` 可索引但不能拆包；dtype 用字串（`dtype="int64"`）。浮點矩陣乘法依序加總，可能與 NumPy 的 BLAS 在最後一位不同。
 
+### py0 的 sklearn
+
+```python
+from sklearn.datasets import load_iris
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+
+iris = load_iris()
+Xtr, Xte, ytr, yte = train_test_split(iris.data, iris.target, test_size=0.3, random_state=42)
+sc = StandardScaler().fit(Xtr)
+model = LogisticRegression().fit(sc.transform(Xtr), ytr)
+print(model, model.score(sc.transform(Xte), yte))
+```
+
+`from sklearn.X import Y` 在 py0 中是以 Rust 實作、建在 numpy 陣列上的 scikit-learn 子集（`src/pyrt/lib/sklearn/`）：`LinearRegression`、`Ridge`、`LogisticRegression`、`KNeighborsClassifier` / `Regressor`、`GaussianNB`、`KMeans`、`PCA`、`StandardScaler`、`MinMaxScaler`、`train_test_split`、常用指標與 `load_iris`。演算法依照 scikit-learn（相同的置中、求解器的最佳解、PCA 的正負號慣例、`train_test_split` 用同樣的 `RandomState` 亂數，所以切分完全相同），`tests/py0/sklearn/` 以真的 scikit-learn 對照輸出。差異：scikit-learn 提早停止的迭代求解器（lbfgs）只在其容許誤差內相同；k-NN 距離剛好相等時可能選到不同的鄰居；`KMeans` 需要給初始中心（`init=陣列`）；`target_names` 是 list。
+
 ### 強化學習環境（world）
 
 ```rust
@@ -491,7 +508,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - `tests/second_order.rs`：逐元素、各種 matmul、softmax / log_softmax / cross-entropy、layer / RMS norm、embedding + gather、conv2d、融合 attention、gradient checkpointing 的 Hessian-向量積與有限差分一致；`backward_create_graph` 與 `autograd::grad` 的語意；gradient penalty 傳到參數的梯度與數值微分一致
 - `tests/world.rs`：6 個環境 × 4 個 seed × 400 步（含 autoreset）與 gymnasium 逐步、逐位元比對，向量環境、FrozenLake 文字算繪、NumPy 亂數（含 2⁶³ 以上的 seed、各種 `integers` 範圍）
 - `tests/agent.rs`：`ruai agent` 的嵌入翻譯是最新的；離線（echo 模型）約 50 個指令與互動對話、以及對假 LLM 伺服器（`tests/agent/fake_llm.py`：OpenAI / Anthropic、串流與否、原生 tool call、HTTP 500 重試）的輸出都與 CPython 執行同一份 py0 原始碼逐字相同
-- `tests/py0.rs` + `tests/py0/`：py2rs 的語料——252 支程式（含 `tests/py0/numpy/` 對照真的 NumPy）逐一翻譯、編譯、執行，輸出、exit code 與例外類型都要與 CPython 3.12+ 相同；46 支應被拒絕的程式要以預期訊息拒絕；`tests/py0/pyo3/run.sh` 檢查 PyO3 擴充模組
+- `tests/py0.rs` + `tests/py0/`：py2rs 的語料——255 支程式（含 `tests/py0/numpy/` 對照真的 NumPy、`tests/py0/sklearn/` 對照 scikit-learn；每支程式在有它所需套件的 Python 上對照）逐一翻譯、編譯、執行，輸出、exit code 與例外類型都要與 CPython 3.12+ 相同；46 支應被拒絕的程式要以預期訊息拒絕；`tests/py0/pyo3/run.sh` 檢查 PyO3 擴充模組
 - `tests/training.rs`：MLP 學會 XOR、CNN（含 BatchNorm）收斂、GPT 記住序列、存檔/載入 round-trip
 
 ## 版本規劃
@@ -520,7 +537,8 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v3.3 | py0 套件機制（`import M [as A]` / `from M import x` → `src/py/lib/M.pyi` + `ruai::pyrt::lib::M`）、以 Rust 重寫的 Python 標準函式庫（第一批：`shlex`、`fnmatch`、`html`） | ✅ |
 | v3.4 | `ruai agent`：以 py0 改寫 agge 並嵌入 `ruai`；py0 新增 `os` / `sys` / `time` 擴充、`subprocess`、`ruai.json`、`ruai.http`、`Result[T, OSError]` | ✅ |
 | v3.5 | py0 的 `numpy` 子集（ndarray、廣播、索引與 view、歸約、`linalg`、`random`，輸出與 NumPy 逐字相同）；stub 的 union 參數與 overload | ✅ |
-| v3.6–3.7 | py0 的 ml（sklearn 子集）、gymnasium 與 nn 套件 | |
+| v3.6 | py0 的 `sklearn` 子集（線性模型、羅吉斯迴歸、k-NN、naive Bayes、KMeans、PCA、前處理、`train_test_split`、指標、iris） | ✅ |
+| v3.7 | py0 的 gymnasium 與 nn 套件 | |
 | v4.0 | 穩定版、英文文件 | |
 
 ## 目前限制
