@@ -50,8 +50,9 @@ fn rust_str(s: &str) -> String {
 
 /// Text inside a format string.
 fn fmt_text(s: &str) -> String {
-    let q = rust_str(s);
-    q[1..q.len() - 1].replace('{', "{{").replace('}', "}}")
+    // braces doubled before escaping: `\u{1b}` keeps its own
+    let q = rust_str(&s.replace('{', "{{").replace('}', "}}"));
+    q[1..q.len() - 1].to_string()
 }
 
 fn float_lit(v: f64) -> String {
@@ -1399,7 +1400,18 @@ impl<'a> FGen<'a> {
                 _ => None,
             }
         }
-        fn ex(e: &Expr, sv: VarId, out: &mut HashSet<String>) {
+        let params = &self.o.params;
+        fn ex(e: &Expr, sv: VarId, out: &mut HashSet<String>, params: &[Vec<Mode>]) {
+            // a field passed to a `&mut` parameter
+            if let ExprKind::Call(f, a) = &e.kind {
+                for (i, x) in a.iter().enumerate() {
+                    if params[*f].get(i) == Some(&Mode::Mut) {
+                        if let Some(fd) = base_field(x, sv) {
+                            out.insert(fd);
+                        }
+                    }
+                }
+            }
             if let ExprKind::Builtin(n, a) = &e.kind {
                 if n.starts_with("list.") || n.starts_with("dict.") || n.starts_with("set.") {
                     if let Some(f) = base_field(&a[0], sv) {
@@ -1412,9 +1424,9 @@ impl<'a> FGen<'a> {
                     out.insert(f);
                 }
             }
-            e.children(&mut |c| ex(c, sv, out));
+            e.children(&mut |c| ex(c, sv, out, params));
         }
-        fn st(s: &Stmt, sv: VarId, out: &mut HashSet<String>) {
+        fn st(s: &Stmt, sv: VarId, out: &mut HashSet<String>, params: &[Vec<Mode>]) {
             match &s.kind {
                 StmtKind::Assign(Target::Place(p), _) | StmtKind::AugAssign(p, _, _) => {
                     if let ExprKind::Field(..) = p.kind {
@@ -1429,12 +1441,12 @@ impl<'a> FGen<'a> {
                 }
                 _ => {}
             }
-            stmt_exprs(s, &mut |e| ex(e, sv, out));
+            stmt_exprs(s, &mut |e| ex(e, sv, out, params));
             for b in sub_blocks(s) {
-                b.iter().for_each(|s| st(s, sv, out));
+                b.iter().for_each(|s| st(s, sv, out, params));
             }
         }
-        self.f.body.iter().for_each(|s| st(s, sv, &mut out));
+        self.f.body.iter().for_each(|s| st(s, sv, &mut out, params));
         out
     }
 
@@ -1549,7 +1561,9 @@ impl<'a> FGen<'a> {
                 Decl::At(s) | Decl::Before(s) => *s,
             };
             if let Some(blk) = block_of(&self.f.body, sid) {
-                if assign_count(blk, *v, &self.o.live_out) > 1 {
+                // a declaring store whose value is never read is still emitted (as the `let`)
+                let dead_decl = matches!(self.decl[v], Decl::At(_)) && !self.o.live_out.get(&sid).map(|l| l.contains(v)).unwrap_or(true);
+                if assign_count(blk, *v, &self.o.live_out) + dead_decl as u32 > 1 {
                     self.muts.insert(*v);
                 }
             }
@@ -2302,8 +2316,9 @@ impl<'a> FGen<'a> {
                     let pats: Vec<String> = vars
                         .iter()
                         .map(|w| {
-                            let m = if self.muts.contains(w) { "mut " } else { "" };
-                            format!("{}{}", m, self.name(*w))
+                            let n = self.name(*w);
+                            let m = if self.muts.contains(w) && n != "_" { "mut " } else { "" };
+                            format!("{}{}", m, n)
                         })
                         .collect();
                     for w in &vars {
@@ -3693,7 +3708,9 @@ impl<'a> FGen<'a> {
         } else {
             format!("{}({})", x.rust, av.join(", "))
         };
-        if x.result {
+        if x.result && !x.raises.is_empty() {
+            code = if self.catches(&x.raises) { self.wrap(code) } else { format!("pyrt::py_ok({})", code) };
+        } else if x.result {
             code = if self.catches(&["ValueError"]) {
                 self.wrap(format!("{}.map_err(pyrt::rust_err)", code))
             } else {

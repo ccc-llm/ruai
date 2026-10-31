@@ -40,6 +40,7 @@ jobs:
       - run: cargo check --no-default-features --features world
       - run: cargo check --no-default-features --features pyrt
       - run: cargo check --no-default-features --features py
+      - run: cargo check --no-default-features --features agent
       # CUDA libraries are loaded at runtime, so the backend builds without a GPU
       - run: cargo check --all-targets --features cuda
       - run: cargo clippy --all-targets --features cuda

@@ -1,6 +1,6 @@
 [package]
 name = "ruai"
-version = "3.3.0"
+version = "3.4.0"
 edition = "2021"
 description = "A Swiss-army AI toolkit in Rust: a PyTorch-like engine (autograd, GPU, GPT-2/Llama), and a git-style `ruai` command"
 license = "MIT"
@@ -25,6 +25,8 @@ unicode-normalization = { version = "0.1", optional = true }
 # --- pyrt: runtime of translated py0 programs
 indexmap = { version = "2", optional = true }
 regex = { version = "1", optional = true }
+# ruai.http for py0 programs (an HTTP client with TLS)
+ureq = { version = "3", optional = true }
 # --- py: the py0 → Rust translator (merged from py2rs)
 ruff_python_parser = { version = "0.0.20", optional = true }
 ruff_python_ast = { version = "0.0.20", optional = true }
@@ -34,6 +36,10 @@ ruff_source_file = { version = "0.0.20", optional = true }
 # CUDA: loaded at runtime (dynamic-loading), so it builds without the CUDA toolkit
 cudarc = { version = "0.19", optional = true, default-features = false, features = ["std", "driver", "nvrtc", "cublas", "f16", "dynamic-loading", "cuda-12080"] }
 
+[target.'cfg(unix)'.dependencies]
+# pyrt: time.strftime (the local time zone)
+libc = { version = "0.2", optional = true }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", optional = true }
 objc2-foundation = { version = "0.3", optional = true }
@@ -41,14 +47,18 @@ objc2-metal = { version = "0.3", optional = true }
 objc2-metal-performance-shaders = { version = "0.3", optional = true }
 
 [features]
-default = ["nn", "world", "py"]
+default = ["nn", "world", "py", "agent"]
 # The deep learning engine (ruai::nn, also re-exported at the crate root)
 nn = ["dep:rayon", "dep:matrixmultiply", "dep:half", "dep:safetensors", "dep:serde_json", "dep:fancy-regex", "dep:unicode-normalization"]
 # py0: the typed-Python translator (`ruai py`), and the runtime its programs use
 py = ["pyrt", "pyrt-re", "dep:serde_json", "dep:regex", "dep:ruff_python_parser", "dep:ruff_python_ast", "dep:ruff_text_size", "dep:ruff_source_file"]
-pyrt = ["dep:indexmap"]
+pyrt = ["dep:indexmap", "dep:libc"]
 # Python's `re` module for py0 programs
 pyrt-re = ["pyrt", "dep:regex"]
+# `ruai.http` for py0 programs (HTTPS client)
+pyrt-http = ["pyrt", "dep:ureq"]
+# `ruai agent`: multi-agent LLM teams (agge, written in py0: src/agent/*.py)
+agent = ["py", "pyrt-http"]
 # Reinforcement-learning environments with the Gymnasium API (no dependencies)
 world = []
 # GPU backends for nn: Apple Metal (mps) and NVIDIA (cuda)

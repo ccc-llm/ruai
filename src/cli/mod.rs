@@ -1,5 +1,8 @@
 //! Command dispatch: built-in subcommands, then `ruai-NAME` on `PATH`.
 
+#[cfg(feature = "agent")]
+mod agent;
+#[cfg(any(feature = "nn", feature = "world"))]
 mod args;
 #[cfg(feature = "nn")]
 mod nn;
@@ -8,6 +11,7 @@ mod py;
 #[cfg(feature = "world")]
 mod world;
 
+#[cfg(any(feature = "nn", feature = "world"))]
 pub use args::Args;
 
 /// Built-in commands: (name, one-line description).
@@ -18,6 +22,8 @@ const COMMANDS: &[(&str, &str)] = &[
     ("py", "py0, typed Python compiled to Rust: run, check, emit, build, test"),
     #[cfg(feature = "world")]
     ("world", "reinforcement-learning environments (Gymnasium API): list, run"),
+    #[cfg(feature = "agent")]
+    ("agent", "teams of LLM agents that write code and books (agge, in py0)"),
     ("help", "show help for ruai or one of its commands"),
     ("version", "print the version"),
 ];
@@ -50,6 +56,8 @@ pub fn run(argv: &[String]) -> i32 {
         "world" => world::run(rest),
         #[cfg(feature = "py")]
         "py" => return py::main(rest),
+        #[cfg(feature = "agent")]
+        "agent" => return agent::main(rest),
         other => return external(other, rest),
     };
     match result {
@@ -70,6 +78,8 @@ fn help(rest: &[String]) -> Result<(), String> {
         Some("world") => print!("{}", world::USAGE),
         #[cfg(feature = "py")]
         Some("py") => print!("{}", py::USAGE),
+        #[cfg(feature = "agent")]
+        Some("agent") => return agent::help(),
         Some(other) => return Err(format!("no help for unknown command '{other}'")),
     }
     Ok(())

@@ -397,6 +397,8 @@ struct Fn<'a> {
     /// a copy of a still-live value stored in a container: (source root, path, position, line)
     stores: Vec<(VarId, Path, u32, u32)>,
     live_out: HashMap<u32, HashSet<VarId>>,
+    /// what a handler of an enclosing `try` reads (part of `live_out`)
+    live_exc: HashMap<u32, HashSet<VarId>>,
     live_in: HashMap<u32, HashSet<VarId>>,
     /// narrowed value → (statement that binds it, first statement where it is bound / None for let-else)
     narrow_site: HashMap<VarId, (u32, Option<u32>)>,
@@ -436,6 +438,7 @@ impl<'a> Fn<'a> {
             pending: vec![],
             stores: vec![],
             live_out: HashMap::new(),
+            live_exc: HashMap::new(),
             live_in: HashMap::new(),
             narrow_site: HashMap::new(),
             consumed: HashSet::new(),
@@ -933,6 +936,7 @@ impl<'a> Fn<'a> {
             }
         }
         let mut mut_roots: Vec<VarId> = vec![];
+        let mut mut_places: Vec<(VarId, Path)> = vec![];
         for (i, a) in args.iter().enumerate() {
             match self.o.params[fid][i] {
                 Mode::Mut => {
@@ -944,6 +948,7 @@ impl<'a> Fn<'a> {
                     if let Some((root, p)) = self.place(a) {
                         let (rr, _) = self.resolve(root, vec![]);
                         mut_roots.push(rr);
+                        mut_places.push(self.resolve(root, p.clone()));
                         self.mutate(root, p, true, e.line);
                     }
                 }
@@ -958,6 +963,19 @@ impl<'a> Fn<'a> {
         for (i, a) in args.iter().enumerate() {
             if self.o.params[fid][i] == Mode::Mut {
                 continue;
+            }
+            // another field of the same object: disjoint borrows (`f(&self.a, &mut self.b)`)
+            if let Some((root, p)) = self.place(a) {
+                let (rr, rp) = self.resolve(root, p);
+                let disjoint = |(mr, mp): &(VarId, Path)| {
+                    *mr != rr || {
+                        let n = mp.len().min(rp.len());
+                        mp[..n] != rp[..n] && mp[..n].iter().zip(&rp[..n]).all(|(x, y)| !matches!((x, y), (Step::Index, _) | (_, Step::Index)))
+                    }
+                };
+                if !rp.is_empty() && mut_places.iter().all(disjoint) {
+                    continue;
+                }
             }
             let mut vs = vec![];
             uses(a, &mut vs);
@@ -1782,6 +1800,7 @@ impl<'a> Fn<'a> {
                         if let Some(l) = f.live_out.get_mut(&x.id) {
                             l.extend(extra.iter().copied());
                         }
+                        f.live_exc.entry(x.id).or_default().extend(extra.iter().copied());
                         for blk in x.blocks() {
                             add(f, blk, extra);
                         }
@@ -1845,7 +1864,9 @@ impl<'a> Fn<'a> {
             return false;
         }
         if matches!(s.kind, StmtKind::Return(_)) {
-            return true;
+            // nothing runs after a return, unless what it calls raises into a
+            // handler that still reads v (`try: return f(v)` in a retry loop)
+            return !self.live_exc.get(&s.id).is_some_and(|l| l.contains(&v));
         }
         !self.live_out.get(&s.id).map(|l| l.contains(&v)).unwrap_or(true)
     }

@@ -39,6 +39,8 @@ pub const NAME_ERROR: &[&str] = &["NameError", "Exception", "BaseException"];
 pub const OS_ERROR: &[&str] = &["OSError", "Exception", "BaseException"];
 pub const FILE_NOT_FOUND_ERROR: &[&str] = &["FileNotFoundError", "OSError", "Exception", "BaseException"];
 pub const PERMISSION_ERROR: &[&str] = &["PermissionError", "OSError", "Exception", "BaseException"];
+pub const FILE_EXISTS_ERROR: &[&str] = &["FileExistsError", "OSError", "Exception", "BaseException"];
+pub const NOT_A_DIRECTORY_ERROR: &[&str] = &["NotADirectoryError", "OSError", "Exception", "BaseException"];
 pub const IS_A_DIRECTORY_ERROR: &[&str] = &["IsADirectoryError", "OSError", "Exception", "BaseException"];
 pub const STOP_ITERATION: &[&str] = &["StopIteration", "Exception", "BaseException"];
 
@@ -147,6 +149,8 @@ pub fn builtin_chain(name: &str) -> &'static [&'static str] {
         "FileNotFoundError" => FILE_NOT_FOUND_ERROR,
         "PermissionError" => PERMISSION_ERROR,
         "IsADirectoryError" => IS_A_DIRECTORY_ERROR,
+        "FileExistsError" => FILE_EXISTS_ERROR,
+        "NotADirectoryError" => NOT_A_DIRECTORY_ERROR,
         _ => EXCEPTION,
     }
 }
@@ -358,6 +362,31 @@ pub fn try_log(x: f64) -> PyResult<f64> {
 /// A crate function's error as a Python ValueError.
 pub fn rust_err<E: std::fmt::Display>(e: E) -> PyErr {
     PyErr::new(VALUE_ERROR, e.to_string())
+}
+
+/// A runtime library function's result where nothing catches its error.
+pub fn py_ok<T>(r: Result<T, PyErr>) -> T {
+    match r {
+        Ok(v) => v,
+        Err(e) => crate::pyrt::raise(e.chain[0], &e.msg),
+    }
+}
+
+/// An `std::io::Error` as the OSError subclass CPython raises for it.
+pub fn os_err(e: &std::io::Error, path: &str) -> PyErr {
+    use std::io::ErrorKind as K;
+    let chain = match e.kind() {
+        K::NotFound => FILE_NOT_FOUND_ERROR,
+        K::PermissionDenied => PERMISSION_ERROR,
+        K::AlreadyExists => FILE_EXISTS_ERROR,
+        K::IsADirectory => IS_A_DIRECTORY_ERROR,
+        K::NotADirectory => NOT_A_DIRECTORY_ERROR,
+        _ => OS_ERROR,
+    };
+    let errno = e.raw_os_error().map(|n| format!("[Errno {}] ", n)).unwrap_or_default();
+    let text = e.to_string();
+    let text = text.split(" (os error").next().unwrap_or(&text);
+    PyErr::new(chain, format!("{}{}: '{}'", errno, text, path))
 }
 
 /// A crate function's result where nothing catches its error.

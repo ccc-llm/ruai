@@ -81,6 +81,13 @@ impl Front {
         }
     }
 
+    /// `M.a.b` declared as `a_b` by the package stub of the builtin module `M`.
+    pub(super) fn std_stub_name(&self, q: &str) -> Option<String> {
+        let (m, rest) = q.split_once('.')?;
+        let f = format!("{}.{}", m, rest.replace('.', "_"));
+        self.funcs.contains_key(&f).then_some(f)
+    }
+
     /// A literal `r` of permutations / combinations / product(repeat=).
     fn tuple_len(&mut self, e: &AExpr, line: u32) -> Res<usize> {
         let x = self.expr(e, Some(&Ty::Int))?;
@@ -417,7 +424,24 @@ impl Front {
                 (Ty::Str, name, v)
             }
             "json.loads" => return err(line, "json.loads() is outside the typed subset (its result has no static type)"),
-            _ => return err(line, format!("`{}` is not supported", q)),
+            _ => {
+                // declared by the package stub of the module: `os.environ.get` is `environ_get` in `os.pyi`
+                if let Some(f) = self.std_stub_name(q) {
+                    let call = AExpr::Call(ast::ExprCall {
+                        node_index: Default::default(),
+                        range_start: args.range.start(),
+                        func: Box::new(AExpr::Name(ast::ExprName {
+                            node_index: Default::default(),
+                            range: args.range,
+                            id: ast::name::Name::new(f),
+                            ctx: ast::ExprContext::Load,
+                        })),
+                        arguments: args.clone(),
+                    });
+                    return self.expr(&call, want);
+                }
+                return err(line, format!("`{}` is not supported", q));
+            }
         };
         Ok(self.mk(line, t, K::Builtin(n, v)))
     }
@@ -453,9 +477,9 @@ impl Front {
         Ok(Some(true))
     }
 
-    /// `open(path, mode="r", encoding="utf-8")`
+    /// `open(path, mode="r", encoding="utf-8", errors="strict")`
     pub(super) fn open_call(&mut self, args: &ast::Arguments, line: u32) -> Res<Expr> {
-        let kws = self.kw(args, &["mode", "encoding"], line)?;
+        let kws = self.kw(args, &["mode", "encoding", "errors"], line)?;
         self.nargs(args, 1, 2, "open", line)?;
         let p = self.arg(args, 0, &Ty::Str, "path")?;
         let mode = match args.args.get(1).or_else(|| kws.get("mode").copied()) {
@@ -471,6 +495,13 @@ impl Front {
             Some(_) => return err(line, "only encoding=\"utf-8\" is supported"),
             None => {}
         }
+        // errors="replace": undecodable bytes become U+FFFD (passed on as `r:replace`)
+        let mode = match kws.get("errors") {
+            Some(AExpr::StringLiteral(s)) if s.value.to_str() == "strict" => mode,
+            Some(AExpr::StringLiteral(s)) if s.value.to_str() == "replace" => format!("{}:replace", mode),
+            Some(_) => return err(line, "errors= is \"strict\" or \"replace\""),
+            None => mode,
+        };
         let m = self.mk(line, Ty::Str, ExprKind::Str(mode));
         Ok(self.mk(line, Ty::File, ExprKind::Builtin("open", vec![p, m])))
     }

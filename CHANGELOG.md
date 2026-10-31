@@ -1,5 +1,34 @@
 # Changelog
 
+## 3.4.0
+
+- `ruai agent` (feature `agent`, on by default): agge, the git-style CLI for teams of LLM
+  agents (chat, ask, code / book / custom graph workflows, delegation, text-protocol tools,
+  OpenAI-compatible and Anthropic providers with streaming), rewritten in py0
+  (`src/agent/*.py`) and translated into the `ruai` binary (`src/cli/agent_gen.rs`). The same
+  sources run under CPython; `tests/agent.rs` checks that both print the same transcript,
+  offline and against a fake streaming LLM server, and that the embedded translation is up to
+  date (`ruai py emit src/agent/agent.py --module`). Delegations, ready graph nodes and map
+  items run one after another; the chat has no readline history.
+- py0 standard library: `subprocess.run`; more of the builtin modules through package stubs
+  (`os.getcwd / environ.get / listdir / makedirs / rmdir / rename / getpid`, `os.path.isdir /
+  isfile / isabs / abspath / realpath / expanduser / dirname / basename / splitext / relpath /
+  normpath / getsize`, `sys.stdin.isatty / stdout.isatty / stderr.write / stdout.flush`,
+  `time.strftime`); `open(..., errors="replace")`.
+- py0 packages of ruai, with CPython stand-ins in `py0/python/ruai/`: `ruai.json` (`Json`, a
+  JSON value with a static type; `loads` / `dumps` match CPython's `json` including error
+  messages) and `ruai.http` (HTTP(S) requests with line-by-line reading for server-sent
+  events; feature `pyrt-http`, on ureq).
+- Stubs can declare `Result[T, OSError | ...]`: the Rust function returns
+  `Result<T, pyrt::PyErr>` and raises CPython's exception classes (`pyrt::os_err` maps I/O
+  errors to `FileNotFoundError`, `FileExistsError`, ...).
+- `ruai py emit FILE --module`: a program as a module of another crate (`pub fn main`,
+  `pyrt::stdlib::set_argv`).
+- Translator fixes: escape characters in f-string text (`"\033[1m"`), a value moved by
+  `return f(x)` inside a `try` whose handler retries the loop, fields of `self` passed to
+  `&mut` parameters in `__init__`, disjoint fields of one object passed as `&` and `&mut`,
+  variables first assigned a value that is never read before a reassignment in a `try`.
+
 ## 3.3.0
 
 - py0 packages: `import M`, `import M as A` and `from M import x, y` resolve to a stub

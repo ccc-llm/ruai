@@ -104,6 +104,12 @@ patterns, checked when translating, on the `regex` crate), `sys` (`argv`, `exit`
 In `re`, lookaround, backreferences, `$` without `re.MULTILINE` and function
 replacements are rejected (the regex crate differs from Python there).
 
+Packages (`src/py/lib/*.pyi`, Rust in `ruai::pyrt::lib`): `shlex`, `fnmatch`, `html`,
+`subprocess` (`run`), more of `os` / `os.path` / `sys` / `time` (`os.listdir`,
+`os.makedirs`, `os.environ.get`, `os.path.isdir`, `sys.stdin.isatty`, `time.strftime`, ...),
+and ruai's own `ruai.json` (`Json`) and `ruai.http` (`request`). `open` also takes
+`errors="replace"`.
+
 Rust crates: `from rust.CRATE import X` with a stub `CRATE.pyi` (see README).
 
 ## 7. Ownership

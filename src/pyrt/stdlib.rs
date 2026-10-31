@@ -600,8 +600,20 @@ pub fn seed(n: i64) {
 
 // ------------------------------------------------------------- sys / time
 
+thread_local! {
+    static ARGV: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Set `sys.argv` (a program run as a module of another program, like `ruai agent`).
+pub fn set_argv(args: Vec<String>) {
+    ARGV.with(|a| *a.borrow_mut() = Some(args));
+}
+
 /// `sys.argv`
 pub fn argv() -> Vec<String> {
+    if let Some(v) = ARGV.with(|a| a.borrow().clone()) {
+        return v;
+    }
     let mut v: Vec<String> = std::env::args().collect();
     if v.is_empty() {
         v.push(String::new());

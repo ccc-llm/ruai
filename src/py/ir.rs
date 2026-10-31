@@ -400,6 +400,9 @@ pub struct Extern {
     pub rust: String,
     /// returns `Result<T, E>`: an `Err` raises ValueError
     pub result: bool,
+    /// `Result[T, E1 | E2]`: the Rust function returns `Result<T, pyrt::PyErr>`
+    /// whose error is one of these builtin exceptions (empty: ValueError)
+    pub raises: Vec<String>,
     /// takes `&mut self`
     pub self_mut: bool,
     /// the Rust integer / float type of the result (`usize`, `u32`, `f32`, ...)

@@ -22,11 +22,17 @@ fn os_error(e: std::io::Error, path: &str) -> ! {
     raise(kind, &format!("[Errno {}] {}: '{}'", no, what, path))
 }
 
-/// `open(path, mode)`: mode is r, w or a (checked by py2rs).
+/// `open(path, mode)`: mode is r, w or a (checked by py2rs), `r:replace` for
+/// `errors="replace"`.
 pub fn open(path: &str, mode: &str) -> File {
     let mut f = File { path: path.to_string(), text: None, out: None, closed: false };
+    let (mode, replace) = match mode.split_once(':') {
+        Some((m, e)) => (m, e == "replace"),
+        None => (mode, false),
+    };
     match mode.trim_end_matches('t') {
         "r" => match std::fs::read(path) {
+            Ok(b) if replace => f.text = Some((String::from_utf8_lossy(&b).into_owned(), 0)),
             Ok(b) => match String::from_utf8(b) {
                 Ok(s) => f.text = Some((s, 0)),
                 Err(_) => raise("UnicodeDecodeError", "'utf-8' codec can't decode the file"),

@@ -190,7 +190,7 @@ pub const EXCEPTIONS: &[&str] = &[
     "Exception", "ValueError", "TypeError", "IndexError", "KeyError", "RuntimeError",
     "ZeroDivisionError", "AssertionError", "NotImplementedError", "ArithmeticError",
     "OverflowError", "LookupError", "StopIteration", "AttributeError", "EOFError", "BaseException", "NameError",
-    "OSError", "FileNotFoundError", "PermissionError", "IsADirectoryError",
+    "OSError", "FileNotFoundError", "PermissionError", "IsADirectoryError", "FileExistsError", "NotADirectoryError",
 ];
 
 fn snake_name(n: &str) -> String {
@@ -421,6 +421,7 @@ impl Front {
         let mut stub_imports: Vec<(String, Vec<String>, u32)> = Vec::new();
         // packages: (module, alias for `import M as A`, names for `from M import ...`, line)
         let mut package_imports: Vec<(String, Option<String>, Vec<String>, u32)> = Vec::new();
+        let mut std_extended: Vec<String> = Vec::new();
         let mut main_body: Vec<&AStmt> = Vec::new();
         let mut fdefs: Vec<&ast::StmtFunctionDef> = Vec::new();
         let mut cdefs: Vec<&ast::StmtClassDef> = Vec::new();
@@ -446,6 +447,10 @@ impl Front {
                                 .map_err(|e| e.hint(format!("supported: {}, dataclasses, typing", stdlib::MODULES.join(", "))));
                         }
                         self.imports.insert(n.to_string());
+                        // more of a builtin module, declared by the package stub `M.pyi`
+                        if stdlib::MODULES.contains(&n) && package_stub(n).is_some() && !std_extended.contains(&n.to_string()) {
+                            std_extended.push(n.to_string());
+                        }
                     }
                 }
                 AStmt::ImportFrom(i) => {
@@ -457,6 +462,9 @@ impl Front {
                             }
                         }
                         m if stdlib::MODULES.contains(&m) => {
+                            if package_stub(m).is_some() && !std_extended.contains(&m.to_string()) {
+                                std_extended.push(m.to_string());
+                            }
                             for a in &i.names {
                                 let local = a.asname.as_ref().unwrap_or(&a.name).id.to_string();
                                 self.from_names.insert(local, format!("{}.{}", m, a.name.id));
@@ -601,6 +609,11 @@ impl Front {
         }
         for (module, alias, names, line) in package_imports {
             self.load_package(&module, alias.as_deref(), &names, line)?;
+        }
+        for m in std_extended {
+            // its functions are named `M.f`, found by `std_call` (not an alias: `M.x` stays builtin)
+            self.load_package(&m, Some(&m), &[], 0)?;
+            self.package_aliases.remove(&m);
         }
         for (krate, names, line) in stub_imports {
             self.load_stub(&krate, &names, line)?;
@@ -1015,7 +1028,19 @@ impl Front {
                 let inner: &AExpr = match &**r {
                     AExpr::Subscript(sub) if matches!(&*sub.value, AExpr::Name(n) if n.id.as_str() == "Result") => {
                         ext.as_mut().unwrap().result = true;
-                        &sub.slice
+                        match &*sub.slice {
+                            // Result[T, OSError | ValueError]
+                            AExpr::Tuple(t) if t.elts.len() == 2 => {
+                                let mut names = vec![];
+                                exc_names(&t.elts[1], &mut names);
+                                if names.is_empty() {
+                                    return err(line, "Result[T, E]: E is a builtin exception (or several joined by |)");
+                                }
+                                ext.as_mut().unwrap().raises = names;
+                                &t.elts[0]
+                            }
+                            x => x,
+                        }
                     }
                     x => x,
                 };
@@ -4767,5 +4792,23 @@ fn visit_stmt_exprs_mut(s: &mut Stmt, f: &mut dyn FnMut(&mut Expr)) {
             }
         }
         _ => {}
+    }
+}
+
+/// The exception names of `E1 | E2 | ...`.
+fn exc_names(e: &AExpr, out: &mut Vec<String>) {
+    match e {
+        AExpr::BinOp(b) if matches!(b.op, ast::Operator::BitOr) => {
+            exc_names(&b.left, out);
+            exc_names(&b.right, out);
+        }
+        AExpr::Name(n) => {
+            out.push(n.id.to_string());
+            // what an OSError of the runtime library is, depends on the system's error
+            if n.id.as_str() == "OSError" {
+                out.extend(["FileNotFoundError", "PermissionError", "IsADirectoryError", "FileExistsError", "NotADirectoryError"].map(String::from));
+            }
+        }
+        _ => out.clear(),
     }
 }

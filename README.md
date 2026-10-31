@@ -9,7 +9,7 @@
 | `ruai::nn`（feature `nn`） | `ruai nn ...` | 類似 PyTorch 的神經網路引擎：動態計算圖 + 自動微分（含二階）、CPU / Apple GPU（MPS）/ NVIDIA GPU（CUDA）、CNN、ResNet、ViT、GPT / GPT-2 / Llama、量化、safetensors | ✅ |
 | `ruai::world`（feature `world`） | `ruai world ...` | gymnasium 1.x 的 API 與環境（CartPole、MountainCar、Pendulum、Acrobot、FrozenLake），相同 seed 下與 gymnasium 逐位元相同 | ✅ |
 | `ruai::py`（feature `py`） | `ruai py ...` | py0：受限、強型別的 Python，翻成可讀的 Rust 再編譯執行（由 py2rs 併入，見 [py0/](py0/README.tw.md)）；之後加上 Python 標準函式庫與 numpy / ml / world / nn 套件 | ✅（套件 v3.3–v3.7） |
-| agent | `ruai agent ...` | 以 py0 改寫的 agge：LLM agent 團隊與 graph 工作流程 | v3.4 |
+| agent（feature `agent`） | `ruai agent ...` | 以 py0 寫成的 agge：LLM agent 團隊寫程式與寫書、graph 工作流程（原始碼 [src/agent/](src/agent/README.md)，CPython 也能執行） | ✅ |
 
 ```bash
 cargo install ruai                    # 或在 checkout 中：cargo build --release
@@ -21,6 +21,8 @@ ruai py run prog.py                   # py0：翻成 Rust、編譯（有快取�
 ruai py emit prog.py                  # 印出翻譯的 Rust 程式
 ruai world list                       # 內建環境與其空間
 ruai world run CartPole-v1 --episodes 3 --seed 1
+ruai agent init && ruai agent chat    # LLM agent 團隊：互動對話（/help 看指令）
+ruai agent code "寫一個 todo CLI" -o todo   # 設計 → 實作 → 測試 → 審查
 ruai NAME ...                         # 其他名稱會執行 PATH 上的 ruai-NAME（像 git）
 ```
 
@@ -198,9 +200,22 @@ def total(items: list[Item], tax: float = 0.05) -> float:
 print(f"{total([Item('apple', 1.5), Item('pear', 2.25)]):.2f}")
 ```
 
-**py0 套件與標準函式庫**：`import M` / `import M as A` / `from M import x` 會在 `src/py/lib/M.pyi`（以及 `PY0_LIB` 列出的目錄）找套件 stub——以型別宣告描述函式與類別，對應到 `ruai::pyrt::lib::M` 下的 Rust 實作（或 stub 開頭 `# rust:` 指定的路徑；需要額外依賴時以 `# crate: pyrt/FEATURE` 開啟 ruai 的執行期 feature）。Python 標準函式庫逐模組以 Rust 重寫在 `src/pyrt/lib/`，每個模組都有與 CPython 對照的測試程式（`tests/py0/py/std_*.py`）。目前有 `shlex`（split / quote / join）、`fnmatch`（fnmatch / fnmatchcase / filter）、`html`（escape / unescape，含完整 HTML5 實體表），另外 py2rs 原本內建 `math`、`collections`、`heapq`、`bisect`、`itertools`、`functools`、`random`、`re`、`sys`、`time`、`json.dumps`、`os.path`。
+**py0 套件與標準函式庫**：`import M` / `import M as A` / `from M import x` 會在 `src/py/lib/M.pyi`（以及 `PY0_LIB` 列出的目錄）找套件 stub——以型別宣告描述函式與類別，對應到 `ruai::pyrt::lib::M` 下的 Rust 實作（或 stub 開頭 `# rust:` 指定的路徑；需要額外依賴時以 `# crate: pyrt/FEATURE` 開啟 ruai 的執行期 feature）。Python 標準函式庫逐模組以 Rust 重寫在 `src/pyrt/lib/`，每個模組都有與 CPython 對照的測試程式（`tests/py0/py/std_*.py`）。目前有 `shlex`（split / quote / join）、`fnmatch`（fnmatch / fnmatchcase / filter）、`html`（escape / unescape，含完整 HTML5 實體表）、`subprocess.run`，以及內建模組的擴充：`os`（getcwd、environ.get、listdir、makedirs、rmdir、rename、getpid）、`os.path`（isdir、isfile、abspath、realpath、expanduser、dirname、basename、splitext、relpath、normpath、getsize）、`sys.stdin.isatty` / `sys.stderr.write`、`time.strftime`；另外 py2rs 原本內建 `math`、`collections`、`heapq`、`bisect`、`itertools`、`functools`、`random`、`re`、`sys`、`time`、`json.dumps`、`os.path`。stub 可宣告 `Result[T, OSError | ...]`，讓 Rust 實作丟出 CPython 的例外類別。ruai 自己的套件：`ruai.json`（`Json`：有靜態型別的 JSON 值，`dumps` 與 CPython 的 `json.dumps` 逐字相同）、`ruai.http`（HTTP(S) 請求，逐行讀取回應以支援 server-sent events，feature `pyrt-http`）；它們在 `py0/python/ruai/` 有給 CPython 用的對應實作，所以同一支程式兩邊都能跑。
 
 `ruai py run prog.py` 把它翻成可讀的 Rust（`ruai py emit` 可看），以 Cargo 編譯（第一次需要幾秒，之後有快取）後執行，輸出與 CPython 相同；做不到時在翻譯階段就以行號與提示拒絕。py0 由 [py2rs](py0/README.tw.md) 併入（保留完整 git 歷史），規格見 [py0/SPEC.md](py0/SPEC.md)。翻譯出的程式依賴 `ruai`，但只開執行期 feature（`default-features = false, features = ["pyrt"]`），不會編譯神經網路引擎。執行 py0 程式需要 Rust 工具鏈（cargo）。
+
+### LLM agent 團隊（agent）
+
+```bash
+ruai agent init                                   # 在目前目錄建立 .agge/（設定、agent、graph、紀錄）
+ruai agent model add glm nvidia z-ai/glm-5.3-flash   # provider：openai、nvidia、openrouter、deepseek、groq、gemini、ollama、lmstudio、anthropic
+ruai agent chat --team code                       # 與 lead 對話，lead 以 <delegate> 分派給 architect / coder / tester / reviewer
+ruai agent ask -y "建立 hello.py 並執行"            # 單次任務：agent 以文字標籤呼叫工具（讀寫檔、搜尋、shell）
+ruai agent book "Git 入門" --chapters 3 -o gitBook   # 大綱 → 各章（map 節點）→ 總編輯
+ruai agent run brainstorm "如何設計快取層" -M merge=claude
+```
+
+`ruai agent` 是 [agge](src/agent/README.md)（約 2,500 行的 Python）以 py0 改寫後翻成 Rust、編進 `ruai` 執行檔，不需要 Python 或 cargo。同一份原始碼（`src/agent/*.py`）也能直接以 CPython 執行；`tests/agent.rs` 用同一串指令（含一個假的 OpenAI / Anthropic 串流伺服器）比對兩者的輸出逐字相同，並檢查嵌入的翻譯 `src/cli/agent_gen.rs` 是最新的。與原版的差異：平行的 delegate、graph 節點與 map 項目改為依序執行；聊天介面沒有 readline 歷史與補完。
 
 ### 強化學習環境（world）
 
@@ -458,7 +473,8 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - `tests/views.rs` / `tests/kvcache.rs`：view 不複製且與主機計算一致、view 是快照、matmul 直接讀轉置與 strided view、各 dtype；KV cache 容量加倍、回傳 view、先前的 view 與 clone 不受之後寫入影響、梯度可經 cache 回傳、100 步解碼與完整前向一致
 - `tests/second_order.rs`：逐元素、各種 matmul、softmax / log_softmax / cross-entropy、layer / RMS norm、embedding + gather、conv2d、融合 attention、gradient checkpointing 的 Hessian-向量積與有限差分一致；`backward_create_graph` 與 `autograd::grad` 的語意；gradient penalty 傳到參數的梯度與數值微分一致
 - `tests/world.rs`：6 個環境 × 4 個 seed × 400 步（含 autoreset）與 gymnasium 逐步、逐位元比對，向量環境、FrozenLake 文字算繪、NumPy 亂數（含 2⁶³ 以上的 seed、各種 `integers` 範圍）
-- `tests/py0.rs` + `tests/py0/`：py2rs 的語料——238 支程式逐一翻譯、編譯、執行，輸出、exit code 與例外類型都要與 CPython 3.12+ 相同；44 支應被拒絕的程式要以預期訊息拒絕；`tests/py0/pyo3/run.sh` 檢查 PyO3 擴充模組
+- `tests/agent.rs`：`ruai agent` 的嵌入翻譯是最新的；離線（echo 模型）約 50 個指令與互動對話、以及對假 LLM 伺服器（`tests/agent/fake_llm.py`：OpenAI / Anthropic、串流與否、原生 tool call、HTTP 500 重試）的輸出都與 CPython 執行同一份 py0 原始碼逐字相同
+- `tests/py0.rs` + `tests/py0/`：py2rs 的語料——244 支程式逐一翻譯、編譯、執行，輸出、exit code 與例外類型都要與 CPython 3.12+ 相同；46 支應被拒絕的程式要以預期訊息拒絕；`tests/py0/pyo3/run.sh` 檢查 PyO3 擴充模組
 - `tests/training.rs`：MLP 學會 XOR、CNN（含 BatchNorm）收斂、GPT 記住序列、存檔/載入 round-trip
 
 ## 版本規劃
@@ -485,7 +501,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v3.1 | `world`：gymnasium 1.x 的 API 與環境（逐位元相同）、NumPy 相容亂數 `ruai::rng`、`ruai world list / run`、REINFORCE 範例 | ✅ |
 | v3.2 | `py`：以 git subtree 併入 py2rs（翻譯器 `ruai::py`、執行期 `ruai::pyrt`），`ruai py run / emit / check / explain / build / pyo3 / stub / test / fuzz` | ✅ |
 | v3.3 | py0 套件機制（`import M [as A]` / `from M import x` → `src/py/lib/M.pyi` + `ruai::pyrt::lib::M`）、以 Rust 重寫的 Python 標準函式庫（第一批：`shlex`、`fnmatch`、`html`） | ✅ |
-| v3.4 | `ruai agent`：以 py0 改寫 agge | |
+| v3.4 | `ruai agent`：以 py0 改寫 agge 並嵌入 `ruai`；py0 新增 `os` / `sys` / `time` 擴充、`subprocess`、`ruai.json`、`ruai.http`、`Result[T, OSError]` | ✅ |
 | v3.5–3.7 | py0 的 numpy、ml（sklearn 子集）、gymnasium 與 nn 套件 | |
 | v4.0 | 穩定版、英文文件 | |
 

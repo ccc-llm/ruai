@@ -28,7 +28,7 @@ pub fn parent(p: &Program, k: &str) -> Option<String> {
         "ZeroDivisionError" | "OverflowError" => "ArithmeticError",
         "IndexError" | "KeyError" => "LookupError",
         "NotImplementedError" => "RuntimeError",
-        "FileNotFoundError" | "PermissionError" | "IsADirectoryError" => "OSError",
+        "FileNotFoundError" | "PermissionError" | "IsADirectoryError" | "FileExistsError" | "NotADirectoryError" => "OSError",
         k if EXCEPTIONS.contains(&k) => "Exception",
         k => {
             let c = p.classes.iter().find(|c| c.name == k)?;
@@ -119,9 +119,13 @@ pub fn analyze(p: &Program) -> Res<Exc> {
         for fid in 0..n {
             let f = &p.funcs[fid];
             let mut m = HashSet::new();
-            if f.ext.as_ref().is_some_and(|e| e.result) {
-                // a Rust Err becomes ValueError
-                m.insert("ValueError".to_string());
+            if let Some(e) = f.ext.as_ref().filter(|e| e.result) {
+                // a Rust Err becomes ValueError, or the declared exceptions
+                if e.raises.is_empty() {
+                    m.insert("ValueError".to_string());
+                } else {
+                    m.extend(e.raises.iter().cloned());
+                }
             } else if f.dispatch.is_empty() {
                 block_may(p, &x, &f.body, &mut m);
             } else {

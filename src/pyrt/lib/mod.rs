@@ -6,4 +6,11 @@
 pub mod fnmatch;
 pub mod html;
 mod html_tables;
+pub mod os;
+#[cfg(feature = "pyrt-http")]
+pub mod ruai_http;
+pub mod ruai_json;
 pub mod shlex;
+pub mod subprocess;
+pub mod sys;
+pub mod time;
