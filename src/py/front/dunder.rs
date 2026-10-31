@@ -28,7 +28,8 @@ pub const SUPPORTED: &[&str] = &[
     "__floordiv__", "__rfloordiv__", "__mod__", "__rmod__", "__pow__", "__rpow__", "__and__", "__rand__",
     "__or__", "__ror__", "__xor__", "__rxor__", "__lshift__", "__rlshift__", "__rshift__", "__rrshift__",
     "__neg__", "__pos__", "__abs__", "__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__", "__len__",
-    "__bool__", "__getitem__", "__setitem__", "__contains__",
+    "__bool__", "__getitem__", "__setitem__", "__contains__", "__matmul__", "__rmatmul__", "__invert__",
+    "__float__", "__int__", "__iter__",
 ];
 
 /// Special methods that decide equality / order (not in class hierarchies).
@@ -119,6 +120,7 @@ impl Front {
 
     /// `recv.m(args)` with arguments already lowered.
     pub(super) fn call_dunder(&mut self, recv: Expr, fid: FuncId, args: Vec<Expr>, line: u32) -> Res<Expr> {
+        let fid = self.pick_dunder(fid, &args);
         let params: Vec<(String, Ty)> = {
             let f = &self.p.funcs[fid];
             f.params.iter().map(|p| (f.vars[p.var].name.clone(), f.vars[p.var].ty.clone())).collect()
@@ -133,6 +135,29 @@ impl Front {
         }
         let t = self.p.funcs[fid].ret.clone();
         Ok(self.mk(line, t, ExprKind::Method(Box::new(recv), fid, v)))
+    }
+
+    /// The overload of a stub's special method that the arguments fit: one
+    /// whose types are the same, else one they convert to.
+    fn pick_dunder(&mut self, fid: FuncId, args: &[Expr]) -> FuncId {
+        let Some(cands) = self.overloads.get(&fid).cloned() else { return fid };
+        let tys = |s: &Self, c: FuncId| -> Vec<Ty> {
+            let f = &s.p.funcs[c];
+            f.params.iter().map(|p| f.vars[p.var].ty.clone()).collect()
+        };
+        for &c in &cands {
+            let ts = tys(self, c);
+            if ts.len() == args.len() && ts.iter().zip(args).all(|(t, a)| self.norm(t) == self.norm(&a.ty)) {
+                return c;
+            }
+        }
+        for &c in &cands {
+            let ts = tys(self, c);
+            if ts.len() == args.len() && ts.iter().zip(args).all(|(t, a)| self.coerce(a.clone(), t, "").is_ok()) {
+                return c;
+            }
+        }
+        fid
     }
 
     /// `l op r` on objects: `l.__op__(r)` or `r.__rop__(l)`.

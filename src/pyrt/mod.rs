@@ -1090,3 +1090,48 @@ tup_n!(tup3, T, T, T);
 tup_n!(tup4, T, T, T, T);
 tup_n!(tup5, T, T, T, T, T);
 tup_n!(tup6, T, T, T, T, T, T);
+
+/// One part of a numpy-style index `a[i, 1:3, mask, None, ...]` (built by the
+/// translator for a `__getitem__` / `__setitem__` that takes an `Index`).
+#[derive(Clone)]
+pub enum Ix {
+    /// `i`
+    Int(i64),
+    /// `start:stop:step`
+    Slice(Option<i64>, Option<i64>, Option<i64>),
+    /// `None` (numpy.newaxis)
+    NewAxis,
+    /// `...`
+    Ellipsis,
+    /// a `list[int]`
+    Ints(Vec<i64>),
+    /// a `list[bool]`
+    Bools(Vec<bool>),
+    /// another object (an array: a mask or integer indices)
+    Obj(std::rc::Rc<dyn std::any::Any>),
+}
+
+impl Ix {
+    /// An object as an index part.
+    pub fn obj<T: std::any::Any>(x: T) -> Ix {
+        Ix::Obj(std::rc::Rc::new(x))
+    }
+}
+
+impl std::fmt::Debug for Ix {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Ix::Int(i) => write!(f, "{}", i),
+            Ix::Slice(a, b, c) => write!(f, "{:?}:{:?}:{:?}", a, b, c),
+            Ix::NewAxis => write!(f, "None"),
+            Ix::Ellipsis => write!(f, "..."),
+            Ix::Ints(v) => write!(f, "{:?}", v),
+            Ix::Bools(v) => write!(f, "{:?}", v),
+            Ix::Obj(_) => write!(f, "<object>"),
+        }
+    }
+}
+
+/// A numpy-style index: its parts (`a[1:3, 0]` is two parts).
+#[derive(Clone, Debug)]
+pub struct Index(pub Vec<Ix>);

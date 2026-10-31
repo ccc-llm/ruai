@@ -93,6 +93,7 @@ pub fn lower_modules(src: &str, stub_dirs: &[std::path::PathBuf], modules: &[Str
         instances: HashMap::new(),
         pending: vec![],
         type_env: HashMap::new(),
+        overloads: HashMap::new(),
         local_funcs: vec![],
         tvars: Vec::new(),
         next_id: 0,
@@ -145,6 +146,8 @@ struct Front {
     pending: Vec<generic::Pending>,
     /// type variables (and union parameters, `U:<source>`) of the instance being lowered
     type_env: HashMap<String, Ty>,
+    /// a stub function with union parameters: its first instance -> all of them
+    overloads: HashMap<FuncId, Vec<FuncId>>,
     /// nested functions defined in the functions being lowered: (name, the `funcs` entry it hides)
     local_funcs: Vec<Vec<(String, Option<FuncId>)>>,
     tvars: Vec<Option<Ty>>,
@@ -698,6 +701,7 @@ impl Front {
             .map_err(|e| Error::new(line, format!("{}: {}", path.display(), e.error)))?
             .into_syntax();
         let saved_lines = std::mem::replace(&mut self.lines, LineIndex::from_source_text(&text));
+        let saved_src = std::mem::replace(&mut self.src, text.clone());
         self.in_stub = Some(prefix.clone());
         let which = match alias {
             Some(a) => StubNames::Qualified(a),
@@ -706,6 +710,7 @@ impl Front {
         let r = self.stub_items_as(&prefix, module, &parsed.body, which);
         self.in_stub = None;
         self.lines = saved_lines;
+        self.src = saved_src;
         r.map_err(|e| Error::new(line, format!("in {}: line {}: {}", path.display(), e.line, e.msg)))
     }
 
@@ -730,11 +735,71 @@ impl Front {
             .into_syntax();
         // line numbers in errors refer to the stub
         let saved_lines = std::mem::replace(&mut self.lines, LineIndex::from_source_text(&text));
+        let saved_src = std::mem::replace(&mut self.src, text.clone());
         self.in_stub = Some(krate.to_string());
         let r = self.stub_items(krate, &module.body, names);
         self.in_stub = None;
         self.lines = saved_lines;
+        self.src = saved_src;
         r.map_err(|e| Error::new(line, format!("in {}: line {}: {}", path.display(), e.line, e.msg)))
+    }
+
+    /// The signature of a stub function. A parameter typed `A | B` makes one
+    /// overload per member (the Rust function is generic over them); calls pick
+    /// the first overload their arguments fit (`pick_overload`).
+    fn stub_signature(&mut self, f: &ast::StmtFunctionDef, class: Option<ClassId>) -> Res<FuncId> {
+        // the union parameters: (position, members)
+        let mut unions: Vec<(usize, Vec<AExpr>)> = vec![];
+        for (i, p) in f.parameters.iter_non_variadic_params().enumerate() {
+            if let Some(a) = &p.parameter.annotation {
+                if generic::is_union_ann(a) {
+                    unions.push((i, generic::union_members(a).into_iter().cloned().collect()));
+                }
+            }
+        }
+        if unions.is_empty() {
+            return self.signature(f, class);
+        }
+        let mut combos: Vec<Vec<usize>> = vec![vec![]];
+        for (_, ms) in &unions {
+            combos = combos.into_iter().flat_map(|c| (0..ms.len()).map(move |i| [c.clone(), vec![i]].concat())).collect();
+        }
+        let mut fids = vec![];
+        for combo in combos {
+            // a copy of the declaration with one member per union parameter
+            let mut g = f.clone();
+            for ((pos, ms), &k) in unions.iter().zip(&combo) {
+                let ps = &mut *g.parameters;
+                let p = ps.posonlyargs.iter_mut().chain(ps.args.iter_mut()).chain(ps.kwonlyargs.iter_mut()).nth(*pos).unwrap();
+                p.parameter.annotation = Some(Box::new(ms[k].clone()));
+            }
+            let g: &'static ast::StmtFunctionDef = Box::leak(Box::new(g));
+            fids.push(self.signature(g, class)?);
+        }
+        self.overloads.insert(fids[0], fids.clone());
+        Ok(fids[0])
+    }
+
+    /// `more` (and its own overloads) become overloads of `first`.
+    fn add_overloads(&mut self, first: FuncId, more: FuncId) {
+        let extra = self.overloads.remove(&more).unwrap_or_else(|| vec![more]);
+        self.overloads.entry(first).or_insert_with(|| vec![first]).extend(extra);
+    }
+
+    /// The overload of `fid` that the arguments of a call fit (`fid` itself
+    /// when it has none).
+    fn pick_overload(&mut self, fid: FuncId, args: &ast::Arguments, method: bool, line: u32) -> Res<FuncId> {
+        let Some(cands) = self.overloads.get(&fid).cloned() else { return Ok(fid) };
+        let mut first_err = None;
+        for c in cands {
+            match self.call_args(c, args, method, line) {
+                Ok(_) => return Ok(c),
+                Err(e) => {
+                    first_err.get_or_insert(e);
+                }
+            }
+        }
+        Err(first_err.unwrap())
     }
 
     fn stub_items(&mut self, krate: &str, body: &[AStmt], names: &[String]) -> Res<()> {
@@ -784,17 +849,42 @@ impl Front {
                 }
                 AStmt::FunctionDef(_) | AStmt::ImportFrom(_) | AStmt::Import(_) | AStmt::Pass(_) => {}
                 _ if is_docstring(s) => {}
-                _ => return err(self.line(s), "stubs contain classes and functions"),
+                // a constant: `pi = 3.141592653589793`
+                AStmt::Assign(a) if matches!(&a.targets[..], [AExpr::Name(_)]) && is_const_expr(&a.value, &HashMap::new()) => {
+                    let AExpr::Name(n) = &a.targets[0] else { unreachable!() };
+                    let name = n.id.to_string();
+                    let visible = match &which {
+                        StubNames::Qualified(q) => Some(format!("{}.{}", q, name)),
+                        StubNames::Only(ns) if ns.contains(&name) => Some(name.clone()),
+                        StubNames::Only(_) => None,
+                    };
+                    if let Some(v) = visible {
+                        let e = self.expr(&a.value, None)?;
+                        if !matches!(self.norm(&e.ty), Ty::Int | Ty::Float | Ty::Bool | Ty::Str) {
+                            return err(self.line(s), "stub constants must be int, float, bool or str");
+                        }
+                        let rust = v.replace('.', "_").to_uppercase();
+                        self.consts.insert(v, self.p.consts.len());
+                        self.p.consts.push(Const { name: rust, value: e });
+                    }
+                }
+                _ => return err(self.line(s), "stubs contain classes, functions and constants"),
             }
         }
+        let mut defined: HashMap<String, FuncId> = HashMap::new();
         for s in body {
             match s {
                 AStmt::ClassDef(d) => {
                     let cid = self.p.classes.iter().rposition(|c| c.name == d.name.id.as_str()).unwrap();
                     for m in &d.body {
                         let AStmt::FunctionDef(f) = m else { continue };
-                        let fid = self.signature(f, Some(cid))?;
+                        let fid = self.stub_signature(f, Some(cid))?;
                         let name = f.name.id.to_string();
+                        // a second `def` of a name: more overloads of the first
+                        if let Some(first) = self.p.classes[cid].method(&name) {
+                            self.add_overloads(first, fid);
+                            continue;
+                        }
                         if name == "__init__" {
                             self.p.funcs[fid].is_init = true;
                             self.p.classes[cid].init = Some(fid);
@@ -803,8 +893,13 @@ impl Front {
                     }
                 }
                 AStmt::FunctionDef(f) => {
-                    let fid = self.signature(f, None)?;
+                    let fid = self.stub_signature(f, None)?;
                     let name = f.name.id.to_string();
+                    if let Some(&first) = defined.get(&name) {
+                        self.add_overloads(first, fid);
+                        continue;
+                    }
+                    defined.insert(name.clone(), fid);
                     match &which {
                         StubNames::Qualified(a) => {
                             self.funcs.insert(format!("{}.{}", a, name), fid);
@@ -819,7 +914,7 @@ impl Front {
             }
         }
         for n in names {
-            if !self.classes.contains_key(n) && !self.funcs.contains_key(n) {
+            if !self.classes.contains_key(n) && !self.funcs.contains_key(n) && !self.consts.contains_key(n) {
                 return err(0, format!("`{}` is not declared in the stub of `{}`", n, label));
             }
         }
@@ -1810,6 +1905,20 @@ impl Front {
                 let ty = self.ann(&a.annotation)?;
                 return self.assign(&a.target, Some(ty), a.value.as_deref(), line, out);
             }
+            // `obj[k] op= v` on an object with __setitem__: `obj[k] = obj[k] op v`
+            AStmt::AugAssign(a) if matches!(&*a.target, AExpr::Subscript(sub) if {
+                let probe = self.expr(&sub.value, None);
+                probe.is_ok_and(|b| self.find_method(&b.ty, "__setitem__").is_some())
+            }) => {
+                let value = AExpr::BinOp(ast::ExprBinOp {
+                    node_index: Default::default(),
+                    range: a.range,
+                    left: a.target.clone(),
+                    op: a.op,
+                    right: a.value.clone(),
+                });
+                return self.assign(&a.target, None, Some(&value), line, out);
+            }
             AStmt::AugAssign(a) => self.aug_assign(a, line)?,
             AStmt::Raise(r) => {
                 if r.cause.is_some() {
@@ -2174,7 +2283,10 @@ impl Front {
             let base = self.expr(&s.value, None)?;
             if let Some(f) = self.find_method(&base.ty, "__setitem__") {
                 let pts: Vec<Ty> = self.p.funcs[f].params.iter().map(|p| self.p.funcs[f].vars[p.var].ty.clone()).collect();
-                let k = self.expr(&s.slice, pts.first())?;
+                let k = match self.index_arg(pts.first(), &s.slice, line)? {
+                    Some(k) => k,
+                    None => self.expr(&s.slice, pts.first())?,
+                };
                 let v = self.expr(value, pts.get(1))?;
                 let e = self.call_dunder(base, f, vec![k, v], line)?;
                 out.push(self.stmt_(line, StmtKind::Expr(e)));
@@ -2491,6 +2603,18 @@ impl Front {
             }
             AExpr::FString(f) => self.fstring(f, line)?,
             AExpr::Name(n) => self.name(n.id.as_str(), line)?,
+            AExpr::BinOp(b) if b.op == ast::Operator::MatMult => {
+                // `a @ b`: only objects with __matmul__ / __rmatmul__ (numpy arrays)
+                let l = self.expr(&b.left, None)?;
+                let r = self.expr(&b.right, None)?;
+                if let Some(f) = self.find_method(&l.ty, "__matmul__") {
+                    return self.call_dunder(l, f, vec![r], line);
+                }
+                if let Some(f) = self.find_method(&r.ty, "__rmatmul__") {
+                    return self.call_dunder(r, f, vec![l], line);
+                }
+                return err(line, format!("unsupported operand types for @: {} and {}", self.tn(&l.ty), self.tn(&r.ty)));
+            }
             AExpr::BinOp(b) => {
                 let op = binop(b.op).ok_or_else(|| Error::new(line, "unsupported operator `@`"))?;
                 let l = self.expr(&b.left, None)?;
@@ -3043,11 +3167,69 @@ impl Front {
         }
     }
 
+    /// `obj[i, 1:3, mask, None, ...]` for a `__getitem__` / `__setitem__` taking a
+    /// `pyrt::Index` (numpy-style indexing): the parts, tagged, in a Builtin
+    /// `index` (`i` int, `s` slice with three `int | None`, `n` None (newaxis),
+    /// `e` Ellipsis, `l` list[int], `m` list[bool], `o` another object).
+    fn index_arg(&mut self, pt: Option<&Ty>, slice: &AExpr, line: u32) -> Res<Option<Expr>> {
+        let Some(t) = pt else { return Ok(None) };
+        let is_index = match self.norm(t) {
+            Ty::Class(c) | Ty::Obj(c) => self.p.classes[c].ext.as_deref() == Some("ruai::pyrt::Index"),
+            _ => false,
+        };
+        if !is_index {
+            return Ok(None);
+        }
+        let parts: Vec<&AExpr> = match slice {
+            AExpr::Tuple(t) => t.elts.iter().collect(),
+            x => vec![x],
+        };
+        let tag = |s: &mut Self, t: &str| s.mk(line, Ty::Str, ExprKind::Str(t.into()));
+        let mut v = vec![];
+        for p in parts {
+            match p {
+                AExpr::Slice(sl) => {
+                    v.push(tag(self, "s"));
+                    for b in [&sl.lower, &sl.upper, &sl.step] {
+                        let x = match b {
+                            Some(b) => {
+                                let x = self.expr(b, Some(&Ty::Int))?;
+                                let x = self.coerce(x, &Ty::Int, "slice index")?;
+                                self.coerce(x, &Ty::opt(Ty::Int), "slice index")?
+                            }
+                            None => self.mk(line, Ty::opt(Ty::Int), ExprKind::NoneVal),
+                        };
+                        v.push(x);
+                    }
+                }
+                AExpr::NoneLiteral(_) => v.push(tag(self, "n")),
+                AExpr::EllipsisLiteral(_) => v.push(tag(self, "e")),
+                p => {
+                    let x = self.expr(p, None)?;
+                    self.settle(&x.ty);
+                    let k = match self.norm(&x.ty) {
+                        Ty::Int => "i",
+                        Ty::List(e) if *e == Ty::Int => "l",
+                        Ty::List(e) if *e == Ty::Bool => "m",
+                        Ty::Class(_) | Ty::Obj(_) => "o",
+                        t => return err(line, format!("an index cannot be {}", self.tn(&t))),
+                    };
+                    v.push(tag(self, k));
+                    v.push(x);
+                }
+            }
+        }
+        Ok(Some(self.mk(line, t.clone(), ExprKind::Builtin("index", v))))
+    }
+
     fn subscript(&mut self, s: &ast::ExprSubscript, line: u32) -> Res<Expr> {
         let base = self.expr(&s.value, None)?;
         if let Some(f) = self.find_method(&base.ty, "__getitem__") {
             let pt = self.p.funcs[f].params.first().map(|p| self.p.funcs[f].vars[p.var].ty.clone());
-            let k = self.expr(&s.slice, pt.as_ref())?;
+            let k = match self.index_arg(pt.as_ref(), &s.slice, line)? {
+                Some(k) => k,
+                None => self.expr(&s.slice, pt.as_ref())?,
+            };
             return self.call_dunder(base, f, vec![k], line);
         }
         let bt = self.norm(&base.ty);
@@ -3283,6 +3465,11 @@ impl Front {
             let l = self.mk(line, Ty::list(Ty::Str), ExprKind::Builtin("file.readlines", vec![x]));
             return Ok((Iter::Over(l), Ty::Str));
         }
+        // an object whose `__iter__` gives a list (a numpy array: its rows)
+        let x = match self.find_method(&x.ty, "__iter__") {
+            Some(f) if matches!(self.norm(&self.p.funcs[f].ret), Ty::List(_)) => self.call_dunder(x, f, vec![], line)?,
+            _ => x,
+        };
         let t = match self.norm(&x.ty) {
             Ty::List(t) | Ty::Set(t) | Ty::Deque(t) | Ty::Gen(t) => *t,
             Ty::Dict(k, _, _) => *k,
@@ -3571,6 +3758,7 @@ impl Front {
                     return err(line, format!("`{}` is not callable", name));
                 }
                 if let Some(&fid) = self.funcs.get(name) {
+                    let fid = self.pick_overload(fid, args, false, line)?;
                     let a = self.call_args(fid, args, false, line)?;
                     let t = self.p.funcs[fid].ret.clone();
                     return Ok(self.mk(line, t, ExprKind::Call(fid, a)));
@@ -3617,6 +3805,14 @@ impl Front {
                 let recv = self.mk(line, st, ExprKind::Var(sv));
                 Ok(self.mk(line, t, ExprKind::Method(Box::new(recv), fid, a)))
             }
+            // `np.linalg.inv(x)`: `np.linalg` is the stub class `linalg` of package `np`
+            AExpr::Attribute(a) if matches!(&*a.value, AExpr::Attribute(_)) && self.local_name(&a.value).is_some() => {
+                let mut c2 = c.clone();
+                let mut f2 = a.clone();
+                f2.value = Box::new(self.local_name(&a.value).unwrap());
+                c2.func = Box::new(AExpr::Attribute(f2));
+                self.call(&c2, want, line)
+            }
             AExpr::Attribute(a) if self.local_name(&c.func).is_some() => {
                 let mut c2 = c.clone();
                 c2.func = Box::new(self.local_name(&c.func).unwrap());
@@ -3636,6 +3832,7 @@ impl Front {
                             if !self.p.funcs[fid].is_static {
                                 return err(line, "call methods on an instance");
                             }
+                            let fid = self.pick_overload(fid, args, false, line)?;
                             let a = self.call_args(fid, args, false, line)?;
                             let t = self.p.funcs[fid].ret.clone();
                             return Ok(self.mk(line, t, ExprKind::Call(fid, a)));
@@ -4021,6 +4218,10 @@ impl Front {
                 self.nargs(args, 1, 1, name, line)?;
                 let x = self.expr(&args.args[0], None)?;
                 self.settle(&x.ty);
+                let x = match self.unary_dunder(x, "__int__", line)? {
+                    Ok(e) => return Ok(e),
+                    Err(x) => x,
+                };
                 match self.norm(&x.ty) {
                     Ty::Int => Ok(x),
                     Ty::Float | Ty::Str | Ty::Bool => b(self, "int", Ty::Int, vec![x]),
@@ -4031,6 +4232,10 @@ impl Front {
                 self.nargs(args, 1, 1, name, line)?;
                 let x = self.expr(&args.args[0], None)?;
                 self.settle(&x.ty);
+                let x = match self.unary_dunder(x, "__float__", line)? {
+                    Ok(e) => return Ok(e),
+                    Err(x) => x,
+                };
                 match self.norm(&x.ty) {
                     Ty::Float => Ok(x),
                     Ty::Int => self.coerce(x, &Ty::Float, ""),
@@ -4271,6 +4476,7 @@ impl Front {
                 if self.p.funcs[fid].property {
                     return err(line, format!("`{}` is a property: read it without ()", m));
                 }
+                let fid = self.pick_overload(fid, args, true, line)?;
                 let a = self.call_args(fid, args, true, line)?;
                 let t = self.p.funcs[fid].ret.clone();
                 if self.p.funcs[fid].is_static {

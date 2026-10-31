@@ -329,8 +329,15 @@ fn test(args: &[String]) -> i32 {
     let mut fails = 0;
     let mut rejected = 0;
     let mut bins: Vec<(PathBuf, String)> = vec![];
+    // programs that import numpy need it in the reference Python
+    let has_numpy = Command::new(&py).args(["-c", "import numpy"]).output().is_ok_and(|o| o.status.success());
+    let mut skipped = 0;
     for f in files(args) {
         let src = std::fs::read_to_string(&f).unwrap();
+        if !has_numpy && src.lines().any(|l| l.trim() == "import numpy as np" || l.trim() == "import numpy") {
+            skipped += 1;
+            continue;
+        }
         let expect = src.lines().next().and_then(|l| l.strip_prefix("# error: ")).map(|s| s.trim().to_string());
         match (ruai::py::translate_file(&f).map_err(|e| e.2), expect) {
             (Ok(_), Some(want)) => {
@@ -417,12 +424,13 @@ fn test(args: &[String]) -> i32 {
         }
     }
     println!(
-        "{} of {} programs match {}; {} rejected as expected; {} failed",
+        "{} of {} programs match {}; {} rejected as expected; {} failed{}",
         pass,
         bins.len(),
         py,
         rejected,
-        fails
+        fails,
+        if skipped > 0 { format!("; {} skipped (no numpy in {})", skipped, py) } else { String::new() }
     );
     if fails > 0 {
         1

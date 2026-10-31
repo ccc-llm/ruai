@@ -217,6 +217,23 @@ ruai agent run brainstorm "如何設計快取層" -M merge=claude
 
 `ruai agent` 是 [agge](src/agent/README.md)（約 2,500 行的 Python）以 py0 改寫後翻成 Rust、編進 `ruai` 執行檔，不需要 Python 或 cargo。同一份原始碼（`src/agent/*.py`）也能直接以 CPython 執行；`tests/agent.rs` 用同一串指令（含一個假的 OpenAI / Anthropic 串流伺服器）比對兩者的輸出逐字相同，並檢查嵌入的翻譯 `src/cli/agent_gen.rs` 是最新的。與原版的差異：平行的 delegate、graph 節點與 map 項目改為依序執行；聊天介面沒有 readline 歷史與補完。
 
+### py0 的 numpy
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+x = rng.random((50, 3))
+y = x @ np.array([2.0, -1.0, 0.5]) + 0.3
+w = np.zeros(3)
+for _ in range(2000):
+    err = x @ w - y
+    w = w - 0.5 * (x.T @ err) / x.shape[0]
+print(np.round(w, 3), x[x[:, 0] > 0.9].shape, round(float(np.abs(x @ w - y).mean()), 6))
+```
+
+`import numpy as np` 在 py0 中是以 Rust 實作的 NumPy 子集（`src/pyrt/lib/numpy/`）：float64 / int64 / bool 陣列、NumPy 2 的型別提升與廣播、切片是共用記憶體的 view、布林遮罩與索引陣列、沿軸的歸約（`sum` 採用 NumPy 的 pairwise 加總順序）、`linalg`、與 NumPy 逐位元相同的 `random.default_rng`；`print` / `repr` 與 NumPy 的 `arrayprint` 逐字相同。同一支程式用 CPython 執行時就是真的 NumPy，`tests/py0/numpy/` 逐支比對。因為 py0 是靜態型別：`a[i]` 與歸約的結果是 0 維陣列（NumPy scalar），需要 Python float 時寫 `float(a.sum())`；`a.shape` 可索引但不能拆包；dtype 用字串（`dtype="int64"`）。浮點矩陣乘法依序加總，可能與 NumPy 的 BLAS 在最後一位不同。
+
 ### 強化學習環境（world）
 
 ```rust
@@ -474,7 +491,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - `tests/second_order.rs`：逐元素、各種 matmul、softmax / log_softmax / cross-entropy、layer / RMS norm、embedding + gather、conv2d、融合 attention、gradient checkpointing 的 Hessian-向量積與有限差分一致；`backward_create_graph` 與 `autograd::grad` 的語意；gradient penalty 傳到參數的梯度與數值微分一致
 - `tests/world.rs`：6 個環境 × 4 個 seed × 400 步（含 autoreset）與 gymnasium 逐步、逐位元比對，向量環境、FrozenLake 文字算繪、NumPy 亂數（含 2⁶³ 以上的 seed、各種 `integers` 範圍）
 - `tests/agent.rs`：`ruai agent` 的嵌入翻譯是最新的；離線（echo 模型）約 50 個指令與互動對話、以及對假 LLM 伺服器（`tests/agent/fake_llm.py`：OpenAI / Anthropic、串流與否、原生 tool call、HTTP 500 重試）的輸出都與 CPython 執行同一份 py0 原始碼逐字相同
-- `tests/py0.rs` + `tests/py0/`：py2rs 的語料——244 支程式逐一翻譯、編譯、執行，輸出、exit code 與例外類型都要與 CPython 3.12+ 相同；46 支應被拒絕的程式要以預期訊息拒絕；`tests/py0/pyo3/run.sh` 檢查 PyO3 擴充模組
+- `tests/py0.rs` + `tests/py0/`：py2rs 的語料——252 支程式（含 `tests/py0/numpy/` 對照真的 NumPy）逐一翻譯、編譯、執行，輸出、exit code 與例外類型都要與 CPython 3.12+ 相同；46 支應被拒絕的程式要以預期訊息拒絕；`tests/py0/pyo3/run.sh` 檢查 PyO3 擴充模組
 - `tests/training.rs`：MLP 學會 XOR、CNN（含 BatchNorm）收斂、GPT 記住序列、存檔/載入 round-trip
 
 ## 版本規劃
@@ -502,7 +519,8 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v3.2 | `py`：以 git subtree 併入 py2rs（翻譯器 `ruai::py`、執行期 `ruai::pyrt`），`ruai py run / emit / check / explain / build / pyo3 / stub / test / fuzz` | ✅ |
 | v3.3 | py0 套件機制（`import M [as A]` / `from M import x` → `src/py/lib/M.pyi` + `ruai::pyrt::lib::M`）、以 Rust 重寫的 Python 標準函式庫（第一批：`shlex`、`fnmatch`、`html`） | ✅ |
 | v3.4 | `ruai agent`：以 py0 改寫 agge 並嵌入 `ruai`；py0 新增 `os` / `sys` / `time` 擴充、`subprocess`、`ruai.json`、`ruai.http`、`Result[T, OSError]` | ✅ |
-| v3.5–3.7 | py0 的 numpy、ml（sklearn 子集）、gymnasium 與 nn 套件 | |
+| v3.5 | py0 的 `numpy` 子集（ndarray、廣播、索引與 view、歸約、`linalg`、`random`，輸出與 NumPy 逐字相同）；stub 的 union 參數與 overload | ✅ |
+| v3.6–3.7 | py0 的 ml（sklearn 子集）、gymnasium 與 nn 套件 | |
 | v4.0 | 穩定版、英文文件 | |
 
 ## 目前限制

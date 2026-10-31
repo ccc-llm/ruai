@@ -1,5 +1,30 @@
 # Changelog
 
+## 3.5.0
+
+- py0 package `numpy` (`import numpy as np`, runtime feature `pyrt-numpy`): `ndarray` of
+  float64 / int64 / bool with NumPy 2 semantics: creation (`array`, `zeros`, `ones`, `full`,
+  `arange`, `linspace`, `eye`, `*_like`), broadcasting arithmetic with NEP 50 promotion,
+  comparisons and bit operators, element functions (`sqrt`, `exp`, `log`, trigonometry,
+  `floor`, `round`, `maximum`, `clip`, `where`, ...), reductions over axes (`sum` with NumPy's
+  pairwise summation, `mean`, `std`, `var`, `max`, `argmax`, `cumsum`, `all`, ...), sorting,
+  `unique`, `concatenate` / `stack`, `reshape` / `T` / `ravel`, indexing with ints, slices
+  (views sharing memory), `None`, `...`, boolean masks and index arrays, assignment through
+  all of them, iteration over rows, `@` / `dot` / `outer`, `np.linalg` (`inv`, `solve`,
+  `det`, `norm`) and `np.random.default_rng` (PCG64, bit-identical `random`, `uniform`,
+  `integers`, `shuffle`, `permutation`). `str` / `repr` print exactly like NumPy's
+  `arrayprint`, and errors carry NumPy's messages. `tests/py0/numpy/` checks 8 programs
+  against real NumPy (skipped when the reference Python has none).
+- py0 stubs: a parameter typed `A | B` expands into overloads (the Rust function is generic
+  over the members), and several `def`s of one name are explicit overloads; calls pick the
+  first that fits. Stubs can declare constants (`pi = 3.14...`). `@rust("{0}.f()")`
+  templates parenthesize their arguments.
+- py0: `a @ b` (`__matmul__`), `float(x)` / `int(x)` of objects (`__float__`, `__int__`),
+  `~x` (`__invert__`), `for x in obj` through an `__iter__` returning a list,
+  `obj[k] op= v` on objects, nested package attributes (`np.linalg.inv`), and
+  numpy-style subscripts (`a[1:3, ::2]`, `a[mask]`, `a[None, ...]`) for a `__getitem__`
+  taking `pyrt::Index`. Fixed: `X | list[int]` unions split `list[int]` into `int`.
+
 ## 3.4.0
 
 - `ruai agent` (feature `agent`, on by default): agge, the git-style CLI for teams of LLM

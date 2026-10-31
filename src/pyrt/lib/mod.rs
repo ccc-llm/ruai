@@ -6,6 +6,8 @@
 pub mod fnmatch;
 pub mod html;
 mod html_tables;
+#[cfg(feature = "pyrt-numpy")]
+pub mod numpy;
 pub mod os;
 #[cfg(feature = "pyrt-http")]
 pub mod ruai_http;

@@ -491,7 +491,8 @@ pub fn generate(p: &Program, o: &Own, x: &Exc) -> Res<String> {
     uses_ext.sort();
     uses_ext.dedup();
     for u in &uses_ext {
-        crate_head += &format!("use {};\n", u);
+        // a package's classes, used or not
+        crate_head += &format!("#[allow(unused_imports)]\nuse {};\n", u);
     }
     if !crate_head.is_empty() {
         head = format!("{}{}", crate_head, if head.is_empty() { "\n".to_string() } else { head });
@@ -3700,7 +3701,10 @@ impl<'a> FGen<'a> {
                 c = c.replace("{self}", r);
             }
             for (i, a) in av.iter().enumerate() {
-                c = c.replace(&format!("{{{}}}", i), a);
+                // `{0}.f()` of `&x` is `(&x).f()`
+                let atom = a.chars().all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '.' || ch == ':');
+                let a = if atom || (a.starts_with('(') && a.ends_with(')')) { a.clone() } else { format!("({})", a) };
+                c = c.replace(&format!("{{{}}}", i), &a);
             }
             c
         } else if let Some(r) = &rv {
@@ -4509,6 +4513,35 @@ impl<'a> FGen<'a> {
                 let x = self.val(&a[0])?;
                 let n = self.val(&a[1])?;
                 v(format!("pyrt::round2({}, {})", x.code, n.code))
+            }
+            // numpy-style index (front::index_arg): tagged parts
+            "index" => {
+                let mut parts = vec![];
+                let mut i = 0;
+                while i < a.len() {
+                    let ExprKind::Str(t) = &a[i].kind else { unreachable!() };
+                    i += 1;
+                    parts.push(match t.as_str() {
+                        "s" => {
+                            let (lo, hi, st) = (self.owned(&a[i])?, self.owned(&a[i + 1])?, self.owned(&a[i + 2])?);
+                            i += 3;
+                            format!("pyrt::Ix::Slice({}, {}, {})", lo, hi, st)
+                        }
+                        "n" => "pyrt::Ix::NewAxis".to_string(),
+                        "e" => "pyrt::Ix::Ellipsis".to_string(),
+                        k => {
+                            let x = self.owned(&a[i])?;
+                            i += 1;
+                            match k {
+                                "i" => format!("pyrt::Ix::Int({})", x),
+                                "l" => format!("pyrt::Ix::Ints({})", x),
+                                "m" => format!("pyrt::Ix::Bools({})", x),
+                                _ => format!("pyrt::Ix::obj({})", x),
+                            }
+                        }
+                    });
+                }
+                v(format!("pyrt::Index(vec![{}])", parts.join(", ")))
             }
             "divmod" => {
                 let x = self.val(&a[0])?;

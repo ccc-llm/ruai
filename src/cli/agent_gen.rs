@@ -6,9 +6,13 @@ use ruai::pyrt;
 // py2rs-crate: pyrt/re
 // py2rs-crate: pyrt/http
 // py2rs-crate: regex = "1"
+#[allow(unused_imports)]
 use regex::Regex;
+#[allow(unused_imports)]
 use ruai::pyrt::lib::ruai_http::Response;
+#[allow(unused_imports)]
 use ruai::pyrt::lib::ruai_json::Json;
+#[allow(unused_imports)]
 use ruai::pyrt::lib::subprocess::CompletedProcess;
 use pyrt::{IndexMap, print, OrRaise, PyErr};
 

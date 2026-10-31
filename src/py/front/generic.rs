@@ -26,6 +26,10 @@ pub(super) fn is_union_ann(e: &AExpr) -> bool {
 }
 
 /// Members of a union annotation.
+pub(super) fn union_members(e: &AExpr) -> Vec<&AExpr> {
+    members(e)
+}
+
 fn members(e: &AExpr) -> Vec<&AExpr> {
     match e {
         AExpr::BinOp(b) if b.op == ast::Operator::BitOr => {
@@ -33,7 +37,7 @@ fn members(e: &AExpr) -> Vec<&AExpr> {
             v.extend(members(&b.right));
             v
         }
-        AExpr::Subscript(s) => match &*s.slice {
+        AExpr::Subscript(s) if matches!(&*s.value, AExpr::Name(n) if n.id.as_str() == "Union") => match &*s.slice {
             AExpr::Tuple(t) => t.elts.iter().collect(),
             x => vec![x],
         },
