@@ -4,6 +4,8 @@
 
 [English](README.md) | 繁體中文
 
+**線上使用** (免安裝): [展示網站](https://ccc-llm.github.io/ruai/site/dist/index.html) 
+
 用 Rust 寫的 AI 瑞士刀：一個 crate、一個 `ruai` 指令，各部分是 cargo feature，像 git 一樣用子指令呼叫。
 
 | 部分 | 指令 | 內容 | 狀態 |

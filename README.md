@@ -4,6 +4,8 @@
 
 English | [繁體中文](README.tw.md)
 
+**Try it online** (no install): [Demo](https://ccc-llm.github.io/ruai/site/dist/index.html) 
+
 A Swiss-army AI toolkit in Rust: one crate and one `ruai` command. Each part is a cargo feature, called like a git subcommand.
 
 | Part | Command | What it is |
