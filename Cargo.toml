@@ -1,6 +1,6 @@
 [package]
 name = "ruai"
-version = "4.3.0"
+version = "4.4.0"
 edition = "2021"
 description = "A Swiss-army AI toolkit in Rust: a PyTorch-like engine (autograd, GPU, GPT-2/Llama), Gymnasium environments, py0 (typed Python compiled to Rust, with numpy / sklearn / torch subsets) and LLM agent teams, in one git-style `ruai` command"
 license = "MIT"
@@ -41,6 +41,9 @@ ruff_source_file = { version = "0.0.20", optional = true }
 
 # CUDA: loaded at runtime (dynamic-loading), so it builds without the CUDA toolkit
 cudarc = { version = "0.19", optional = true, default-features = false, features = ["std", "driver", "nvrtc", "cublas", "f16", "dynamic-loading", "cuda-12080"] }
+# --- webgpu: the nn backend on WebGPU (wgpu: Metal / Vulkan / DX12 natively, WebGPU in browsers)
+wgpu = { version = "30", optional = true, default-features = false, features = ["wgsl", "metal", "vulkan", "dx12", "webgpu"] }
+pollster = { version = "0.4", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 # pyrt: time.strftime (the local time zone)
@@ -83,6 +86,8 @@ world = []
 plot = []
 # GPU backends for nn: Apple Metal (mps) and NVIDIA (cuda)
 cuda = ["nn", "dep:cudarc"]
+# the nn backend on WebGPU (wgpu: Metal / Vulkan / DX12, or the browser)
+webgpu = ["nn", "dep:wgpu", "dep:pollster"]
 mps = ["nn", "dep:objc2", "dep:objc2-foundation", "dep:objc2-metal", "dep:objc2-metal-performance-shaders"]
 # Use Apple Accelerate (AMX) for CPU matmul on macOS
 accelerate = ["nn"]

@@ -35,7 +35,7 @@ In the library the engine is `ruai::nn`, also re-exported at the crate root (`ru
 ```toml
 [dependencies]
 ruai = "4"     # or from git: ruai = { git = "https://github.com/ccc-llm/ruai" }
-# GPU: features = ["mps"] (Apple) or ["cuda"] (NVIDIA); macOS CPU acceleration: ["accelerate"]
+# GPU: features = ["mps"] (Apple), ["cuda"] (NVIDIA) or ["webgpu"] (any GPU, and browsers); macOS CPU acceleration: ["accelerate"]
 ```
 
 > The crate is named [`ruai`](https://crates.io/crates/ruai) (`rust-nn` and `rustnn` were taken on crates.io); code imports it as `use ruai::...`. Changes per version are in [CHANGELOG.md](CHANGELOG.md).
@@ -62,6 +62,9 @@ cargo run --release --features mps --example bench mps
 
 # NVIDIA GPU (CUDA): add --features cuda
 cargo run --release --features cuda --example gpt -- --device cuda
+
+# any GPU through WebGPU (wgpu: Metal / Vulkan / DX12, or the browser): add --features webgpu
+cargo run --release --features webgpu --example gpt -- --device webgpu
 
 # pretrained GPT-2 (Hugging Face weights): download once, then generate text
 ./scripts/download_gpt2.sh
@@ -496,6 +499,15 @@ Autograd, all layers and the optimizers work only through `Tensor` operations an
 - **Asynchronous**: one stream per GPU, stream-ordered memory (`cuMemAllocAsync`), synchronizing only to read data back; several GPUs as `Device::Cuda(i)`
 - **Requires**: an NVIDIA driver and CUDA 12.x's NVRTC and cuBLAS libraries (`libnvrtc` / `libcublas` on the library path; the full toolkit is not needed)
 
+### WebGPU (any GPU, and browsers)
+
+- **Portable**: `--features webgpu` runs on wgpu, so the same backend uses Metal (macOS), Vulkan (Linux, Android) or DX12 (Windows) natively, and the browser's WebGPU on wasm32; `Device::WebGpu`, `--device webgpu`
+- **Kernels**: WGSL (`webgpu_kernels.wgsl`, one module per kernel, compiled on first use); the GEMM is generated with its register tile unrolled (128×128 tiles, 8×8 per thread; 64×64 tiles for small matrices, a split-k kernel for matrix × vector), transposes and batch strides read in place
+- **Storage**: 32-bit words; F16 / BF16 are kept as f32 values rounded to the half type after every op (round to nearest even, as the CPU backend), int8 / int4 weights as packed bytes; float atomics (index_add, scatter_add) are compare-and-swap loops
+- **Asynchronous**: dispatches share one compute pass and are submitted every 64 ops or when data is read back; parameters go through a ring buffer, outputs come from a buffer pool (about 11 µs per small op)
+- **Browsers**: a page cannot block, so the backend is created with `ruai::backend::webgpu::init().await` and data read with `tensor.to_vec_async().await`; operations that read GPU data synchronously (`to_vec`, `item`) panic there. The crate builds for `wasm32-unknown-unknown` with `--features webgpu`
+- `tests/devices.rs` checks every primitive against the CPU, and the test suite trains, fine-tunes and decodes on it (`RUSTNN_DEVICE=webgpu`)
+
 Verify everything on an NVIDIA machine with one command (cross-device comparisons, the full test suite on the GPU, examples, benchmarks):
 
 ```bash
@@ -506,15 +518,15 @@ Verify everything on an NVIDIA machine with one command (cross-device comparison
 
 ## Performance (Apple M3, 8-core CPU / 8-core GPU, `cargo run --release --example bench <device>`)
 
-| Benchmark | v0.1 CPU | v0.3 CPU | CPU + `accelerate` | MPS (GPU) |
-|---|---|---|---|---|
-| matmul 1024×1024 | 127 GFLOP/s | 283–380 GFLOP/s | 983 GFLOP/s | 1178 GFLOP/s (about 2000 sustained) |
-| softmax (1M elements) | 1.52 ms | 0.43 ms | 0.43 ms | 0.11 ms |
-| layer_norm (1M elements) | 1.07 ms | 0.41 ms | 0.44 ms | 0.095 ms |
-| conv2d fwd+bwd | 13.3 ms | 6.2 ms | 6.3 ms | 4.4 ms |
-| CNN training step (small model) | 10.1 ms | 5.9 ms | 5.1 ms | 5.5 ms |
-| GPT training step (d=64, L=2) | 29.1 ms | 9.2 ms | 6.2 ms | 3.4 ms |
-| GPT training step (d=256, L=4) | 296 ms | 105 ms | 58 ms | 29 ms |
+| Benchmark | v0.1 CPU | v0.3 CPU | CPU + `accelerate` | MPS (GPU) | WebGPU (GPU) |
+|---|---|---|---|---|---|
+| matmul 1024×1024 | 127 GFLOP/s | 283–380 GFLOP/s | 983 GFLOP/s | 1178 GFLOP/s (about 2000 sustained) | 760 GFLOP/s |
+| softmax (1M elements) | 1.52 ms | 0.43 ms | 0.43 ms | 0.11 ms | 0.19 ms |
+| layer_norm (1M elements) | 1.07 ms | 0.41 ms | 0.44 ms | 0.095 ms | 0.18 ms |
+| conv2d fwd+bwd | 13.3 ms | 6.2 ms | 6.3 ms | 4.4 ms | 7.4 ms |
+| CNN training step (small model) | 10.1 ms | 5.9 ms | 5.1 ms | 5.5 ms | 9.4 ms |
+| GPT training step (d=64, L=2) | 29.1 ms | 9.2 ms | 6.2 ms | 3.4 ms | 12.0 ms |
+| GPT training step (d=256, L=4) | 296 ms | 105 ms | 58 ms | 29 ms | 69 ms |
 
 Mixed precision (the last items of `bench`, Apple M3):
 
@@ -532,6 +544,7 @@ Quantized decoding-style matrix-vector products (`[1, 2048] @ [2048, 2048]`, the
 |---|---|---|---|
 | CPU | 0.86 ms | 0.30 ms | 0.29 ms |
 | MPS | 0.22–0.33 ms | 0.08 ms | 0.17 ms |
+| WebGPU | 0.26 ms | 0.16 ms | 0.15 ms |
 
 Decoding is bound by memory bandwidth, so smaller weights are faster (MPS's fused kernel splits k over 8 simdgroups and reduces).
 

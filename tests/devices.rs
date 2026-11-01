@@ -7,7 +7,7 @@ use ruai::backend::{backend_for, AdamParams, AttentionSpec, Backend, BinaryOp, C
 use ruai::{rand, DType, Device};
 
 fn gpu_devices() -> Vec<Device> {
-    [Device::Mps, Device::Cuda(0)].into_iter().filter(|d| d.is_available()).collect()
+    [Device::Mps, Device::Cuda(0), Device::WebGpu].into_iter().filter(|d| d.is_available()).collect()
 }
 
 struct Pair {
@@ -174,7 +174,9 @@ fn reductions() {
 fn matmul() {
     rand::manual_seed(3);
     for_each_gpu(|p, _| {
-        for &(batch, m, k, n) in &[(1, 1, 1, 1), (1, 17, 33, 9), (4, 64, 32, 48), (3, 5, 129, 7)] {
+        // shapes for every GPU kernel: matrix x vector (few rows), small tiles,
+        // large tiles with ragged edges
+        for &(batch, m, k, n) in &[(1, 1, 1, 1), (1, 17, 33, 9), (4, 64, 32, 48), (3, 5, 129, 7), (1, 4, 300, 70), (2, 260, 40, 300), (1, 256, 17, 256)] {
             for (ta, tb) in [(false, false), (true, false), (false, true), (true, true)] {
                 for (sa, sb) in [(m * k, k * n), (0, k * n), (m * k, 0)] {
                     let ablocks = if sa == 0 { 1 } else { batch };
@@ -552,3 +554,31 @@ fn strided_copy_all_dtypes() {
         }
     });
 }
+
+/// WebGPU's non-blocking API (what a browser uses): `init().await`, then
+/// `to_vec_async().await` gives the same values as `to_vec`.
+#[cfg(feature = "webgpu")]
+#[test]
+fn webgpu_async_readback() {
+    use std::future::Future;
+    fn block_on<F: Future>(f: F) -> F::Output {
+        let mut f = std::pin::pin!(f);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        loop {
+            if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
+                return v;
+            }
+            std::thread::yield_now();
+        }
+    }
+    if !block_on(ruai::backend::webgpu::init()) {
+        eprintln!("no WebGPU adapter; skipping");
+        return;
+    }
+    let x = ruai::Tensor::randn(&[3, 5], Device::WebGpu);
+    let y = x.relu().matmul(&x.t());
+    assert_eq!(block_on(y.to_vec_async()), y.to_vec());
+    let h = y.to_dtype(DType::F16);
+    assert_eq!(block_on(h.to_vec_async()), h.to_vec());
+}
+

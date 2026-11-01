@@ -51,6 +51,9 @@ jobs:
       - run: cargo check --no-default-features --features py
       - run: cargo check --no-default-features --features agent
       - run: cargo check --no-default-features --features pyrt-python
+      # WebGPU: builds natively (Vulkan; no GPU on the runner) and for browsers
+      - run: cargo clippy --all-targets --features webgpu
+      - run: cargo check --lib --target wasm32-unknown-unknown --no-default-features --features webgpu
       # CUDA libraries are loaded at runtime, so the backend builds without a GPU
       - run: cargo check --all-targets --features cuda
       - run: cargo clippy --all-targets --features cuda
@@ -73,6 +76,7 @@ jobs:
       - run: python -m pip install gymnasium numpy scikit-learn matplotlib
       # GPU tests in tests/devices.rs run only if the runner exposes a Metal device
       - run: cargo test --release --features mps,accelerate
+      - run: cargo test --release --features webgpu --test devices
       - run: cargo clippy --all-targets --features mps,accelerate
       - run: cargo doc --no-deps --features mps
         env:

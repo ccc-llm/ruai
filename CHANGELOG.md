@@ -1,5 +1,24 @@
 # Changelog
 
+## 4.4.0
+
+- **WebGPU backend for nn** (feature `webgpu`, `Device::WebGpu`, `--device webgpu`):
+  every primitive in WGSL on wgpu, so one backend runs on Metal, Vulkan and DX12
+  natively and on the browser's WebGPU. A GEMM generated with its register tile
+  unrolled (128×128 tiles, 8×8 per thread; 64×64 tiles and a split-k matrix × vector
+  kernel for small shapes), fused softmax / layer_norm / Adam, int8 / int4 weights as
+  packed bytes, F16 / BF16 as f32 values rounded after every op (as the CPU backend).
+  One compute pass per batch of dispatches, parameters in a ring buffer, outputs from a
+  buffer pool. On an Apple M3: 760 GFLOP/s for matmul 1024², a GPT training step
+  (d=256, L=4) in 69 ms, Llama decoding at about 260 tokens/s (MPS: 84).
+- **Browsers**: the crate builds for `wasm32-unknown-unknown` with `webgpu`;
+  `ruai::backend::webgpu::init().await` creates the backend without blocking and
+  `Tensor::to_vec_async().await` reads data back (synchronous reads panic in a browser).
+- `Device::best_available` tries MPS, CUDA, then WebGPU. Note: `Device` has a new
+  variant, so exhaustive `match`es on it need an arm for `Device::WebGpu`.
+- `tests/devices.rs` covers every GPU matmul kernel (matrix × vector, small and large
+  tiles with ragged edges) and WebGPU's asynchronous reads.
+
 ## 4.3.0
 
 - **py0 → WebAssembly without Rust** (`ruai::py::wasm`): the typed IR compiled to a

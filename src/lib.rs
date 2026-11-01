@@ -4,7 +4,8 @@
 //! cargo features (`nn`, `world`, `py` and `agent` are on by default):
 //!
 //! * [`nn`] (feature `nn`) — a PyTorch-like deep learning engine: tensors on
-//!   CPU / Apple GPU (`mps`) / NVIDIA GPU (`cuda`), autograd with second
+//!   CPU / Apple GPU (`mps`) / NVIDIA GPU (`cuda`) / any GPU and browsers
+//!   through WebGPU (`webgpu`), autograd with second
 //!   derivatives, layers, optimizers, GPT-2 / Llama / ResNet / ViT,
 //!   quantization, safetensors. Its items are also re-exported here, so
 //!   `ruai::Tensor` is `ruai::nn::Tensor`.

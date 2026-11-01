@@ -12,6 +12,9 @@ pub enum Device {
     Cuda(usize),
     /// Apple Metal Performance Shaders (requires the `mps` feature).
     Mps,
+    /// WebGPU (requires the `webgpu` feature): Metal, Vulkan or DX12 through
+    /// wgpu natively, the browser's WebGPU on wasm.
+    WebGpu,
 }
 
 impl Device {
@@ -33,6 +36,10 @@ impl Device {
             Device::Mps => crate::nn::backend::mps::is_available(),
             #[cfg(not(feature = "mps"))]
             Device::Mps => false,
+            #[cfg(feature = "webgpu")]
+            Device::WebGpu => crate::nn::backend::webgpu::is_available(),
+            #[cfg(not(feature = "webgpu"))]
+            Device::WebGpu => false,
         }
     }
 }
@@ -43,9 +50,9 @@ impl Device {
         crate::nn::backend::backend_for(*self).synchronize();
     }
 
-    /// The fastest available device: MPS, then CUDA, then CPU.
+    /// The fastest available device: MPS, then CUDA, then WebGPU, then CPU.
     pub fn best_available() -> Device {
-        [Device::Mps, Device::Cuda(0)].into_iter().find(|d| d.is_available()).unwrap_or(Device::Cpu)
+        [Device::Mps, Device::Cuda(0), Device::WebGpu].into_iter().find(|d| d.is_available()).unwrap_or(Device::Cpu)
     }
 
     /// Device named by the `RUSTNN_DEVICE` environment variable (default: CPU).
@@ -60,18 +67,19 @@ impl Device {
 impl std::str::FromStr for Device {
     type Err = String;
 
-    /// Parses `cpu`, `mps`, `cuda`, `cuda:N`, or `auto` (best available).
+    /// Parses `cpu`, `mps`, `cuda`, `cuda:N`, `webgpu`, or `auto` (best available).
     fn from_str(s: &str) -> Result<Device, String> {
         match s.trim().to_ascii_lowercase().as_str() {
             "cpu" => Ok(Device::Cpu),
             "mps" | "metal" => Ok(Device::Mps),
             "cuda" | "gpu" => Ok(Device::Cuda(0)),
+            "webgpu" | "wgpu" => Ok(Device::WebGpu),
             "auto" => Ok(Device::best_available()),
             other => other
                 .strip_prefix("cuda:")
                 .and_then(|i| i.parse().ok())
                 .map(Device::Cuda)
-                .ok_or_else(|| format!("unknown device '{s}' (expected cpu, mps, cuda[:N] or auto)")),
+                .ok_or_else(|| format!("unknown device '{s}' (expected cpu, mps, cuda[:N], webgpu or auto)")),
         }
     }
 }
@@ -82,6 +90,7 @@ impl fmt::Display for Device {
             Device::Cpu => write!(f, "cpu"),
             Device::Cuda(i) => write!(f, "cuda:{i}"),
             Device::Mps => write!(f, "mps"),
+            Device::WebGpu => write!(f, "webgpu"),
         }
     }
 }

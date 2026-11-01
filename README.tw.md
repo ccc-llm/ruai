@@ -487,6 +487,15 @@ Autograd、所有 nn 層、優化器都只透過 `Tensor` 運算操作資料，�
 - **半精度**：kernel 以 template 對 float / half / bf16 實例化（bf16 以原始位元儲存、round-to-nearest-even），內部一律 f32 計算；matmul 的 F16 走 `MPSMatrixMultiplication` Float16，BF16 轉 f32 計算
 - 需求：Apple Silicon、macOS 15+（使用 `atomic_float`、`MTLMathMode`）
 
+### WebGPU（任何 GPU，以及瀏覽器）
+
+- **可攜**：`--features webgpu` 建立在 wgpu 上，同一個後端在本機使用 Metal（macOS）、Vulkan（Linux、Android）或 DX12（Windows），在 wasm32 上使用瀏覽器的 WebGPU；`Device::WebGpu`、`--device webgpu`
+- **Kernel**：WGSL（`webgpu_kernels.wgsl`，每個 kernel 一個模組，第一次使用時編譯）；GEMM 由程式產生並展開暫存器區塊（128×128 tile、每執行緒 8×8；小矩陣用 64×64 tile，矩陣乘向量用 split-k kernel），轉置與 batch stride 直接讀取
+- **儲存**：32 位元字組；F16 / BF16 以 f32 存放，每個運算後捨入到半精度（最近偶數捨入，與 CPU 後端相同），int8 / int4 權重以位元組打包；浮點 atomic（index_add、scatter_add）用 compare-and-swap 迴圈
+- **非同步**：所有 dispatch 共用一個 compute pass，每 64 個運算或讀回資料時送出；參數經由環狀緩衝區，輸出來自緩衝池（小運算約 11 µs）
+- **瀏覽器**：網頁不能阻塞，所以後端以 `ruai::backend::webgpu::init().await` 建立、資料以 `tensor.to_vec_async().await` 讀回；同步讀取 GPU 資料的運算（`to_vec`、`item`）在瀏覽器中會 panic。本 crate 可用 `--features webgpu` 編譯成 `wasm32-unknown-unknown`
+- `tests/devices.rs` 逐一以 CPU 對照每個基本運算，測試套件也在其上訓練、微調與解碼（`RUSTNN_DEVICE=webgpu`）
+
 ### CUDA（NVIDIA）
 
 - **建置**：`cudarc` 以 dynamic loading 在執行時載入 CUDA driver / NVRTC / cuBLAS，所以任何平台都能編譯 `--features cuda`；沒有 GPU 時 `Device::Cuda(0).is_available()` 回傳 `false`
@@ -506,15 +515,15 @@ Autograd、所有 nn 層、優化器都只透過 `Tensor` 運算操作資料，�
 
 ## 效能（Apple M3，8 核 CPU / 8 核 GPU，`cargo run --release --example bench <device>`）
 
-| 項目 | v0.1 CPU | v0.3 CPU | CPU + `accelerate` | MPS (GPU) |
-|---|---|---|---|---|
-| matmul 1024×1024 | 127 GFLOP/s | 283–380 GFLOP/s | 983 GFLOP/s | 1178 GFLOP/s（長時間滿載約 2000） |
-| softmax（1M 元素） | 1.52 ms | 0.43 ms | 0.43 ms | 0.11 ms |
-| layer_norm（1M 元素） | 1.07 ms | 0.41 ms | 0.44 ms | 0.095 ms |
-| conv2d fwd+bwd | 13.3 ms | 6.2 ms | 6.3 ms | 4.4 ms |
-| CNN 訓練一步（小模型） | 10.1 ms | 5.9 ms | 5.1 ms | 5.5 ms |
-| GPT 訓練一步（d=64, L=2） | 29.1 ms | 9.2 ms | 6.2 ms | 3.4 ms |
-| GPT 訓練一步（d=256, L=4） | 296 ms | 105 ms | 58 ms | 29 ms |
+| 項目 | v0.1 CPU | v0.3 CPU | CPU + `accelerate` | MPS (GPU) | WebGPU (GPU) |
+|---|---|---|---|---|---|
+| matmul 1024×1024 | 127 GFLOP/s | 283–380 GFLOP/s | 983 GFLOP/s | 1178 GFLOP/s（長時間滿載約 2000） | 760 GFLOP/s |
+| softmax（1M 元素） | 1.52 ms | 0.43 ms | 0.43 ms | 0.11 ms | 0.19 ms |
+| layer_norm（1M 元素） | 1.07 ms | 0.41 ms | 0.44 ms | 0.095 ms | 0.18 ms |
+| conv2d fwd+bwd | 13.3 ms | 6.2 ms | 6.3 ms | 4.4 ms | 7.4 ms |
+| CNN 訓練一步（小模型） | 10.1 ms | 5.9 ms | 5.1 ms | 5.5 ms | 9.4 ms |
+| GPT 訓練一步（d=64, L=2） | 29.1 ms | 9.2 ms | 6.2 ms | 3.4 ms | 12.0 ms |
+| GPT 訓練一步（d=256, L=4） | 296 ms | 105 ms | 58 ms | 29 ms | 69 ms |
 
 混合精度（`bench` 的最後幾項，Apple M3）：
 
@@ -532,6 +541,7 @@ Autograd、所有 nn 層、優化器都只透過 `Tensor` 運算操作資料，�
 |---|---|---|---|
 | CPU | 0.86 ms | 0.30 ms | 0.29 ms |
 | MPS | 0.22–0.33 ms | 0.08 ms | 0.17 ms |
+| WebGPU | 0.26 ms | 0.16 ms | 0.15 ms |
 
 解碼時是記憶體頻寬受限，權重越小越快（MPS 的融合 kernel 把 k 分給 8 個 simdgroup 再歸約）。
 

@@ -21,6 +21,8 @@ pub mod cuda;
 mod kernel_names;
 #[cfg(feature = "mps")]
 pub mod mps;
+#[cfg(feature = "webgpu")]
+pub mod webgpu;
 
 use crate::nn::device::Device;
 use std::fmt;
@@ -191,6 +193,9 @@ pub enum Storage {
     /// Apple Metal buffer.
     #[cfg(feature = "mps")]
     Mps(mps::MpsStorage),
+    /// WebGPU buffer.
+    #[cfg(feature = "webgpu")]
+    WebGpu(webgpu::WebGpuStorage),
 }
 
 impl Storage {
@@ -202,6 +207,8 @@ impl Storage {
             Storage::Cuda(s) => Device::Cuda(s.ordinal),
             #[cfg(feature = "mps")]
             Storage::Mps(_) => Device::Mps,
+            #[cfg(feature = "webgpu")]
+            Storage::WebGpu(_) => Device::WebGpu,
         }
     }
 
@@ -217,6 +224,8 @@ impl Storage {
             Storage::Cuda(s) => s.dtype,
             #[cfg(feature = "mps")]
             Storage::Mps(s) => s.dtype,
+            #[cfg(feature = "webgpu")]
+            Storage::WebGpu(s) => s.dtype,
         }
     }
 
@@ -232,6 +241,8 @@ impl Storage {
             Storage::Cuda(s) => s.len,
             #[cfg(feature = "mps")]
             Storage::Mps(s) => s.len,
+            #[cfg(feature = "webgpu")]
+            Storage::WebGpu(s) => s.len,
         }
     }
 
@@ -738,6 +749,8 @@ pub fn backend_for(device: Device) -> &'static dyn Backend {
         Device::Cuda(i) => cuda::backend(i),
         #[cfg(feature = "mps")]
         Device::Mps => mps::backend(),
+        #[cfg(feature = "webgpu")]
+        Device::WebGpu => webgpu::backend(),
         #[allow(unreachable_patterns)]
         d => panic!("device {d} is not available in this build (enable the corresponding cargo feature)"),
     }

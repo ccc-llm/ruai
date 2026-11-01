@@ -464,6 +464,18 @@ impl Tensor {
         self.storage().to_vec()
     }
 
+    /// Copy the data to the host as `f32` without blocking: for WebGPU in a
+    /// browser, where reading GPU memory is asynchronous (elsewhere the same
+    /// as [`Tensor::to_vec`]).
+    #[cfg(feature = "webgpu")]
+    pub async fn to_vec_async(&self) -> Vec<f32> {
+        let s = self.storage();
+        match s.device() {
+            Device::WebGpu => crate::nn::backend::webgpu::to_f32_async(&s).await,
+            _ => s.to_vec(),
+        }
+    }
+
     /// Copy the data to the host as `i32`.
     pub fn to_vec_i32(&self) -> Vec<i32> {
         self.storage().to_vec_i32()

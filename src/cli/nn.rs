@@ -45,7 +45,7 @@ pub fn run(argv: &[String]) -> Result<(), String> {
 }
 
 fn devices() -> Result<(), String> {
-    for (d, built) in [(Device::Cpu, true), (Device::Mps, cfg!(feature = "mps")), (Device::Cuda(0), cfg!(feature = "cuda"))] {
+    for (d, built) in [(Device::Cpu, true), (Device::Mps, cfg!(feature = "mps")), (Device::Cuda(0), cfg!(feature = "cuda")), (Device::WebGpu, cfg!(feature = "webgpu"))] {
         let state = if d.is_available() {
             "available"
         } else if built {
