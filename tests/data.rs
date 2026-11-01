@@ -49,15 +49,22 @@ fn workers_produce_the_same_batches_in_order() {
 
 #[test]
 fn workers_actually_run_in_parallel() {
-    // each batch sleeps 30 ms; 8 batches on 4 workers should take ~2 rounds, not 8
-    let slow = |v: Vec<usize>| {
+    // count the batches being collated at the same moment (not wall-clock time, which
+    // a busy CI machine stretches): with 4 workers, some must overlap
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    let (active, most) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (a, m) = (active.clone(), most.clone());
+    let slow = move |v: Vec<usize>| {
+        let now = a.fetch_add(1, Ordering::SeqCst) + 1;
+        m.fetch_max(now, Ordering::SeqCst);
         std::thread::sleep(std::time::Duration::from_millis(30));
+        a.fetch_sub(1, Ordering::SeqCst);
         v
     };
     let l = DataLoader::new(ids(8), 1, slow).num_workers(4);
-    let t = std::time::Instant::now();
     assert_eq!(l.iter().count(), 8);
-    assert!(t.elapsed().as_millis() < 8 * 30, "took {:?}", t.elapsed());
+    assert!(most.load(Ordering::SeqCst) >= 2, "at most {} batch at a time", most.load(Ordering::SeqCst));
 }
 
 #[test]
