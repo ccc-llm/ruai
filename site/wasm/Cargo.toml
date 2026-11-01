@@ -1,0 +1,19 @@
+# The demos of the ruai website (site/): ruai compiled to wasm32 with its
+# bindings for the pages. Built by `node site/build.mjs`.
+[package]
+name = "ruai-site"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ruai = { path = "../..", default-features = false, features = ["webgpu", "world", "plot"] }
+wasm-bindgen = "=0.2.130"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+
+[profile.release]
+opt-level = 3

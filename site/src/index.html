@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ruai in the Browser</title>
+<meta name="description" content="ruai, a Rust AI toolkit, compiled to WebAssembly: neural networks, reinforcement learning, WebGPU training, plots and a py0 IDE and notebook, all in the browser.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232f6fdb'/%3E%3Ctext x='16' y='22' font-family='Arial' font-weight='700' font-size='15' text-anchor='middle' fill='white'%3Eai%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="shell">
+  <header class="top">
+    <button class="menu" id="menu" aria-label="Menu">☰</button>
+    <a class="brand" href="#/">ruai<span>in the browser</span></a>
+    <span class="device" id="device"></span>
+    <a class="gh" href="https://github.com/ccc-llm/ruai" target="_blank" rel="noopener">GitHub</a>
+  </header>
+  <nav class="side" id="side"></nav>
+  <main id="view"></main>
+</div>
+<script type="module" src="app.mjs"></script>
+</body>
+</html>

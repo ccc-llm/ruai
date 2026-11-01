@@ -8,7 +8,7 @@ repository = "https://github.com/ccc-llm/ruai"
 readme = "README.md"
 keywords = ["deep-learning", "autograd", "python", "reinforcement-learning", "llm"]
 categories = ["science", "algorithms", "compilers", "command-line-utilities"]
-exclude = ["/scripts", "/runs", "/data", "*.safetensors", "/examples/webgpu-browser"]
+exclude = ["/scripts", "/runs", "/data", "*.safetensors", "/examples/webgpu-browser", "/site"]
 
 # docs.rs: the runtime packages too (the GPU backends need their hardware)
 [package.metadata.docs.rs]
