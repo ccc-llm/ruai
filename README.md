@@ -506,6 +506,7 @@ Autograd, all layers and the optimizers work only through `Tensor` operations an
 - **Storage**: 32-bit words; F16 / BF16 are kept as f32 values rounded to the half type after every op (round to nearest even, as the CPU backend), int8 / int4 weights as packed bytes; float atomics (index_add, scatter_add) are compare-and-swap loops
 - **Asynchronous**: dispatches share one compute pass and are submitted every 64 ops or when data is read back; parameters go through a ring buffer, outputs come from a buffer pool (about 11 µs per small op)
 - **Browsers**: a page cannot block, so the backend is created with `ruai::backend::webgpu::init().await` and data read with `tensor.to_vec_async().await`; operations that read GPU data synchronously (`to_vec`, `item`) panic there. The crate builds for `wasm32-unknown-unknown` with `--features webgpu`
+- **Demo**: `examples/webgpu-browser/` trains a character-level GPT on WebGPU inside a web page (about 10 ms per step on an Apple M3, the same as natively), plots its loss with `ruai::plot` and generates text: `sh examples/webgpu-browser/build.sh && python3 -m http.server -d examples/webgpu-browser 8000` (needs `cargo install wasm-bindgen-cli --version 0.2.130`)
 - `tests/devices.rs` checks every primitive against the CPU, and the test suite trains, fine-tunes and decodes on it (`RUSTNN_DEVICE=webgpu`)
 
 Verify everything on an NVIDIA machine with one command (cross-device comparisons, the full test suite on the GPU, examples, benchmarks):

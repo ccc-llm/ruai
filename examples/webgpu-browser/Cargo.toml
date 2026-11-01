@@ -1,0 +1,19 @@
+# Training a model in the browser on WebGPU: ruai's nn compiled to wasm32
+# (feature webgpu), driven from a page. Build with ./build.sh.
+[package]
+name = "ruai-webgpu-demo"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ruai = { path = "../..", default-features = false, features = ["webgpu", "plot"] }
+wasm-bindgen = "=0.2.130"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+
+[profile.release]
+opt-level = 3

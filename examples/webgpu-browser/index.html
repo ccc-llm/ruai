@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ruai WebGPU Training</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #deded8;
+    --accent: #2f6fdb; --accent-text: #ffffff; --err: #b3261e; --code-bg: #fbfbfa;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161615; --panel: #1f1f1d; --text: #ecece8; --muted: #9a9a93; --line: #34342f;
+      --accent: #6f9ef0; --accent-text: #0e0e0d; --err: #f2867d; --code-bg: #1a1a18;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 20px 24px 32px; }
+  @media (max-width: 700px) { main { padding: 16px; } }
+  h1 { font-size: 20px; margin: 0 0 4px; font-weight: 650; }
+  .lead { margin: 0 0 16px; color: var(--muted); font-size: 14px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 16px; }
+  .bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .bar .label { font-weight: 600; font-size: 13px; margin-right: auto; }
+  button, input { font: inherit; font-size: 13px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); padding: 4px 10px; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  input { min-width: 0; flex: 1; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .body { padding: 12px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+  .stat { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .stat .k { color: var(--muted); font-size: 12px; }
+  .stat .v { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #plotbox { width: 100%; overflow: hidden; background: #fff; border-radius: 0 0 10px 10px; }
+  canvas { display: block; max-width: 100%; height: auto !important; }
+  pre { margin: 0; padding: 12px; white-space: pre-wrap; word-break: break-word; font: 13px/1.5 ui-monospace, Menlo, Consolas, monospace; min-height: 3em; }
+  .err { color: var(--err); padding: 12px; }
+  .err:empty { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Training a GPT on WebGPU in the browser</h1>
+  <p class="lead">ruai's neural network engine compiled to WebAssembly: every forward pass, backward pass and Adam step runs as WGSL compute shaders on this machine's GPU. The page only reads back one number per batch of steps.</p>
+  <div class="err" id="err"></div>
+  <section>
+    <div class="bar">
+      <span class="label" id="adapter">starting WebGPU…</span>
+      <button class="primary" id="train" disabled>Train</button>
+      <button id="reset" disabled>Reset</button>
+    </div>
+    <div class="body stats">
+      <div class="stat"><div class="k">step</div><div class="v" id="step">–</div></div>
+      <div class="stat"><div class="k">loss</div><div class="v" id="loss">–</div></div>
+      <div class="stat"><div class="k">ms / step</div><div class="v" id="speed">–</div></div>
+      <div class="stat"><div class="k">parameters</div><div class="v" id="params">–</div></div>
+    </div>
+    <div id="plotbox"><canvas id="plot"></canvas></div>
+  </section>
+  <section>
+    <div class="bar">
+      <span class="label">Generate</span>
+      <input id="prompt" value="attention " aria-label="prompt">
+      <button id="gen" disabled>Complete</button>
+    </div>
+    <pre id="out"></pre>
+  </section>
+  <section>
+    <div class="bar">
+      <span class="label">matmul 1024 × 1024 on this GPU</span>
+      <button id="bench" disabled>Measure</button>
+    </div>
+    <pre id="benchout"></pre>
+  </section>
+</main>
+<script type="module" src="app.mjs"></script>
+</body>
+</html>

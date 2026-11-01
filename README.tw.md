@@ -494,6 +494,7 @@ Autograd、所有 nn 層、優化器都只透過 `Tensor` 運算操作資料，�
 - **儲存**：32 位元字組；F16 / BF16 以 f32 存放，每個運算後捨入到半精度（最近偶數捨入，與 CPU 後端相同），int8 / int4 權重以位元組打包；浮點 atomic（index_add、scatter_add）用 compare-and-swap 迴圈
 - **非同步**：所有 dispatch 共用一個 compute pass，每 64 個運算或讀回資料時送出；參數經由環狀緩衝區，輸出來自緩衝池（小運算約 11 µs）
 - **瀏覽器**：網頁不能阻塞，所以後端以 `ruai::backend::webgpu::init().await` 建立、資料以 `tensor.to_vec_async().await` 讀回；同步讀取 GPU 資料的運算（`to_vec`、`item`）在瀏覽器中會 panic。本 crate 可用 `--features webgpu` 編譯成 `wasm32-unknown-unknown`
+- **Demo**：`examples/webgpu-browser/` 在網頁中用 WebGPU 訓練字元級 GPT（Apple M3 上每步約 10 ms，與原生相同），以 `ruai::plot` 畫出 loss 並生成文字：`sh examples/webgpu-browser/build.sh && python3 -m http.server -d examples/webgpu-browser 8000`（需要 `cargo install wasm-bindgen-cli --version 0.2.130`）
 - `tests/devices.rs` 逐一以 CPU 對照每個基本運算，測試套件也在其上訓練、微調與解碼（`RUSTNN_DEVICE=webgpu`）
 
 ### CUDA（NVIDIA）

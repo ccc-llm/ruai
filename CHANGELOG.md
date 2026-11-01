@@ -14,6 +14,9 @@
 - **Browsers**: the crate builds for `wasm32-unknown-unknown` with `webgpu`;
   `ruai::backend::webgpu::init().await` creates the backend without blocking and
   `Tensor::to_vec_async().await` reads data back (synchronous reads panic in a browser).
+- `examples/webgpu-browser/`: a page that trains a character-level GPT on WebGPU in the
+  browser (about 10 ms per step on an Apple M3, as natively), plots the loss with
+  `ruai::plot`, generates text and measures matmul (537 GFLOP/s in Chrome's WebGPU).
 - `Device::best_available` tries MPS, CUDA, then WebGPU. Note: `Device` has a new
   variant, so exhaustive `match`es on it need an arm for `Device::WebGpu`.
 - `tests/devices.rs` covers every GPU matmul kernel (matrix × vector, small and large
