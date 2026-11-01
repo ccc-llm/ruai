@@ -577,6 +577,8 @@ RUSTNN_DEVICE=mps cargo test --features mps        # the same tests, all on the 
 cargo test --features mps --test devices           # every backend primitive: GPU against CPU
 ```
 
+`./test.sh` runs them by group and prints a summary: `./test.sh cpu`, `gpu` (every GPU backend of this machine against the CPU), `py0`, `pyo3`, `world`, `site`, `check` (each feature alone, wasm32 builds), `lint`, `pretrained`, `ci` (what CI runs on this OS), `all`, or `./test.sh file gradcheck` for one file; `./test.sh deps` lists what the tests need.
+
 - `tests/gradcheck.rs`: central-difference gradient checks of every differentiable operation (broadcasting, all batch forms of matmul, conv, pooling, softmax, layer norm, attention, ...), and that the causal mask does not look ahead
 - `tests/backend.rs`: fused kernels agree with the default compositions, matmul (transposed, split in parallel) against a naive implementation, dtype behavior, values of new operations
 - `tests/devices.rs`: cross-device consistency: every primitive (edge sizes, broadcasting, matmul with all transposes / batch strides, conv with all strides / paddings, scatter with repeated indices) must match the CPU on every available GPU backend; also the F16/BF16 versions of all primitives, int8 matmul (both the fused kernel and the GEMM path), int4, and attention
@@ -636,6 +638,11 @@ From 4.0 ruai follows semantic versioning for:
 | v3.6 | py0's `sklearn` (linear models, logistic regression, k-NN, naive Bayes, KMeans, PCA, preprocessing, `train_test_split`, metrics, iris) |
 | v3.7 | py0's `gymnasium` (world's environments, bit for bit as Gymnasium) and `torch` (autograd on the nn engine, `nn` modules, losses, `optim`, PyTorch's random numbers for `manual_seed`); float32 numpy arrays |
 | v4.0 | stable release: semantic versioning (see Stability), English documentation |
+| v4.1 | the Python bridge: py0 calls CPython libraries through stubs (`# python: MODULE`), `ruai py stub --python` |
+| v4.2 | `ruai.plot`: matplotlib's pyplot API on a browser canvas or SVG |
+| v4.3 | py0 → WebAssembly (WasmGC) without Rust, and the py0 compiler in the browser |
+| v4.4 | the WebGPU backend for nn (wgpu: Metal / Vulkan / DX12, and browsers), a GPT trained in a web page |
+| v4.5 | the website on GitHub Pages: a py0 IDE in the style of VS Code, a py0 notebook with `.ipynb` export, demos; `run.sh`, `test.sh` |
 
 ## Limitations
 

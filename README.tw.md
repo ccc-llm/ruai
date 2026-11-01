@@ -574,6 +574,8 @@ RUSTNN_DEVICE=mps cargo test --features mps        # 同一組測試全部在 GP
 cargo test --features mps --test devices           # 每個 backend 原語：GPU 對照 CPU
 ```
 
+`./test.sh` 依群組執行並在最後列出摘要：`./test.sh cpu`、`gpu`（本機所有 GPU 後端對照 CPU）、`py0`、`pyo3`、`world`、`site`、`check`（各 feature 單獨建置、wasm32 建置）、`lint`、`pretrained`、`ci`（此作業系統上 CI 跑的內容）、`all`，或用 `./test.sh file gradcheck` 只跑一個檔案；`./test.sh deps` 列出測試需要的工具。
+
 - `tests/gradcheck.rs`：對每個可微分運算（廣播、matmul 各種 batch 形式、conv、pool、softmax、layer norm、attention …）做中央差分的數值梯度檢查，並驗證 causal mask 不會偷看未來
 - `tests/backend.rs`：融合 kernel 與預設組合實作一致、matmul（含轉置、平行切塊）對照樸素實作、dtype 行為、新運算的數值
 - `tests/devices.rs`：跨裝置一致性——每個原語（含邊界尺寸、廣播、各種轉置/batch stride 的 matmul、各種 stride/padding 的 conv、重複索引的 scatter）在每個可用 GPU 後端上的結果都要與 CPU 相符
@@ -625,6 +627,11 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v3.6 | py0 的 `sklearn` 子集（線性模型、羅吉斯迴歸、k-NN、naive Bayes、KMeans、PCA、前處理、`train_test_split`、指標、iris） | ✅ |
 | v3.7 | py0 的 `gymnasium`（world 環境，與 Gymnasium 逐位元相同）與 `torch` 子集（nn 引擎上的 autograd、`nn` 模組、損失、`optim`，`manual_seed` 與 PyTorch 相同的亂數）；numpy 支援 float32 | ✅ |
 | v4.0 | 穩定版：語意化版本（見「穩定性」）、英文文件 | ✅ |
+| v4.1 | Python 橋接：py0 透過 stub（`# python: MODULE`）呼叫 CPython 函式庫，`ruai py stub --python` | ✅ |
+| v4.2 | `ruai.plot`：matplotlib pyplot 的 API，畫在瀏覽器 canvas 或 SVG | ✅ |
+| v4.3 | 不經 Rust 的 py0 → WebAssembly（WasmGC），py0 編譯器在瀏覽器中執行 | ✅ |
+| v4.4 | nn 的 WebGPU 後端（wgpu：Metal / Vulkan / DX12 與瀏覽器），在網頁中訓練 GPT | ✅ |
+| v4.5 | GitHub Pages 網站：VS Code 風格的 py0 IDE、可匯出 `.ipynb` 的 py0 notebook、各種展示；`run.sh`、`test.sh` | ✅ |
 
 ## 穩定性
 

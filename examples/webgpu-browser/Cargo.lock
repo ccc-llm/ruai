@@ -730,7 +730,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "ruai"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "fancy-regex",
  "half",

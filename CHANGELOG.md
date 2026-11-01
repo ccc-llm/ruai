@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 4.5.0
 
 - **The website** (`site/`, published on GitHub Pages by `.github/workflows/pages.yml`):
   ruai compiled to WebAssembly, in a static site built with Node.js and no npm packages.
@@ -16,6 +16,9 @@
     and Adam with autograd), a GPT on WebGPU (or on the CPU without it), REINFORCE on
     CartPole, Q-learning on MountainCar, value iteration on FrozenLake, the
     classic-control environments played with the keyboard, and a `ruai.plot` gallery.
+- `./test.sh`: every test by group (`cpu`, `gpu`, `mps`, `webgpu`, `cuda`, `py0`, `wasm`,
+  `pyo3`, `world`, `agent`, `site`, `check`, `lint`, `pretrained`, `ci`, `all`, or one
+  file), with a summary of the steps that passed and failed.
 
 ## 4.4.0
 
