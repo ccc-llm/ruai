@@ -287,6 +287,14 @@ sh py0/web/build.sh && python3 -m http.server -d py0/web 8000   # the playground
 
 py0 also compiles **straight to WebAssembly, without Rust**: `ruai::py::wasm` turns the typed IR into a WasmGC module (objects, lists, dicts, sets, tuples and strings are GC structs and arrays; exceptions use wasm exception handling), with its runtime generated into the module and a small JavaScript host (`ruai_wasm.mjs`) for output, float formatting and parsing, math and str methods, which follow CPython exactly (shortest float repr, format specs with correctly rounded decimals). The translator itself builds for `wasm32-unknown-unknown`, so the **playground** in `py0/web/` compiles py0 to wasm inside the browser (a few milliseconds per program) and runs it; no server or toolchain is involved. 221 of the 263 programs of `tests/py0/` compile to wasm and all of them print what CPython prints (`ruai py test --wasm`); not yet supported: generators, functions as values, `nonlocal`, files, `re`, `heapq` / `itertools` / `random`, and the packages implemented in Rust (numpy, sklearn, gymnasium, torch, ruai.plot).
 
+### The website: ruai in the browser
+
+```bash
+./run.sh dev       # build site/ and serve it at http://localhost:8000 (./run.sh help: all tasks)
+```
+
+`site/` is a static website with everything compiled to WebAssembly, published on GitHub Pages by `.github/workflows/pages.yml`. It has a **py0 IDE** in the style of VS Code (an explorer of files kept in the browser, tabs, the Monaco editor, a terminal, problems marked in the code, standard input, and a stop button for endless loops) and a **py0 notebook** in the style of Jupyter (code and Markdown cells, `Out[n]` for a last expression, export to and import from `.ipynb`). It also has demos: an MLP classifier playground, curve fitting, SGD / momentum / Adam on Rosenbrock's valley, a GPT trained on WebGPU, REINFORCE on CartPole, Q-learning on MountainCar, value iteration on FrozenLake, the classic-control environments played with the keyboard, and a `ruai.plot` gallery. `./run.sh` also does `setup`, `check`, `build`, `serve`, `watch`, `test`, `size` and `clean`. The build needs cargo with the `wasm32-unknown-unknown` target and `wasm-bindgen-cli` 0.2.130, and no npm packages. See [doc/site.md](doc/site.md).
+
 ### Any Python library: the Python bridge
 
 ```python

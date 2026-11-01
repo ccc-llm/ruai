@@ -297,6 +297,14 @@ sh py0/web/build.sh && python3 -m http.server -d py0/web 8000   # playground
 
 py0 也能**不經過 Rust，直接編譯成 WebAssembly**：`ruai::py::wasm` 把型別化的 IR 轉成 WasmGC 模組（物件、list、dict、set、tuple 與字串都是 GC 的 struct 與 array；例外使用 wasm 的例外處理），執行期函式直接生成在模組內，再加上一個小小的 JavaScript 宿主（`ruai_wasm.mjs`）負責輸出、浮點數的格式化與解析、數學函式和 str 方法，行為與 CPython 一致（最短的浮點 repr、正確捨入的格式規格）。翻譯器本身可以編譯成 `wasm32-unknown-unknown`，所以 `py0/web/` 的 **playground** 在瀏覽器裡把 py0 編成 wasm（每個程式幾毫秒）並執行，不需要伺服器或工具鏈。`tests/py0/` 的 263 支程式中有 221 支能編成 wasm，且輸出全部與 CPython 相同（`ruai py test --wasm`）；尚未支援：generator、函式當值、`nonlocal`、檔案、`re`、`heapq` / `itertools` / `random`，以及以 Rust 實作的套件（numpy、sklearn、gymnasium、torch、ruai.plot）。
 
+### 網站：在瀏覽器中執行 ruai
+
+```bash
+./run.sh dev       # 建置 site/ 並在 http://localhost:8000 提供（./run.sh help：所有指令）
+```
+
+`site/` 是靜態網站，所有功能都編成 WebAssembly，由 `.github/workflows/pages.yml` 發佈到 GitHub Pages。網站裡有 VS Code 風格的 **py0 IDE**（檔案總管，檔案存在瀏覽器裡；分頁、Monaco 編輯器、終端機；編譯錯誤直接標在程式碼上；標準輸入；可以中斷無限迴圈的停止鍵），以及 Jupyter 風格的 **py0 notebook**（程式與 Markdown 格子，最後一行運算式顯示 `Out[n]`，可以匯出與開啟 `.ipynb`）。另外還有這些展示：MLP 分類器 playground、曲線擬合、SGD / momentum / Adam 走 Rosenbrock 山谷、用 WebGPU 訓練 GPT、REINFORCE 學 CartPole、Q-learning 學 MountainCar、value iteration 解 FrozenLake、用鍵盤玩 classic-control 環境，以及 `ruai.plot` 圖庫。`./run.sh` 也提供 `setup`、`check`、`build`、`serve`、`watch`、`test`、`size`、`clean`。建置需要 cargo 的 `wasm32-unknown-unknown` target 與 `wasm-bindgen-cli` 0.2.130，不需要任何 npm 套件。詳見 [doc/site.md](doc/site.md)。
+
 ### 任何 Python 函式庫：Python 橋接
 
 ```python

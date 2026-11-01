@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- **The website** (`site/`, published on GitHub Pages by `.github/workflows/pages.yml`):
+  ruai compiled to WebAssembly, in a static site built with Node.js and no npm packages.
+  `./run.sh` does every task (`setup`, `check`, `build`, `pages`, `serve`, `dev`,
+  `watch`, `test`, `size`, `clean`).
+  - A **py0 IDE** in the style of VS Code: files kept in the browser, tabs, the Monaco
+    editor, a terminal, compile errors marked in the code, standard input, and programs
+    that run in a worker so they can be stopped.
+  - A **py0 notebook** in the style of Jupyter: code and Markdown cells, `Out[n]` for a
+    last expression, and `.ipynb` export and import (valid nbformat 4.5; the exported
+    notebooks also run in Jupyter on CPython).
+  - Demos: an MLP classifier playground, curve fitting, an optimizer race (SGD, momentum
+    and Adam with autograd), a GPT on WebGPU (or on the CPU without it), REINFORCE on
+    CartPole, Q-learning on MountainCar, value iteration on FrozenLake, the
+    classic-control environments played with the keyboard, and a `ruai.plot` gallery.
+
 ## 4.4.0
 
 - **WebGPU backend for nn** (feature `webgpu`, `Device::WebGpu`, `--device webgpu`):

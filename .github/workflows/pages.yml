@@ -37,7 +37,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node site/build.mjs
+      - run: ./run.sh build
+      - run: ./run.sh test
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site/dist
