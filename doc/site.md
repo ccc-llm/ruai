@@ -8,20 +8,25 @@ through WebGPU.
 
 ## Build and run
 
+`run.sh` at the root of the repository does every task:
+
 ```bash
-node site/build.mjs            # → site/dist/
-node site/serve.mjs            # http://localhost:8000 (a port can follow)
-node site/build.mjs --skip-wasm   # only copy the pages again (after editing site/src)
+./run.sh setup         # install the wasm32 target and wasm-bindgen-cli 0.2.130
+./run.sh check         # are the tools there?
+./run.sh build         # → site/dist/ (the wasm modules and the pages)
+./run.sh serve [port]  # http://localhost:8000
+./run.sh dev [port]    # build, then serve
+./run.sh watch [port]  # serve, and copy the pages again whenever site/src changes
+./run.sh pages         # copy the pages again without rebuilding the wasm
+./run.sh test          # compile and run every py0 example with the built compiler
+./run.sh size          # sizes of the built files
+./run.sh clean         # remove site/dist and site/wasm/target
 ```
 
-To build it you need:
-
-- cargo, with the wasm target: `rustup target add wasm32-unknown-unknown`;
-- `cargo install wasm-bindgen-cli --version 0.2.130`;
-- Node.js 18 or newer.
-
-No npm packages are needed. `site/package.json` has the same steps as
-`npm run build`, `npm run serve` and `npm run dev`.
+These commands run the Node.js scripts in `site/`: `build.mjs`, `serve.mjs`
+and `test.mjs`. You can also run the scripts directly. To build the site you
+need cargo with the `wasm32-unknown-unknown` target, `wasm-bindgen-cli`
+0.2.130, and Node.js 18 or newer. No npm packages are needed.
 
 ## Publishing on GitHub Pages
 
