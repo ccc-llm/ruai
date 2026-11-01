@@ -518,7 +518,29 @@ pub fn generate(p: &Program, o: &Own, x: &Exc) -> Res<String> {
     if !all_reachable(p) {
         head = format!("// some definitions are not used by this program (a module of definitions)\n#![allow(dead_code)]\n\n{}", head);
     }
+    // Python's names are kept as they are (`X`, `fitModel`)
+    let upper = |s: &str| s.chars().any(|c| c.is_ascii_uppercase());
+    if p.funcs.iter().any(|f| upper(&f.name) || f.vars.iter().any(|v| upper(&v.name))) {
+        head = format!("#![allow(non_snake_case)]\n{}", head);
+    }
     Ok(head + &out)
+}
+
+/// Replace each `slot` of an `@rust` template with `plain`, or with `wrapped`
+/// (the argument in parentheses) where an operator or a method call touches it.
+fn fill_slot(template: &str, slot: &str, plain: &str, wrapped: &str) -> String {
+    let mut out = String::new();
+    let mut rest = template;
+    while let Some(i) = rest.find(slot) {
+        let (before, after) = (&rest[..i], &rest[i + slot.len()..]);
+        // a whole argument: between `(` / `,` / `[` / start and `)` / `,` / `]` / end
+        let open = matches!(before.trim_end().chars().last(), None | Some('(' | ',' | '[' | '{'));
+        let close = matches!(after.trim_start().chars().next(), None | Some(')' | ',' | ']' | '}'));
+        out += before;
+        out += if open && close { plain } else { wrapped };
+        rest = after;
+    }
+    out + rest
 }
 
 /// Is every function called (directly or through others) from the program?
@@ -3704,10 +3726,10 @@ impl<'a> FGen<'a> {
                 c = c.replace("{self}", r);
             }
             for (i, a) in av.iter().enumerate() {
-                // `{0}.f()` of `&x` is `(&x).f()`
+                // `{0}.f()` of `&x` is `(&x).f()`, but `f({0})` of `&x` is `f(&x)`
                 let atom = a.chars().all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '.' || ch == ':');
-                let a = if atom || (a.starts_with('(') && a.ends_with(')')) { a.clone() } else { format!("({})", a) };
-                c = c.replace(&format!("{{{}}}", i), &a);
+                let wrapped = if atom || (a.starts_with('(') && a.ends_with(')')) { a.clone() } else { format!("({})", a) };
+                c = fill_slot(&c, &format!("{{{}}}", i), a, &wrapped);
             }
             c
         } else if let Some(r) = &rv {

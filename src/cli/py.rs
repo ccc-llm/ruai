@@ -422,12 +422,10 @@ fn pyo3_module(file: &str, out: Option<PathBuf>) -> i32 {
     }
     let dir = dir.canonicalize().unwrap_or(dir);
     let target = dir.join("target");
-    let r = std::process::Command::new("cargo")
-        .args(["build", "--release"])
-        .current_dir(&dir)
-        .env("CARGO_TARGET_DIR", &target)
-        .env("PYO3_PYTHON", project::python())
-        .status();
+    let mut cargo = Command::new("cargo");
+    cargo.args(["build", "--release"]).current_dir(&dir).env("CARGO_TARGET_DIR", &target).env("PYO3_PYTHON", project::python());
+    project::cap_lints(&mut cargo);
+    let r = cargo.status();
     if !r.map(|s| s.success()).unwrap_or(false) {
         return 1;
     }
@@ -647,6 +645,7 @@ fn test(args: &[String]) -> i32 {
     if !bins.is_empty() {
         let mut cargo = Command::new("cargo");
         cargo.args(["build", "--release", "--quiet"]).current_dir(&dir).env("CARGO_TARGET_DIR", dir.join("target"));
+        project::cap_lints(&mut cargo);
         if let Some(py) = &bridge_python {
             cargo.env("PYO3_PYTHON", py);
         }
@@ -746,12 +745,10 @@ fn fuzz(n: u64, seed: u64) -> i32 {
     }
     let bins: Vec<String> = names.iter().map(|x| x.1.clone()).collect();
     std::fs::write(dir.join("Cargo.toml"), project::cargo_toml("fuzz", &bins)).unwrap();
-    let out = Command::new("cargo")
-        .args(["build", "--release", "--quiet"])
-        .current_dir(&dir)
-        .env("CARGO_TARGET_DIR", dir.join("target"))
-        .output()
-        .expect("cargo");
+    let mut cargo = Command::new("cargo");
+    cargo.args(["build", "--release", "--quiet"]).current_dir(&dir).env("CARGO_TARGET_DIR", dir.join("target"));
+    project::cap_lints(&mut cargo);
+    let out = cargo.output().expect("cargo");
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         println!("FAIL: generated Rust does not compile\n{}", err.lines().take(40).collect::<Vec<_>>().join("\n"));
