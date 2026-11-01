@@ -24,7 +24,7 @@ html, body { margin: 0; height: 100%; }
 body { background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
 a { color: var(--accent); }
 
-.shell { display: grid; grid-template-columns: 220px 1fr; grid-template-rows: 48px 1fr; height: 100vh; }
+.shell { display: grid; grid-template-columns: 220px 1fr; grid-template-rows: 48px 1fr; height: 100vh; height: 100dvh; }
 .top { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .brand { font-weight: 700; font-size: 17px; color: var(--text); text-decoration: none; letter-spacing: -.01em; }
 .brand span { font-weight: 400; color: var(--muted); font-size: 13px; margin-left: 8px; }
@@ -205,9 +205,25 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-bottom-width
 .nb-err { color: var(--err); background: color-mix(in srgb, var(--err) 8%, transparent); border-radius: 4px; padding: 4px 8px; }
 .nb-result { display: grid; grid-template-columns: auto 1fr; align-items: start; }
 .nb-outp { font: 12px var(--mono); color: var(--c1); padding: 3px 6px 0 0; margin-left: -56px; width: 52px; text-align: right; }
-.nb-help { text-align: center; }
+.nb-help { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 16px; margin-bottom: 24px; }
+.nb-help span { white-space: nowrap; }
+.nb-page { padding-bottom: 30vh; }
 @media (max-width: 700px) {
   .nb-cell { grid-template-columns: 36px minmax(0, 1fr); }
   .nb-outp { margin-left: 0; width: auto; }
   .nb-result { grid-template-columns: 1fr; }
 }
+
+/* MNIST */
+.mn-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 6px; }
+.mn-item { display: flex; gap: 6px; align-items: center; }
+.mn-item canvas { width: 32px; height: 32px; image-rendering: pixelated; border-radius: 3px; flex: none; }
+.mn-bars { flex: 1; display: grid; gap: 2px; min-width: 0; }
+.mn-bar { position: relative; height: 10px; background: var(--soft); border-radius: 2px; font: 9px/10px var(--mono); }
+.mn-bar span { position: absolute; left: 0; top: 0; bottom: 0; background: color-mix(in srgb, var(--muted) 45%, transparent); border-radius: 2px; }
+.mn-bar.ok span { background: color-mix(in srgb, var(--ok) 70%, transparent); }
+.mn-bar.bad span { background: color-mix(in srgb, var(--err) 70%, transparent); }
+.mn-bar b { position: relative; padding-left: 3px; font-weight: 600; }
+.mn-pad { width: 100%; max-width: 280px; aspect-ratio: 1; border-radius: 8px; touch-action: none; cursor: crosshair; background: #000; }
+.mn-guess { font-size: 13px; color: var(--muted); min-height: 2.4em; }
+.mn-guess .big { font-size: 28px; font-weight: 700; color: var(--text); vertical-align: middle; margin-right: 6px; }

@@ -1,3 +1,4 @@
 # built by build.mjs
-/dist
+# /dist
+
 /wasm/target

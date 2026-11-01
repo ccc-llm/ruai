@@ -443,6 +443,97 @@ export function mc_values() {
 }
 
 /**
+ * The first layer's 8 filters (5×5 each).
+ * @returns {Float32Array}
+ */
+export function mnist_filters() {
+    const ret = wasm.mnist_filters();
+    var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+    return v1;
+}
+
+/**
+ * Test digit `i` as bytes (for drawing).
+ * @param {boolean} test
+ * @param {number} i
+ * @returns {Uint8Array}
+ */
+export function mnist_image(test, i) {
+    const ret = wasm.mnist_image(test, i);
+    var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v1;
+}
+
+/**
+ * The activations for 784 pixels in [0, 1]: conv1 (8×28×28), pool1 (8×14×14),
+ * conv2 (16×14×14), pool2 (16×7×7) and the 10 probabilities, one after another.
+ * @param {Float32Array | number[]} pixels
+ * @returns {Float32Array}
+ */
+export function mnist_layers(pixels) {
+    const ptr0 = passArrayF32ToWasm0(pixels, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.mnist_layers(ptr0, len0);
+    var v2 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+    return v2;
+}
+
+/**
+ * Take the data file (see site/tools/mnist.mjs): [train count, test count].
+ * @param {Uint8Array | number[]} bytes
+ * @returns {Uint32Array}
+ */
+export function mnist_load(bytes) {
+    const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.mnist_load(ptr0, len0);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v2 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+    return v2;
+}
+
+/**
+ * A new, untrained network.
+ * @param {number} seed
+ */
+export function mnist_reset(seed) {
+    wasm.mnist_reset(seed);
+}
+
+/**
+ * Test digits `start .. start + count`: per digit its label, then the three
+ * likeliest classes and their probabilities (7 numbers each).
+ * @param {number} start
+ * @param {number} count
+ * @returns {Float32Array}
+ */
+export function mnist_test(start, count) {
+    const ret = wasm.mnist_test(start, count);
+    var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+    return v1;
+}
+
+/**
+ * `steps` batches of 20 shifted training digits: [examples seen, mean loss,
+ * training accuracy of these batches, milliseconds per example].
+ * @param {number} steps
+ * @returns {Float64Array}
+ */
+export function mnist_train(steps) {
+    const ret = wasm.mnist_train(steps);
+    var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+    return v1;
+}
+
+/**
  * P(class 1) on a `res` × `res` grid over [-1, 1]², top row first.
  * @param {number} res
  * @returns {Float32Array}
@@ -1029,23 +1120,23 @@ function __wbg_get_imports() {
             arg0.writeBuffer(arg1, arg2, getArrayU8FromWasm0(arg3, arg4), arg5, arg6);
         }, arguments); },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 729, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 740, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_2e1cf8771ab36b47___convert__closures_____invoke___wasm_bindgen_2e1cf8771ab36b47___JsValue__core_b5240af56a26f90___result__Result_____wasm_bindgen_2e1cf8771ab36b47___JsError___true_);
             return ret;
         },
         __wbindgen_generic_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUDevice")], shim_idx: 697, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUDevice")], shim_idx: 708, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_2e1cf8771ab36b47___convert__closures_____invoke___wasm_bindgen_2e1cf8771ab36b47___sys__JsNullable_wgpu_346d0cc8986087e5___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_b5240af56a26f90___result__Result_____wasm_bindgen_2e1cf8771ab36b47___JsError___true_);
             return ret;
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("any")], shim_idx: 697, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_2e1cf8771ab36b47___convert__closures_____invoke___wasm_bindgen_2e1cf8771ab36b47___sys__JsNullable_wgpu_346d0cc8986087e5___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_b5240af56a26f90___result__Result_____wasm_bindgen_2e1cf8771ab36b47___JsError___true__37);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("any")], shim_idx: 708, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_2e1cf8771ab36b47___convert__closures_____invoke___wasm_bindgen_2e1cf8771ab36b47___sys__JsNullable_wgpu_346d0cc8986087e5___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_b5240af56a26f90___result__Result_____wasm_bindgen_2e1cf8771ab36b47___JsError___true__44);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("undefined")], shim_idx: 697, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_2e1cf8771ab36b47___convert__closures_____invoke___wasm_bindgen_2e1cf8771ab36b47___sys__JsNullable_wgpu_346d0cc8986087e5___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_b5240af56a26f90___result__Result_____wasm_bindgen_2e1cf8771ab36b47___JsError___true__38);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("undefined")], shim_idx: 708, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_2e1cf8771ab36b47___convert__closures_____invoke___wasm_bindgen_2e1cf8771ab36b47___sys__JsNullable_wgpu_346d0cc8986087e5___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_b5240af56a26f90___result__Result_____wasm_bindgen_2e1cf8771ab36b47___JsError___true__45);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0) {
@@ -1099,15 +1190,15 @@ function wasm_bindgen_2e1cf8771ab36b47___convert__closures_____invoke___wasm_bin
     }
 }
 
-function wasm_bindgen_2e1cf8771ab36b47___convert__closures_____invoke___wasm_bindgen_2e1cf8771ab36b47___sys__JsNullable_wgpu_346d0cc8986087e5___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_b5240af56a26f90___result__Result_____wasm_bindgen_2e1cf8771ab36b47___JsError___true__37(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen_2e1cf8771ab36b47___convert__closures_____invoke___wasm_bindgen_2e1cf8771ab36b47___sys__JsNullable_wgpu_346d0cc8986087e5___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_b5240af56a26f90___result__Result_____wasm_bindgen_2e1cf8771ab36b47___JsError___true__37(arg0, arg1, arg2);
+function wasm_bindgen_2e1cf8771ab36b47___convert__closures_____invoke___wasm_bindgen_2e1cf8771ab36b47___sys__JsNullable_wgpu_346d0cc8986087e5___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_b5240af56a26f90___result__Result_____wasm_bindgen_2e1cf8771ab36b47___JsError___true__44(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen_2e1cf8771ab36b47___convert__closures_____invoke___wasm_bindgen_2e1cf8771ab36b47___sys__JsNullable_wgpu_346d0cc8986087e5___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_b5240af56a26f90___result__Result_____wasm_bindgen_2e1cf8771ab36b47___JsError___true__44(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
 }
 
-function wasm_bindgen_2e1cf8771ab36b47___convert__closures_____invoke___wasm_bindgen_2e1cf8771ab36b47___sys__JsNullable_wgpu_346d0cc8986087e5___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_b5240af56a26f90___result__Result_____wasm_bindgen_2e1cf8771ab36b47___JsError___true__38(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen_2e1cf8771ab36b47___convert__closures_____invoke___wasm_bindgen_2e1cf8771ab36b47___sys__JsNullable_wgpu_346d0cc8986087e5___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_b5240af56a26f90___result__Result_____wasm_bindgen_2e1cf8771ab36b47___JsError___true__38(arg0, arg1, arg2);
+function wasm_bindgen_2e1cf8771ab36b47___convert__closures_____invoke___wasm_bindgen_2e1cf8771ab36b47___sys__JsNullable_wgpu_346d0cc8986087e5___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_b5240af56a26f90___result__Result_____wasm_bindgen_2e1cf8771ab36b47___JsError___true__45(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen_2e1cf8771ab36b47___convert__closures_____invoke___wasm_bindgen_2e1cf8771ab36b47___sys__JsNullable_wgpu_346d0cc8986087e5___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_b5240af56a26f90___result__Result_____wasm_bindgen_2e1cf8771ab36b47___JsError___true__45(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
@@ -1324,6 +1415,20 @@ function makeMutClosure(arg0, arg1, f) {
 function passArray32ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 4, 4) >>> 0;
     getUint32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function passArray8ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 1, 1) >>> 0;
+    getUint8ArrayMemory0().set(arg, ptr / 1);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function passArrayF32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getFloat32ArrayMemory0().set(arg, ptr / 4);
     WASM_VECTOR_LEN = arg.length;
     return ptr;
 }
