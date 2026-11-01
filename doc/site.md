@@ -64,6 +64,7 @@ flowchart LR
   - `playground.rs`: the classifier;
   - `fit.rs`: curve fitting;
   - `descent.rs`: the optimizer race;
+  - `mnist.rs`: the MNIST CNN;
   - `gpt.rs`: the GPT and the matmul benchmark;
   - `cartpole.rs`, `mountaincar.rs`, `lake.rs` and `gym.rs`: reinforcement learning;
   - `gallery.rs`: the plots.
@@ -109,6 +110,19 @@ back to the cell and the line inside it.
 py0 is a subset of Python, so the exported notebooks also run in Jupyter on
 CPython. **Open .ipynb** reads the code and Markdown cells of any notebook,
 along with their text outputs.
+
+## The MNIST data
+
+The MNIST demo loads `site/src/data/mnist.bin.gz` (2.1 MB) only when its
+page is opened, and the browser decompresses it with `DecompressionStream`.
+The file holds the first 12,000 training images and the first 2,000 test
+images of MNIST, with their labels. `site/tools/mnist.mjs` makes it from the
+four files of the MNIST distribution. Those files are, for example, on
+TensorFlow's mirror, `https://storage.googleapis.com/cvdf-datasets/mnist/`:
+
+```bash
+node site/tools/mnist.mjs DIR [TRAIN=12000] [TEST=2000]
+```
 
 ## Adding a demo
 

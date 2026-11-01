@@ -303,7 +303,7 @@ py0 也能**不經過 Rust，直接編譯成 WebAssembly**：`ruai::py::wasm` �
 ./run.sh dev       # 建置 site/ 並在 http://localhost:8000 提供（./run.sh help：所有指令）
 ```
 
-`site/` 是靜態網站，所有功能都編成 WebAssembly，由 `.github/workflows/pages.yml` 發佈到 GitHub Pages。網站裡有 VS Code 風格的 **py0 IDE**（檔案總管，檔案存在瀏覽器裡；分頁、Monaco 編輯器、終端機；編譯錯誤直接標在程式碼上；標準輸入；可以中斷無限迴圈的停止鍵），以及 Jupyter 風格的 **py0 notebook**（程式與 Markdown 格子，最後一行運算式顯示 `Out[n]`，可以匯出與開啟 `.ipynb`）。另外還有這些展示：MLP 分類器 playground、曲線擬合、SGD / momentum / Adam 走 Rosenbrock 山谷、用 WebGPU 訓練 GPT、REINFORCE 學 CartPole、Q-learning 學 MountainCar、value iteration 解 FrozenLake、用鍵盤玩 classic-control 環境，以及 `ruai.plot` 圖庫。`./run.sh` 也提供 `setup`、`check`、`build`、`serve`、`watch`、`test`、`size`、`clean`。建置需要 cargo 的 `wasm32-unknown-unknown` target 與 `wasm-bindgen-cli` 0.2.130，不需要任何 npm 套件。詳見 [doc/site.md](doc/site.md)。
+`site/` 是靜態網站，所有功能都編成 WebAssembly，由 `.github/workflows/pages.yml` 發佈到 GitHub Pages。網站裡有 VS Code 風格的 **py0 IDE**（檔案總管，檔案存在瀏覽器裡；分頁、Monaco 編輯器、終端機；編譯錯誤直接標在程式碼上；標準輸入；可以中斷無限迴圈的停止鍵），以及 Jupyter 風格的 **py0 notebook**（程式與 Markdown 格子，最後一行運算式顯示 `Out[n]`，可以匯出與開啟 `.ipynb`）。另外還有這些展示：MLP 分類器 playground、曲線擬合、SGD / momentum / Adam 走 Rosenbrock 山谷、ConvNetJS 風格的 MNIST CNN（各層 activation 視覺化、可以手寫數字讓它辨識）、用 WebGPU 訓練 GPT、REINFORCE 學 CartPole、Q-learning 學 MountainCar、value iteration 解 FrozenLake、用鍵盤玩 classic-control 環境，以及 `ruai.plot` 圖庫。`./run.sh` 也提供 `setup`、`check`、`build`、`serve`、`watch`、`test`、`size`、`clean`。建置需要 cargo 的 `wasm32-unknown-unknown` target 與 `wasm-bindgen-cli` 0.2.130，不需要任何 npm 套件。詳見 [doc/site.md](doc/site.md)。
 
 ### 任何 Python 函式庫：Python 橋接
 

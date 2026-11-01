@@ -8,6 +8,7 @@ const BLURBS = {
   playground: ["nn", "An MLP learns to separate spirals, circles and XOR, with its decision boundary drawn live."],
   fit: ["nn", "A network fits sin, |x|, a step or sinc from noisy samples; plots by ruai.plot."],
   descent: ["autograd", "SGD, momentum and Adam race down Rosenbrock's valley. Click to choose the start."],
+  mnist: ["nn", "A convolutional network learns handwritten digits, ConvNetJS style: every layer's activations, and a pad to draw on."],
   gpt: ["WebGPU", "Train a character-level GPT on your GPU with WGSL compute shaders, then let it write."],
   cartpole: ["RL", "A policy network learns to balance a pole with the REINFORCE policy gradient."],
   mountaincar: ["RL", "Tabular Q-learning learns to rock an underpowered car up the hill."],

@@ -26,6 +26,9 @@ rustc-ice-*.txt
 # model weights / datasets
 *.rsnn
 data/
+# the website's data (the MNIST subset)
+!/site/src/data/
+!/site/dist/data/
 runs/
 *.safetensors
 

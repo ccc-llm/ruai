@@ -12,6 +12,7 @@ mod gallery;
 mod gpt;
 mod gym;
 mod lake;
+mod mnist;
 mod mountaincar;
 mod playground;
 

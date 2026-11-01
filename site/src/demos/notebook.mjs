@@ -54,7 +54,7 @@ export async function mount(el) {
       <button data-a="new" title="Start a new notebook">New</button>
     </div>
     <div class="nb-cells" data-id="cells"></div>
-    <p class="note nb-help"><kbd>Shift</kbd>+<kbd>Enter</kbd> run and move on · <kbd>Ctrl/⌘</kbd>+<kbd>Enter</kbd> run in place · <kbd>Alt</kbd>+<kbd>Enter</kbd> run and insert a cell · double-click text to edit</p>
+    <p class="note nb-help"><span><kbd>Shift</kbd>+<kbd>Enter</kbd> run and move on</span><span><kbd>Ctrl/⌘</kbd>+<kbd>Enter</kbd> run in place</span><span><kbd>Alt</kbd>+<kbd>Enter</kbd> run and insert a cell</span><span>double-click text to edit</span></p>
   </div>`;
   const $ = (id) => el.querySelector(`[data-id="${id}"]`);
   const cellsEl = $("cells");

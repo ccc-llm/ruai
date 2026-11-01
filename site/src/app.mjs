@@ -6,11 +6,11 @@ import { ready } from "./lib/ruai.mjs";
 export const PAGES = [
   { group: "Start", items: [["", "Overview", "home"]] },
   { group: "py0 (Python → wasm)", items: [["ide", "py0 IDE", "ide"], ["notebook", "py0 Notebook", "notebook"]] },
-  { group: "Neural networks", items: [["playground", "Classifier playground", "playground"], ["fit", "Curve fitting", "fit"], ["descent", "Optimizer race", "descent"], ["gpt", "GPT on WebGPU", "gpt"]] },
+  { group: "Neural networks", items: [["playground", "Classifier playground", "playground"], ["fit", "Curve fitting", "fit"], ["descent", "Optimizer race", "descent"], ["mnist", "MNIST · CNN", "mnist"], ["gpt", "GPT on WebGPU", "gpt"]] },
   { group: "Reinforcement learning", items: [["cartpole", "CartPole · REINFORCE", "cartpole"], ["mountaincar", "MountainCar · Q-learning", "mountaincar"], ["lake", "FrozenLake · value iteration", "lake"], ["gym", "Play the environments", "gym"]] },
   { group: "Plots", items: [["plots", "ruai.plot gallery", "plots"]] },
 ];
-const FULL = new Set(["ide", "notebook"]);
+const FULL = new Set(["ide"]);
 
 const view = document.getElementById("view");
 const side = document.getElementById("side");

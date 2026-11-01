@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- Website: an **MNIST** demo in the style of ConvNetJS. A CNN (conv 5×5×8 → pool → conv
+  5×5×16 → pool → softmax) trains on 12,000 MNIST digits in the page (about 0.7 ms per
+  example, about 93% test accuracy after 4,000 examples). The page shows the activations of
+  every layer and the first layer's filters, the three likeliest classes of 60 test digits,
+  and a pad to draw a digit on. The data is `site/src/data/mnist.bin.gz` (2.1 MB, made by
+  `site/tools/mnist.mjs`).
+- Website: the notebook scrolls to its last cell again, and its keyboard hints wrap on
+  narrow screens.
+- py0: generated Rust compiles under `RUSTFLAGS="-D warnings"`. Programs that bind
+  Python names such as `X` get `#![allow(non_snake_case)]`. Arguments of `@rust`
+  templates are no longer put in parentheses where they stand alone. The cargo builds
+  of `ruai py run / test / fuzz / pyo3` cap lints at warnings, so a Python program that
+  assigns a value it never reads still builds.
+- `tests/data.rs`: worker parallelism is checked by how many batches are collated at the
+  same moment, not by wall-clock time (which failed on a busy CI runner).
+- CI: Python 3.14, the reference version of py0 (3.12 differs in error messages and in
+  lazily evaluated annotations), and actions that run on Node.js 24.
+
 ## 4.5.0
 
 - **The website** (`site/`, published on GitHub Pages by `.github/workflows/pages.yml`):
