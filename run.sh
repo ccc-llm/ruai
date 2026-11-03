@@ -9,12 +9,16 @@
 #   serve [port]   serve site/dist (default port 8000)
 #   dev [port]     build, then serve
 #   watch [port]   serve, and copy the pages again whenever site/src changes
-#   test           compile and run every py0 example with the built compiler
+#   test           compile and run every rupy example with the built compiler
 #   size           sizes of the built files
 #   clean          remove site/dist and the site crate's build directory
+#
+# The IDE and the notebook use rupy's compiler: a checkout of
+# https://github.com/ccc-claude-opus/rupy in RUPY_DIR (default ../rupy).
 set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SITE="$ROOT/site"
+RUPY="${RUPY_DIR:-$(dirname "$ROOT")/rupy}"
 BINDGEN=0.2.130
 
 usage() {
@@ -53,6 +57,11 @@ case "$cmd" in
       echo "ok       wasm-bindgen $BINDGEN"
     else
       echo "missing  wasm-bindgen $BINDGEN (./run.sh setup)"; ok=0
+    fi
+    if [ -f "$RUPY/src/wasm/host.mjs" ]; then
+      echo "ok       rupy in $RUPY"
+    else
+      echo "missing  rupy in $RUPY (git clone https://github.com/ccc-claude-opus/rupy, or set RUPY_DIR)"; ok=0
     fi
     [ "$ok" = 1 ] || exit 1
     ;;

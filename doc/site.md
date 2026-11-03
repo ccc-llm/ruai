@@ -1,6 +1,6 @@
 # The ruai website
 
-`site/` is a static website that runs ruai in the browser: a py0 IDE, a py0
+`site/` is a static website that runs ruai in the browser: a rupy IDE, a rupy
 notebook, and demos of the neural network engine, the reinforcement-learning
 environments and the plots. Everything is compiled to WebAssembly and runs on
 the visitor's machine. There is no server, and the GPT demo trains on the GPU
@@ -18,7 +18,7 @@ through WebGPU.
 ./run.sh dev [port]    # build, then serve
 ./run.sh watch [port]  # serve, and copy the pages again whenever site/src changes
 ./run.sh pages         # copy the pages again without rebuilding the wasm
-./run.sh test          # compile and run every py0 example with the built compiler
+./run.sh test          # compile and run every rupy example with the built compiler
 ./run.sh size          # sizes of the built files
 ./run.sh clean         # remove site/dist and site/wasm/target
 ```
@@ -26,7 +26,9 @@ through WebGPU.
 These commands run the Node.js scripts in `site/`: `build.mjs`, `serve.mjs`
 and `test.mjs`. You can also run the scripts directly. To build the site you
 need cargo with the `wasm32-unknown-unknown` target, `wasm-bindgen-cli`
-0.2.130, and Node.js 18 or newer. No npm packages are needed.
+0.2.130, Node.js 18 or newer, and a checkout of
+[rupy](https://github.com/ccc-claude-opus/rupy) next to this repository
+(`../rupy`, or set `RUPY_DIR`): the IDE and the notebook use its compiler. No npm packages are needed.
 
 ## Publishing on GitHub Pages
 
@@ -46,15 +48,15 @@ All paths in the site are relative, so it works under a project URL such as
 flowchart LR
   subgraph build["node site/build.mjs"]
     W["site/wasm<br/>(ruai: nn, world, plot, webgpu)"] -->|cargo + wasm-bindgen| P["dist/pkg/ruai_site.js<br/>ruai_site_bg.wasm"]
-    C["examples/py0_wasm.rs<br/>(the py0 translator)"] -->|cargo| Q["dist/py0/ruai_py0.wasm"]
-    H["src/py/wasm/host.mjs"] --> R["dist/py0/ruai_wasm.mjs"]
+    C["rupy: examples/rupy_wasm.rs<br/>(the rupy translator)"] -->|cargo| Q["dist/rupy/rupy.wasm"]
+    H["rupy: src/wasm/host.mjs"] --> R["dist/rupy/rupy_wasm.mjs"]
     S["site/src<br/>(pages, styles, examples)"] --> D["dist/"]
   end
   P --> Demos["demo pages"]
-  Q --> Worker["py0 worker"]
+  Q --> Worker["rupy worker"]
   R --> Worker
-  Worker --> IDE["py0 IDE"]
-  Worker --> NB["py0 notebook"]
+  Worker --> IDE["rupy IDE"]
+  Worker --> NB["rupy notebook"]
 ```
 
 - **`site/wasm/`** is a small crate (`cdylib`) that depends on ruai with
@@ -71,14 +73,14 @@ flowchart LR
 - **`site/src/`** is the page code. `app.mjs` is a hash router that mounts one
   module of `demos/` at a time. The libraries are in `lib/`:
   - `ruai.mjs` loads the wasm module once and gives `draw()` for `ruai::plot` figures;
-  - `py0.mjs` and `py0-worker.mjs` run py0;
+  - `rupy.mjs` and `rupy-worker.mjs` run rupy;
   - `editor.mjs` provides the editors;
   - `notebook.mjs` handles notebook execution and `.ipynb`;
   - `markdown.mjs` renders Markdown cells;
   - `envs.mjs` draws the environments.
-- **py0** programs compile and run in a Web Worker. The compiler is
-  `ruai_py0.wasm` (the translator built for wasm32), and the compiled WasmGC
-  module runs on `ruai_wasm.mjs`. Because the work happens off the page's
+- **rupy** programs compile and run in a Web Worker. The compiler is
+  `rupy.wasm` (the translator built for wasm32), and the compiled WasmGC
+  module runs on `rupy_wasm.mjs`. Because the work happens off the page's
   thread, the stop button can end an endless loop by terminating the worker.
 - **The editor** is Monaco, the editor of VS Code, loaded from jsDelivr
   (`monaco-editor@0.52.2`). When it cannot be loaded, for example offline,
@@ -86,7 +88,7 @@ flowchart LR
 
 ## The notebook
 
-py0 compiles whole programs, so a notebook cannot keep a live interpreter
+rupy compiles whole programs, so a notebook cannot keep a live interpreter
 between cells. To run cell *k*, the notebook compiles code cells 0…*k* as one
 program and prints a marker line before each cell. The output is then split at
 the markers, and each part goes to its cell. Variables, functions and classes
@@ -94,7 +96,7 @@ from earlier cells are therefore defined, just as in Jupyter. The earlier cells
 are run again each time, which takes a few milliseconds.
 
 When the last line of a run cell is an expression, the notebook prints its
-`repr` after a second marker, and the page shows it as `Out[n]`. py0 rejects
+`repr` after a second marker, and the page shows it as `Out[n]`. rupy rejects
 expression statements that have no effect. For that reason, a last expression
 that is not displayed is dropped, unless it is a call. If the displayed
 expression cannot be printed, the notebook compiles the program again without
@@ -107,7 +109,7 @@ back to the cell and the line inside it.
 - the last expression becomes an `execute_result`;
 - a Python traceback becomes an `error` output.
 
-py0 is a subset of Python, so the exported notebooks also run in Jupyter on
+rupy is a subset of Python, so the exported notebooks also run in Jupyter on
 CPython. **Open .ipynb** reads the code and Markdown cells of any notebook,
 along with their text outputs.
 
@@ -132,5 +134,5 @@ node site/tools/mnist.mjs DIR [TRAIN=12000] [TEST=2000]
    `export async function mount(el)`. It should return a function that stops
    its animations.
 3. Add it to `PAGES` in `site/src/app.mjs` and to `BLURBS` in `demos/home.mjs`.
-4. To add a py0 example to the IDE, put a `.py` file in `site/src/py0/examples/`.
-   It must compile with `ruai py wasm`.
+4. To add a rupy example to the IDE, put a `.py` file in `site/src/rupy/examples/`.
+   It must compile with `rupy wasm`.

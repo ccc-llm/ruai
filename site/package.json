@@ -2,7 +2,7 @@
   "name": "ruai-site",
   "private": true,
   "version": "1.0.0",
-  "description": "The ruai website: ruai's demos, a py0 IDE and a py0 notebook, compiled to WebAssembly (GitHub Pages)",
+  "description": "The ruai website: ruai's demos, a rupy IDE and a rupy notebook, compiled to WebAssembly (GitHub Pages)",
   "type": "module",
   "scripts": {
     "build": "node build.mjs",

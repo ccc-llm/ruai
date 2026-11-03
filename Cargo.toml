@@ -1,18 +1,18 @@
 [package]
 name = "ruai"
-version = "4.5.0"
+version = "5.0.0"
 edition = "2021"
-description = "A Swiss-army AI toolkit in Rust: a PyTorch-like engine (autograd, GPU, GPT-2/Llama), Gymnasium environments, py0 (typed Python compiled to Rust, with numpy / sklearn / torch subsets) and LLM agent teams, in one git-style `ruai` command"
+description = "A Swiss-army AI toolkit in Rust: a PyTorch-like engine (autograd, CPU / Metal / CUDA / WebGPU, GPT-2 / Llama), Gymnasium environments and matplotlib-style plots, in one git-style `ruai` command"
 license = "MIT"
 repository = "https://github.com/ccc-llm/ruai"
 readme = "README.md"
-keywords = ["deep-learning", "autograd", "python", "reinforcement-learning", "llm"]
-categories = ["science", "algorithms", "compilers", "command-line-utilities"]
+keywords = ["deep-learning", "autograd", "gpu", "reinforcement-learning", "llm"]
+categories = ["science", "algorithms", "command-line-utilities"]
 exclude = ["/scripts", "/runs", "/data", "*.safetensors", "/examples/webgpu-browser", "/site"]
 
-# docs.rs: the runtime packages too (the GPU backends need their hardware)
+# docs.rs: the default features (the GPU backends need their hardware)
 [package.metadata.docs.rs]
-features = ["pyrt-http", "pyrt-numpy", "pyrt-sklearn", "pyrt-gymnasium", "pyrt-torch", "pyrt-plot"]
+features = ["webgpu"]
 
 [dependencies]
 # --- nn: the deep learning engine
@@ -26,28 +26,12 @@ serde_json = { version = "1", optional = true }
 # tokenizer.json: pre-tokenizer regexes (with lookahead) and Unicode normalizers
 fancy-regex = { version = "0.20", optional = true }
 unicode-normalization = { version = "0.1", optional = true }
-# --- pyrt: runtime of translated py0 programs
-indexmap = { version = "2", optional = true }
-regex = { version = "1", optional = true }
-# ruai.http for py0 programs (an HTTP client with TLS)
-ureq = { version = "3", optional = true }
-# python: calling CPython libraries from py0 programs (an embedded interpreter)
-pyo3 = { version = "0.30", optional = true, features = ["auto-initialize"] }
-# --- py: the py0 → Rust translator (merged from py2rs)
-ruff_python_parser = { version = "0.0.20", optional = true }
-ruff_python_ast = { version = "0.0.20", optional = true }
-ruff_text_size = { version = "0.0.20", optional = true }
-ruff_source_file = { version = "0.0.20", optional = true }
 
 # CUDA: loaded at runtime (dynamic-loading), so it builds without the CUDA toolkit
 cudarc = { version = "0.19", optional = true, default-features = false, features = ["std", "driver", "nvrtc", "cublas", "f16", "dynamic-loading", "cuda-12080"] }
 # --- webgpu: the nn backend on WebGPU (wgpu: Metal / Vulkan / DX12 natively, WebGPU in browsers)
 wgpu = { version = "30", optional = true, default-features = false, features = ["wgsl", "metal", "vulkan", "dx12", "webgpu"] }
 pollster = { version = "0.4", optional = true }
-
-[target.'cfg(unix)'.dependencies]
-# pyrt: time.strftime (the local time zone)
-libc = { version = "0.2", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", optional = true }
@@ -56,30 +40,9 @@ objc2-metal = { version = "0.3", optional = true }
 objc2-metal-performance-shaders = { version = "0.3", optional = true }
 
 [features]
-default = ["nn", "world", "py", "agent", "plot"]
+default = ["nn", "world", "plot"]
 # The deep learning engine (ruai::nn, also re-exported at the crate root)
 nn = ["dep:rayon", "dep:matrixmultiply", "dep:half", "dep:safetensors", "dep:serde_json", "dep:fancy-regex", "dep:unicode-normalization"]
-# py0: the typed-Python translator (`ruai py`), and the runtime its programs use
-py = ["pyrt", "pyrt-re", "dep:serde_json", "dep:regex", "dep:ruff_python_parser", "dep:ruff_python_ast", "dep:ruff_text_size", "dep:ruff_source_file"]
-pyrt = ["dep:indexmap", "dep:libc"]
-# Python's `re` module for py0 programs
-pyrt-re = ["pyrt", "dep:regex"]
-# `ruai.http` for py0 programs (HTTPS client)
-pyrt-http = ["pyrt", "dep:ureq"]
-# `ruai.plot` for py0 programs (matplotlib.pyplot's API on `plot`)
-pyrt-plot = ["pyrt-numpy", "plot"]
-# `numpy` for py0 programs (a subset of NumPy's ndarray)
-pyrt-numpy = ["pyrt"]
-# `sklearn` for py0 programs (a subset of scikit-learn, on numpy)
-pyrt-sklearn = ["pyrt-numpy"]
-# `gymnasium` for py0 programs (the environments of `world`)
-pyrt-gymnasium = ["pyrt-numpy", "world"]
-# `torch` for py0 programs (a subset of PyTorch on the nn engine)
-pyrt-torch = ["pyrt-numpy", "nn"]
-# Python libraries for py0 programs through stubs with `# python: MODULE` (embeds CPython)
-pyrt-python = ["pyrt", "dep:pyo3"]
-# `ruai agent`: multi-agent LLM teams (agge, written in py0: src/agent/*.py)
-agent = ["py", "pyrt-http"]
 # Reinforcement-learning environments with the Gymnasium API (no dependencies)
 world = []
 # Plots in matplotlib's style on an HTML canvas or SVG (no dependencies)
@@ -112,8 +75,3 @@ opt-level = 2
 # tests compare floats read from Python's JSON output exactly
 serde_json = { version = "1", features = ["float_roundtrip"] }
 
-# The py0 → WebAssembly compiler for browsers (py0/web/build.sh)
-[[example]]
-name = "py0_wasm"
-crate-type = ["cdylib"]
-required-features = ["py"]

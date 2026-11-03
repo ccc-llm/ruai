@@ -1,13 +1,13 @@
-// Compile and run every py0 example of the site with the built compiler
-// (dist/py0), as the IDE does: node test.mjs (after node build.mjs).
+// Compile and run every rupy example of the site with the built compiler
+// (dist/rupy), as the IDE does: node test.mjs (after node build.mjs).
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const site = dirname(fileURLToPath(import.meta.url));
-const py0 = join(site, "dist/py0");
-const { run } = await import(pathToFileURL(join(py0, "ruai_wasm.mjs")).href);
-const compiler = (await WebAssembly.instantiate(readFileSync(join(py0, "ruai_py0.wasm")), {})).instance.exports;
+const rupy = join(site, "dist/rupy");
+const { run } = await import(pathToFileURL(join(rupy, "rupy_wasm.mjs")).href);
+const compiler = (await WebAssembly.instantiate(readFileSync(join(rupy, "rupy.wasm")), {})).instance.exports;
 
 function compile(text) {
   const bytes = new TextEncoder().encode(text);
@@ -18,7 +18,7 @@ function compile(text) {
   return status === 0 ? { wasm: out } : { error: new TextDecoder().decode(out) };
 }
 
-const dir = join(site, "src/py0/examples");
+const dir = join(site, "src/rupy/examples");
 let failed = 0;
 for (const name of readdirSync(dir).filter((f) => f.endsWith(".py")).sort()) {
   const r = compile(readFileSync(join(dir, name), "utf8"));

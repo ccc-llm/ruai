@@ -8,12 +8,8 @@
 #   mps-all        all tests again, with every tensor on the Apple GPU (RUSTNN_DEVICE=mps)
 #   webgpu         WebGPU against the CPU (tests/devices.rs)
 #   cuda           CUDA against the CPU (needs an NVIDIA GPU)
-#   py0            the py0 corpus against CPython (Rust and WebAssembly backends)
-#   wasm           only the py0 → WebAssembly corpus
-#   pyo3           py0 → a Python extension module, against CPython
 #   world          the Gymnasium environments against Gymnasium, bit for bit
-#   agent          ruai agent against CPython running the same py0 sources
-#   site           build the website and run its py0 examples
+#   site           build the website and run its rupy examples (needs ../rupy)
 #   check          build with each feature alone, for wasm32, the browser demo and the site crate
 #   lint           clippy (warnings are errors) and rustdoc
 #   pretrained     against real GPT-2 / SmolLM2 weights (scripts/download_*.sh first)
@@ -21,6 +17,8 @@
 #   ci             what CI runs on this OS
 #   all            every group this machine can run
 #   deps           show which tools and Python packages the tests need
+#
+# rupy (formerly py0, `ruai py` and `ruai agent`) has its own tests in its repository.
 #
 # A group's steps all run even when one fails; the exit code is non-zero if any failed.
 set -u
@@ -78,25 +76,17 @@ group() {
       if ! has_nvidia; then skip "cuda (no NVIDIA GPU)"; return; fi
       step "CUDA against the CPU" cargo test --release --features cuda --test devices
       ;;
-    py0) step "py0 corpus (Rust and wasm) against CPython" cargo test --release --test py0 ;;
-    wasm) step "py0 → wasm corpus against CPython" cargo test --release --test py0 wasm_corpus_matches_cpython ;;
-    pyo3)
-      step "build ruai" cargo build --release
-      step "py0 → PyO3 module against CPython" env PY2RS_PYTHON="$PYTHON" sh tests/py0/pyo3/run.sh
-      ;;
     world) step "environments against Gymnasium" cargo test --release --test world ;;
-    agent) step "ruai agent against CPython" cargo test --release --test agent ;;
     site)
       step "build the website" ./run.sh build
-      step "the website's py0 examples" ./run.sh test
+      step "the website's rupy examples" ./run.sh test
       ;;
     check)
       step "no features" cargo check --lib --no-default-features
-      for f in world pyrt py agent plot pyrt-python; do
+      for f in world plot; do
         step "feature $f alone" cargo check --no-default-features --features "$f"
       done
       step "webgpu for wasm32" cargo check --lib --target wasm32-unknown-unknown --no-default-features --features webgpu
-      step "py0 compiler for wasm32" cargo build --release --example py0_wasm --target wasm32-unknown-unknown --no-default-features --features py
       step "browser demo for wasm32" cargo build --release --target wasm32-unknown-unknown --manifest-path examples/webgpu-browser/Cargo.toml
       step "site crate for wasm32" cargo build --release --target wasm32-unknown-unknown --manifest-path site/wasm/Cargo.toml
       step "cuda builds (no GPU needed)" cargo check --all-targets --features cuda
@@ -125,7 +115,6 @@ group() {
         step "rustdoc mps" env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features mps
       else
         group cpu
-        group pyo3
         group check
         group lint
       fi
@@ -133,7 +122,6 @@ group() {
     all)
       group cpu
       group gpu
-      group pyo3
       group site
       group check
       group lint
@@ -143,7 +131,7 @@ group() {
       for t in cargo node "$PYTHON"; do
         if command -v "$t" >/dev/null 2>&1; then echo "ok       $t"; else echo "missing  $t"; fi
       done
-      for m in numpy gymnasium sklearn matplotlib torch; do
+      for m in numpy gymnasium; do
         if "$PYTHON" -c "import $m" 2>/dev/null; then echo "ok       python: $m"; else echo "missing  python: $m (pip install ${m/sklearn/scikit-learn})"; fi
       done
       if rustup target list --installed 2>/dev/null | grep -q wasm32-unknown-unknown; then echo "ok       wasm32 target"; else echo "missing  wasm32 target (./run.sh setup)"; fi

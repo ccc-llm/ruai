@@ -1,4 +1,4 @@
-// Code editors for py0: Monaco (the editor of VS Code, loaded from a CDN)
+// Code editors for rupy: Monaco (the editor of VS Code, loaded from a CDN)
 // when it can be loaded, else a plain textarea with the same interface:
 //   { getValue, setValue, focus, layout, setErrors([{line, message}]),
 //     onChange(fn), onCursor(fn), revealLine(n), dispose }
@@ -114,7 +114,7 @@ function monacoEditor(monaco, el, opts) {
     setErrors: (errs) =>
       monaco.editor.setModelMarkers(
         ed.getModel(),
-        "py0",
+        "rupy",
         errs.map((e) => ({ startLineNumber: e.line, endLineNumber: e.line, startColumn: 1, endColumn: ed.getModel().getLineMaxColumn(Math.min(e.line, ed.getModel().getLineCount())), message: e.message, severity: monaco.MarkerSeverity.Error })),
       ),
     onChange: (fn) => ed.onDidChangeModelContent(() => fn()),

@@ -12,8 +12,8 @@
 |---|---|---|---|
 | `ruai::nn`（feature `nn`） | `ruai nn ...` | 類似 PyTorch 的神經網路引擎：動態計算圖 + 自動微分（含二階）、CPU / Apple GPU（MPS）/ NVIDIA GPU（CUDA）、CNN、ResNet、ViT、GPT / GPT-2 / Llama、量化、safetensors | ✅ |
 | `ruai::world`（feature `world`） | `ruai world ...` | gymnasium 1.x 的 API 與環境（CartPole、MountainCar、Pendulum、Acrobot、FrozenLake），相同 seed 下與 gymnasium 逐位元相同 | ✅ |
-| `ruai::py`（feature `py`） | `ruai py ...` | py0：受限、強型別的 Python，翻成可讀的 Rust 再編譯執行（由 py2rs 併入，見 [py0/](py0/README.tw.md)），附以 Rust 重寫的 Python 標準函式庫與 numpy、scikit-learn、Gymnasium、PyTorch 子集 | ✅ |
-| agent（feature `agent`） | `ruai agent ...` | 以 py0 寫成的 agge：LLM agent 團隊寫程式與寫書、graph 工作流程（原始碼 [src/agent/](src/agent/README.md)，CPython 也能執行） | ✅ |
+| `ruai::plot`（feature `plot`） | | 以 matplotlib pyplot 的 API 繪圖，輸出到 HTML canvas 或 SVG |
+| [rupy](https://github.com/ccc-claude-opus/rupy)（獨立的 crate） | `ruai py ...`、`ruai agent ...` | 把強型別的 Python 子集編成可讀的 Rust 或 WebAssembly，附 numpy、scikit-learn、Gymnasium、PyTorch 的子集（後兩者建在 ruai 上），以及用它寫成的 LLM agent 團隊 `ruai agent`。它原本是 ruai 4.5 以前內建的 py0；`cargo install rupy` 會裝上 `ruai-py` 與 `ruai-agent`，ruai 遇到 `ruai py`、`ruai agent` 就會執行它們 |
 
 ```bash
 cargo install ruai                    # 或在 checkout 中：cargo build --release
@@ -21,16 +21,12 @@ ruai nn devices                       # 可用的運算裝置
 ruai nn info data/smollm2-135m        # 模型摘要（只讀 safetensors 標頭）
 ruai nn generate --model data/gpt2 --prompt "The dog" -n 18
 ruai nn generate --model data/smollm2-135m --device mps --int8 --prompt "Gravity is"
-ruai py run prog.py                   # py0：翻成 Rust、編譯（有快取）並執行
-ruai py emit prog.py                  # 印出翻譯的 Rust 程式
 ruai world list                       # 內建環境與其空間
 ruai world run CartPole-v1 --episodes 3 --seed 1
-ruai agent init && ruai agent chat    # LLM agent 團隊：互動對話（/help 看指令）
-ruai agent code "寫一個 todo CLI" -o todo   # 設計 → 實作 → 測試 → 審查
 ruai NAME ...                         # 其他名稱會執行 PATH 上的 ruai-NAME（像 git）
 ```
 
-函式庫裡引擎在 `ruai::nn`，也 re-export 在根目錄（`ruai::Tensor` 等同 `ruai::nn::Tensor`，`ruai::nn::Linear`、`ruai::nn::llama::Llama` 等 v2 路徑照舊可用）。只要部分功能時可關掉預設 features：`ruai = { version = "4", default-features = false, features = [...] }`。
+函式庫裡引擎在 `ruai::nn`，也 re-export 在根目錄（`ruai::Tensor` 等同 `ruai::nn::Tensor`，`ruai::nn::Linear`、`ruai::nn::llama::Llama` 等 v2 路徑照舊可用）。只要部分功能時可關掉預設 features：`ruai = { version = "5", default-features = false, features = [...] }`。
 
 ## 安裝
 
@@ -188,90 +184,15 @@ println!("{}", tok.decode(&ids, true));                         // true：略過
 
 > ✅ 已以 SmolLM2-135M 的官方權重驗證（`./scripts/download_smollm.sh` 後 `cargo test --release --test llama --test tokenizer`）：`tokenizer.json` 分詞結果正確，logits 與另外以純 PyTorch 依 Hugging Face `LlamaForCausalLM` 寫成的獨立實作相差不到 3e-4（每個位置的 argmax 都相同，CPU 與 MPS）；GPT-2 的 `tokenizer.json` 與 `vocab.json` + `merges.txt` 逐 token 相同。實測（Apple M3，40 個 token）：CPU f32 / int8 / int4 = 36 / 53 / 61 tokens/s，MPS = 29 / 92 / 99 tokens/s（30 層的小模型在 MPS 上受每個 op 的派送開銷限制）。尚未驗證：Llama 3 的 `rope_scaling`、Llama 2 的 SentencePiece 式 `tokenizer.json`。
 
-### py0：強型別的 Python 子集（py）
+### Python：rupy
 
-```python
-from dataclasses import dataclass
-
-@dataclass
-class Item:
-    name: str
-    price: float
-
-def total(items: list[Item], tax: float = 0.05) -> float:
-    return sum(i.price for i in items) * (1 + tax)
-
-print(f"{total([Item('apple', 1.5), Item('pear', 2.25)]):.2f}")
-```
-
-**py0 套件與標準函式庫**：`import M` / `import M as A` / `from M import x` 會在 `src/py/lib/M.pyi`（以及 `PY0_LIB` 列出的目錄）找套件 stub——以型別宣告描述函式與類別，對應到 `ruai::pyrt::lib::M` 下的 Rust 實作（或 stub 開頭 `# rust:` 指定的路徑；需要額外依賴時以 `# crate: pyrt/FEATURE` 開啟 ruai 的執行期 feature）。Python 標準函式庫逐模組以 Rust 重寫在 `src/pyrt/lib/`，每個模組都有與 CPython 對照的測試程式（`tests/py0/py/std_*.py`）。目前有 `shlex`（split / quote / join）、`fnmatch`（fnmatch / fnmatchcase / filter）、`html`（escape / unescape，含完整 HTML5 實體表）、`subprocess.run`，以及內建模組的擴充：`os`（getcwd、environ.get、listdir、makedirs、rmdir、rename、getpid）、`os.path`（isdir、isfile、abspath、realpath、expanduser、dirname、basename、splitext、relpath、normpath、getsize）、`sys.stdin.isatty` / `sys.stderr.write`、`time.strftime`；另外 py2rs 原本內建 `math`、`collections`、`heapq`、`bisect`、`itertools`、`functools`、`random`、`re`、`sys`、`time`、`json.dumps`、`os.path`。stub 可宣告 `Result[T, OSError | ...]`，讓 Rust 實作丟出 CPython 的例外類別。ruai 自己的套件：`ruai.json`（`Json`：有靜態型別的 JSON 值，`dumps` 與 CPython 的 `json.dumps` 逐字相同）、`ruai.http`（HTTP(S) 請求，逐行讀取回應以支援 server-sent events，feature `pyrt-http`）；它們在 `py0/python/ruai/` 有給 CPython 用的對應實作，所以同一支程式兩邊都能跑。
-
-`ruai py run prog.py` 把它翻成可讀的 Rust（`ruai py emit` 可看），以 Cargo 編譯（第一次需要幾秒，之後有快取）後執行，輸出與 CPython 相同；做不到時在翻譯階段就以行號與提示拒絕。py0 由 [py2rs](py0/README.tw.md) 併入（保留完整 git 歷史），規格見 [py0/SPEC.md](py0/SPEC.md)。翻譯出的程式依賴 `ruai`，但只開執行期 feature（`default-features = false, features = ["pyrt"]`），不會編譯神經網路引擎。執行 py0 程式需要 Rust 工具鏈（cargo）。
-
-### LLM agent 團隊（agent）
+強型別的 Python 編成 Rust 或 WebAssembly（ruai 4.5 以前的 `ruai py`）現在是獨立的 crate [rupy](https://github.com/ccc-claude-opus/rupy)。它的 `torch`、`gymnasium` 與 `ruai.plot` 套件建在 ruai 的 `nn`、`world` 與 `plot` 上：
 
 ```bash
-ruai agent init                                   # 在目前目錄建立 .agge/（設定、agent、graph、紀錄）
-ruai agent model add glm nvidia z-ai/glm-5.3-flash   # provider：openai、nvidia、openrouter、deepseek、groq、gemini、ollama、lmstudio、anthropic
-ruai agent chat --team code                       # 與 lead 對話，lead 以 <delegate> 分派給 architect / coder / tester / reviewer
-ruai agent ask -y "建立 hello.py 並執行"            # 單次任務：agent 以文字標籤呼叫工具（讀寫檔、搜尋、shell）
-ruai agent book "Git 入門" --chapters 3 -o gitBook   # 大綱 → 各章（map 節點）→ 總編輯
-ruai agent run brainstorm "如何設計快取層" -M merge=claude
+cargo install rupy
+rupy run prog.py                      # 也可以：ruai py run prog.py（ruai 會執行 ruai-py）
+ruai agent chat                       # ruai-agent，隨 rupy 安裝
 ```
-
-`ruai agent` 是 [agge](src/agent/README.md)（約 2,500 行的 Python）以 py0 改寫後翻成 Rust、編進 `ruai` 執行檔，不需要 Python 或 cargo。同一份原始碼（`src/agent/*.py`）也能直接以 CPython 執行；`tests/agent.rs` 用同一串指令（含一個假的 OpenAI / Anthropic 串流伺服器）比對兩者的輸出逐字相同，並檢查嵌入的翻譯 `src/cli/agent_gen.rs` 是最新的。與原版的差異：平行的 delegate、graph 節點與 map 項目改為依序執行；聊天介面沒有 readline 歷史與補完。
-
-### py0 的 numpy
-
-```python
-import numpy as np
-
-rng = np.random.default_rng(0)
-x = rng.random((50, 3))
-y = x @ np.array([2.0, -1.0, 0.5]) + 0.3
-w = np.zeros(3)
-for _ in range(2000):
-    err = x @ w - y
-    w = w - 0.5 * (x.T @ err) / x.shape[0]
-print(np.round(w, 3), x[x[:, 0] > 0.9].shape, round(float(np.abs(x @ w - y).mean()), 6))
-```
-
-`import numpy as np` 在 py0 中是以 Rust 實作的 NumPy 子集（`src/pyrt/lib/numpy/`）：float64 / int64 / bool 陣列、NumPy 2 的型別提升與廣播、切片是共用記憶體的 view、布林遮罩與索引陣列、沿軸的歸約（`sum` 採用 NumPy 的 pairwise 加總順序）、`linalg`、與 NumPy 逐位元相同的 `random.default_rng`；`print` / `repr` 與 NumPy 的 `arrayprint` 逐字相同。同一支程式用 CPython 執行時就是真的 NumPy，`tests/py0/numpy/` 逐支比對。因為 py0 是靜態型別：`a[i]` 與歸約的結果是 0 維陣列（NumPy scalar），需要 Python float 時寫 `float(a.sum())`；`a.shape` 可索引但不能拆包；dtype 用字串（`dtype="int64"`）。浮點矩陣乘法依序加總，可能與 NumPy 的 BLAS 在最後一位不同。
-
-### py0 的 sklearn
-
-```python
-from sklearn.datasets import load_iris
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-
-iris = load_iris()
-Xtr, Xte, ytr, yte = train_test_split(iris.data, iris.target, test_size=0.3, random_state=42)
-sc = StandardScaler().fit(Xtr)
-model = LogisticRegression().fit(sc.transform(Xtr), ytr)
-print(model, model.score(sc.transform(Xte), yte))
-```
-
-`from sklearn.X import Y` 在 py0 中是以 Rust 實作、建在 numpy 陣列上的 scikit-learn 子集（`src/pyrt/lib/sklearn/`）：`LinearRegression`、`Ridge`、`LogisticRegression`、`KNeighborsClassifier` / `Regressor`、`GaussianNB`、`KMeans`、`PCA`、`StandardScaler`、`MinMaxScaler`、`train_test_split`、常用指標與 `load_iris`。演算法依照 scikit-learn（相同的置中、求解器的最佳解、PCA 的正負號慣例、`train_test_split` 用同樣的 `RandomState` 亂數，所以切分完全相同），`tests/py0/sklearn/` 以真的 scikit-learn 對照輸出。差異：scikit-learn 提早停止的迭代求解器（lbfgs）只在其容許誤差內相同；k-NN 距離剛好相等時可能選到不同的鄰居；`KMeans` 需要給初始中心（`init=陣列`）；`target_names` 是 list。
-
-### py0 的 gymnasium 與 torch
-
-```python
-import gymnasium as gym
-import torch
-import torch.nn as nn
-
-torch.manual_seed(0)
-policy = nn.Sequential(nn.Linear(4, 32), nn.Tanh(), nn.Linear(32, 2))
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=42)
-logits = policy(torch.from_numpy(obs))
-obs, reward, terminated, truncated, info = env.step(int(logits.argmax()))
-print(policy, logits, obs, reward)
-```
-
-`import gymnasium as gym` 是 `ruai::world` 的環境套上 Gymnasium 的 Python API（觀測值是 float32 的 numpy 陣列，與 Gymnasium 逐位元相同）；`import torch` 是建在 ruai nn 引擎上的 PyTorch 子集：autograd、`nn.Linear` 等模組、`nn.Sequential`、損失函數、`optim.SGD` / `Adam`、`torch.no_grad()`。`torch.manual_seed` 重現 PyTorch 的亂數產生器（MT19937），所以 `rand`、`randn` 與 `nn.Linear` 的初始權重都與 PyTorch 相同；張量與模組的印出格式也一樣。`tests/py0/gymnasium/`、`tests/py0/torch/` 以真的 Gymnasium 與 PyTorch 對照（訓練迴圈在 PyTorch 預設的 4 位小數下相同）。差異：模型用 `nn.Sequential` 或持有各層的一般類別（不能繼承 `nn.Module`），`parameters()` 回傳 list；dtype 在 py0 中是字串；矩陣乘積與元素函數可能與 PyTorch 的 BLAS / 向量化實作在最後一位不同。
 
 ### 繪圖：ruai.plot
 
@@ -287,17 +208,7 @@ ax.legend()
 plt.show()          # 在瀏覽器中開啟，畫在 <canvas> 上
 ```
 
-`ruai.plot`（Rust 中為 `ruai::plot`，feature `plot`，無相依套件）提供 matplotlib.pyplot 的 API：`plot`（格式字串如 `"r--o"`）、`scatter`、`bar`（含類別軸）、`hist`、`imshow`、`text`、`axhline` / `axvline`、標題、軸標籤、範圍、圖例、格線、`subplots` / `subplot`，以及 `Figure` / `Axes` / `Line2D` 物件。自動縮放與刻度採用 matplotlib 的規則（5% 邊界、sticky edges、`MaxNLocator`），所以 `get_xlim()` / `get_xticks()` 與 matplotlib 數值相同，`tests/py0/plot/` 逐一對照。`plt.show()` 產生含 canvas 的 HTML 頁面並以瀏覽器開啟（`MPLBACKEND=agg` 時不開啟）；`savefig` 輸出 `.svg` 或 `.html`。同一程式在 CPython 下直接使用 matplotlib（`py0/python/ruai/plot.py`）。尚未支援：PNG 輸出、`subplots(n, m)` 的二維格子（請用 `subplot`）、colorbar、對數座標。
-
-### py0 → WebAssembly，在瀏覽器中編譯
-
-```bash
-ruai py wasm prog.py            # prog.wasm + ruai_wasm.mjs（宿主程式）
-node ruai_wasm.mjs prog.wasm    # 或：ruai py wasm --run prog.py
-sh py0/web/build.sh && python3 -m http.server -d py0/web 8000   # playground
-```
-
-py0 也能**不經過 Rust，直接編譯成 WebAssembly**：`ruai::py::wasm` 把型別化的 IR 轉成 WasmGC 模組（物件、list、dict、set、tuple 與字串都是 GC 的 struct 與 array；例外使用 wasm 的例外處理），執行期函式直接生成在模組內，再加上一個小小的 JavaScript 宿主（`ruai_wasm.mjs`）負責輸出、浮點數的格式化與解析、數學函式和 str 方法，行為與 CPython 一致（最短的浮點 repr、正確捨入的格式規格）。翻譯器本身可以編譯成 `wasm32-unknown-unknown`，所以 `py0/web/` 的 **playground** 在瀏覽器裡把 py0 編成 wasm（每個程式幾毫秒）並執行，不需要伺服器或工具鏈。`tests/py0/` 的 263 支程式中有 221 支能編成 wasm，且輸出全部與 CPython 相同（`ruai py test --wasm`）；尚未支援：generator、函式當值、`nonlocal`、檔案、`re`、`heapq` / `itertools` / `random`，以及以 Rust 實作的套件（numpy、sklearn、gymnasium、torch、ruai.plot）。
+`ruai.plot`（Rust 中為 `ruai::plot`，feature `plot`，無相依套件）提供 matplotlib.pyplot 的 API：`plot`（格式字串如 `"r--o"`）、`scatter`、`bar`（含類別軸）、`hist`、`imshow`、`text`、`axhline` / `axvline`、標題、軸標籤、範圍、圖例、格線、`subplots` / `subplot`，以及 `Figure` / `Axes` / `Line2D` 物件。自動縮放與刻度採用 matplotlib 的規則（5% 邊界、sticky edges、`MaxNLocator`），所以 `get_xlim()` / `get_xticks()` 與 matplotlib 數值相同，rupy 的 `tests/corpus/plot/` 逐一對照。`plt.show()` 產生含 canvas 的 HTML 頁面並以瀏覽器開啟（`MPLBACKEND=agg` 時不開啟）；`savefig` 輸出 `.svg` 或 `.html`。rupy 程式以 `import ruai.plot as plt` 使用它；同一程式在 CPython 下直接使用 matplotlib（rupy 的 `python/ruai/plot.py`）。尚未支援：PNG 輸出、`subplots(n, m)` 的二維格子（請用 `subplot`）、colorbar、對數座標。
 
 ### 網站：在瀏覽器中執行 ruai
 
@@ -305,22 +216,7 @@ py0 也能**不經過 Rust，直接編譯成 WebAssembly**：`ruai::py::wasm` �
 ./run.sh dev       # 建置 site/ 並在 http://localhost:8000 提供（./run.sh help：所有指令）
 ```
 
-`site/` 是靜態網站，所有功能都編成 WebAssembly，由 `.github/workflows/pages.yml` 發佈到 GitHub Pages。網站裡有 VS Code 風格的 **py0 IDE**（檔案總管，檔案存在瀏覽器裡；分頁、Monaco 編輯器、終端機；編譯錯誤直接標在程式碼上；標準輸入；可以中斷無限迴圈的停止鍵），以及 Jupyter 風格的 **py0 notebook**（程式與 Markdown 格子，最後一行運算式顯示 `Out[n]`，可以匯出與開啟 `.ipynb`）。另外還有這些展示：MLP 分類器 playground、曲線擬合、SGD / momentum / Adam 走 Rosenbrock 山谷、ConvNetJS 風格的 MNIST CNN（各層 activation 視覺化、可以手寫數字讓它辨識）、用 WebGPU 訓練 GPT、REINFORCE 學 CartPole、Q-learning 學 MountainCar、value iteration 解 FrozenLake、用鍵盤玩 classic-control 環境，以及 `ruai.plot` 圖庫。`./run.sh` 也提供 `setup`、`check`、`build`、`serve`、`watch`、`test`、`size`、`clean`。建置需要 cargo 的 `wasm32-unknown-unknown` target 與 `wasm-bindgen-cli` 0.2.130，不需要任何 npm 套件。詳見 [doc/site.md](doc/site.md)。
-
-### 任何 Python 函式庫：Python 橋接
-
-```python
-import matplotlib.pyplot as plt
-import numpy as np
-
-x = np.linspace(0, 6.28, 50)
-fig, ax = plt.subplots(figsize=(6.0, 4.0))
-ax.plot(x, np.sin(x), "r-", label="sin")
-ax.legend()
-fig.savefig("sin.png")
-```
-
-除了以 Rust 重寫的套件，py0 也能呼叫**真正的 Python 函式庫**：第一行是 `# python: MODULE` 的 stub 用 py0 型別宣告該模組的函式與類別，每次呼叫都交給嵌入程式中的 CPython（PyO3，執行期 feature `pyrt-python`）。參數與結果雙向轉換（int、float、bool、str、None、list、dict、tuple、numpy 陣列）；預設值寫 `= ...` 表示交給 Python 自己的預設值；Python 的例外變成同名的 py0 例外。`matplotlib` 與 `matplotlib.pyplot` 附有整理好的 stub。其他模組可用 `ruai py stub --python MODULE` 以 `inspect` 產生草稿到 `py0lib/MODULE.pyi`（在程式旁、`./py0lib` 與 `PY0_LIB` 中尋找）：有標註的型別對應到 py0 型別，未知的成為 `Object`（任何 Python 物件，可接受任何值），再手動收緊型別。程式連結到第一個能 import 這些模組的 Python（`PY0_PYTHON`，否則 python3.14 / 3.13 / 3.12 / python3），執行時使用該直譯器的套件。取捨：執行時需要安裝那個 Python，呼叫是 CPython 的速度，型別檢查只到 stub 為止。`tests/py0/pybridge/` 以 CPython 對照橋接的程式（matplotlib，以及作為範例的標準模組）。
+`site/` 是靜態網站，所有功能都編成 WebAssembly，由 `.github/workflows/pages.yml` 發佈到 GitHub Pages。網站裡有 VS Code 風格的 **rupy IDE**（檔案總管，檔案存在瀏覽器裡；分頁、Monaco 編輯器、終端機；編譯錯誤直接標在程式碼上；標準輸入；可以中斷無限迴圈的停止鍵），以及 Jupyter 風格的 **rupy notebook**（程式與 Markdown 格子，最後一行運算式顯示 `Out[n]`，可以匯出與開啟 `.ipynb`）。另外還有這些展示：MLP 分類器 playground、曲線擬合、SGD / momentum / Adam 走 Rosenbrock 山谷、ConvNetJS 風格的 MNIST CNN（各層 activation 視覺化、可以手寫數字讓它辨識）、用 WebGPU 訓練 GPT、REINFORCE 學 CartPole、Q-learning 學 MountainCar、value iteration 解 FrozenLake、用鍵盤玩 classic-control 環境，以及 `ruai.plot` 圖庫。`./run.sh` 也提供 `setup`、`check`、`build`、`serve`、`watch`、`test`、`size`、`clean`。建置需要 cargo 的 `wasm32-unknown-unknown` target 與 `wasm-bindgen-cli` 0.2.130，不需要任何 npm 套件。詳見 [doc/site.md](doc/site.md)。
 
 ### 強化學習環境（world）
 
@@ -441,17 +337,11 @@ autocast 規則（同 PyTorch）：matmul / Linear / Conv 以半精度執行；s
 
 ```
 src/
-├── main.rs, cli/    `ruai` 指令（子指令派送、ruai nn / world / py / agent）
+├── main.rs, cli/    `ruai` 指令（子指令派送：ruai nn / world，其他從 PATH 找 ruai-NAME）
 ├── nn/              神經網路引擎（feature nn）
 ├── world/           Gymnasium 環境（feature world）
 ├── rng.rs           NumPy 相容亂數、MT19937
-├── plot/            matplotlib 風格的繪圖，輸出到 HTML canvas 或 SVG（feature plot）
-├── py/              py0 翻譯器（feature py，原 py2rs）
-│   ├── wasm/        不經 Rust 的 py0 → WebAssembly（WasmGC）與其 JavaScript 宿主
-│   └── lib/         套件 stub（*.pyi）：標準函式庫、numpy、sklearn、gymnasium、torch
-├── pyrt/            py0 程式的執行期（feature pyrt）
-│   └── lib/         以 Rust 實作的套件（pyrt-numpy、pyrt-sklearn、pyrt-gymnasium、pyrt-torch、pyrt-plot …）；python.rs：Python 橋接（pyrt-python）
-└── agent/           以 py0 寫成的 `ruai agent`（翻譯成 cli/agent_gen.rs）
+└── plot/            matplotlib 風格的繪圖，輸出到 HTML canvas 或 SVG（feature plot）
 nn/
 ├── backend/
 │   ├── mod.rs     Backend trait：約 15 個「原語」，所有裝置只需實作這些
@@ -576,7 +466,7 @@ RUSTNN_DEVICE=mps cargo test --features mps        # 同一組測試全部在 GP
 cargo test --features mps --test devices           # 每個 backend 原語：GPU 對照 CPU
 ```
 
-`./test.sh` 依群組執行並在最後列出摘要：`./test.sh cpu`、`gpu`（本機所有 GPU 後端對照 CPU）、`py0`、`pyo3`、`world`、`site`、`check`（各 feature 單獨建置、wasm32 建置）、`lint`、`pretrained`、`ci`（此作業系統上 CI 跑的內容）、`all`，或用 `./test.sh file gradcheck` 只跑一個檔案；`./test.sh deps` 列出測試需要的工具。
+`./test.sh` 依群組執行並在最後列出摘要：`./test.sh cpu`、`gpu`（本機所有 GPU 後端對照 CPU）、`world`、`site`、`check`（各 feature 單獨建置、wasm32 建置）、`lint`、`pretrained`、`ci`（此作業系統上 CI 跑的內容）、`all`，或用 `./test.sh file gradcheck` 只跑一個檔案；`./test.sh deps` 列出測試需要的工具。
 
 - `tests/gradcheck.rs`：對每個可微分運算（廣播、matmul 各種 batch 形式、conv、pool、softmax、layer norm、attention …）做中央差分的數值梯度檢查，並驗證 causal mask 不會偷看未來
 - `tests/backend.rs`：融合 kernel 與預設組合實作一致、matmul（含轉置、平行切塊）對照樸素實作、dtype 行為、新運算的數值
@@ -596,8 +486,6 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 - `tests/views.rs` / `tests/kvcache.rs`：view 不複製且與主機計算一致、view 是快照、matmul 直接讀轉置與 strided view、各 dtype；KV cache 容量加倍、回傳 view、先前的 view 與 clone 不受之後寫入影響、梯度可經 cache 回傳、100 步解碼與完整前向一致
 - `tests/second_order.rs`：逐元素、各種 matmul、softmax / log_softmax / cross-entropy、layer / RMS norm、embedding + gather、conv2d、融合 attention、gradient checkpointing 的 Hessian-向量積與有限差分一致；`backward_create_graph` 與 `autograd::grad` 的語意；gradient penalty 傳到參數的梯度與數值微分一致
 - `tests/world.rs`：6 個環境 × 4 個 seed × 400 步（含 autoreset）與 gymnasium 逐步、逐位元比對，向量環境、FrozenLake 文字算繪、NumPy 亂數（含 2⁶³ 以上的 seed、各種 `integers` 範圍）
-- `tests/agent.rs`：`ruai agent` 的嵌入翻譯是最新的；離線（echo 模型）約 50 個指令與互動對話、以及對假 LLM 伺服器（`tests/agent/fake_llm.py`：OpenAI / Anthropic、串流與否、原生 tool call、HTTP 500 重試）的輸出都與 CPython 執行同一份 py0 原始碼逐字相同
-- `tests/py0.rs` + `tests/py0/`：py2rs 的語料——259 支程式（含 `tests/py0/numpy/`、`sklearn/`、`gymnasium/`、`torch/` 分別對照真的 NumPy、scikit-learn、Gymnasium、PyTorch；每支程式在有它所需套件的 Python 上對照）逐一翻譯、編譯、執行，輸出、exit code 與例外類型都要與 CPython 3.12+ 相同；46 支應被拒絕的程式要以預期訊息拒絕；`tests/py0/pyo3/run.sh` 檢查 PyO3 擴充模組
 - `tests/training.rs`：MLP 學會 XOR、CNN（含 BatchNorm）收斂、GPT 記住序列、存檔/載入 round-trip
 
 ## 版本規劃
@@ -634,6 +522,7 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 | v4.3 | 不經 Rust 的 py0 → WebAssembly（WasmGC），py0 編譯器在瀏覽器中執行 | ✅ |
 | v4.4 | nn 的 WebGPU 後端（wgpu：Metal / Vulkan / DX12 與瀏覽器），在網頁中訓練 GPT | ✅ |
 | v4.5 | GitHub Pages 網站：VS Code 風格的 py0 IDE、可匯出 `.ipynb` 的 py0 notebook、各種展示；`run.sh`、`test.sh` | ✅ |
+| v5.0 | py0（`ruai py`、`ruai agent`、`ruai::py`、`ruai::pyrt`、feature `py` / `pyrt*` / `agent`）移到獨立的 crate [rupy](https://github.com/ccc-claude-opus/rupy)；網站新增 MNIST CNN 展示 | ✅ |
 
 ## 穩定性
 
@@ -641,9 +530,8 @@ cargo test --features mps --test devices           # 每個 backend 原語：GPU
 
 - `ruai::nn`（也 re-export 在 crate 根目錄）、`ruai::world`、`ruai::rng` 的 Rust API；
 - `ruai` 指令（子指令與選項）；
-- py0 語言（[py0/SPEC.md](py0/SPEC.md)）與其套件的行為：在某個 4.x 能執行的程式，在之後的 4.x 也能執行且輸出相同。
 
-`ruai::py`（翻譯器）與 `ruai::pyrt`（翻譯出的程式呼叫的執行期）因為產生的程式碼要用而是公開的，但它們的 Rust API 跟著翻譯器走，次版本間可能改變；翻譯出的程式依賴對應版本的 ruai。
+從 5.0 起，py0 語言就是 rupy，版本由 rupy 自己管理。
 
 ## 目前限制
 

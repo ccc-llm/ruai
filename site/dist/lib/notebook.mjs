@@ -1,13 +1,13 @@
 // Notebook execution and the .ipynb format.
 //
-// py0 compiles whole programs, so running cell k compiles cells 0..k as one
+// rupy compiles whole programs, so running cell k compiles cells 0..k as one
 // program with a marker printed before each cell; the output is split at the
 // markers. A cell whose last line is an expression shows its repr, like
-// Jupyter's Out[n]. py0 rejects expression statements that have no effect,
+// Jupyter's Out[n]. rupy rejects expression statements that have no effect,
 // so a last expression that is not shown is dropped unless it is a call.
 
-const MARK = (i) => `__py0_cell_${i}__`;
-const RESULT = (i) => `__py0_result_${i}__`;
+const MARK = (i) => `__rupy_cell_${i}__`;
+const RESULT = (i) => `__rupy_result_${i}__`;
 const STATEMENT = /^(def|class|if|elif|else|for|while|with|try|except|finally|import|from|return|pass|break|continue|raise|assert|del|global|nonlocal|async|await|lambda|@|print\s*\()/;
 
 /** The last line of `code` as an expression to display, or null. */
@@ -86,7 +86,7 @@ export function splitOutput(chunks, n) {
   let cur = -1, inResult = false;
   let pending = "";
   const line = (l) => {
-    const m = /^__py0_(cell|result)_(\d+)__$/.exec(l.replace(/\n$/, ""));
+    const m = /^__rupy_(cell|result)_(\d+)__$/.exec(l.replace(/\n$/, ""));
     if (m) {
       if (m[1] === "cell") {
         cur = +m[2];
@@ -137,9 +137,9 @@ export function toIpynb(nb) {
         return { cell_type: "code", execution_count: c.count ?? null, id, metadata: {}, outputs, source: lines(c.source) };
       }),
       metadata: {
-        kernelspec: { display_name: "Python 3 (py0)", language: "python", name: "python3" },
+        kernelspec: { display_name: "Python 3 (rupy)", language: "python", name: "python3" },
         language_info: { name: "python", file_extension: ".py", mimetype: "text/x-python", codemirror_mode: { name: "ipython", version: 3 } },
-        py0: { note: "written in the ruai py0 notebook; py0 is a typed subset of Python, so it also runs on CPython" },
+        rupy: { note: "written in the ruai rupy notebook; rupy is a typed subset of Python, so it also runs on CPython" },
       },
       nbformat: 4,
       nbformat_minor: 5,

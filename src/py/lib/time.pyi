@@ -1,3 +1,0 @@
-"""py0: more of the builtin module `time`."""
-
-def strftime(format: str) -> str: ...

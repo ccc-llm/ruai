@@ -1,7 +1,7 @@
 //! # ruai
 //!
 //! A Swiss-army toolkit for AI in Rust, built as one crate whose parts are
-//! cargo features (`nn`, `world`, `py` and `agent` are on by default):
+//! cargo features (`nn`, `world` and `plot` are on by default):
 //!
 //! * [`nn`] (feature `nn`) — a PyTorch-like deep learning engine: tensors on
 //!   CPU / Apple GPU (`mps`) / NVIDIA GPU (`cuda`) / any GPU and browsers
@@ -12,27 +12,16 @@
 //! * [`world`] (feature `world`) — reinforcement-learning environments with
 //!   the Gymnasium API (CartPole, MountainCar, Pendulum, Acrobot,
 //!   FrozenLake), matching Gymnasium bit for bit for the same seed.
-//! * [`py`] (feature `py`) — py0, a typed subset of Python translated to
-//!   readable Rust: `ruai py run prog.py`. Translated programs depend on
-//!   `ruai` with only the [`pyrt`] runtime features: `pyrt` itself, and
-//!   `pyrt-re`, `pyrt-http`, `pyrt-numpy`, `pyrt-sklearn`, `pyrt-gymnasium`,
-//!   `pyrt-torch`, `pyrt-plot` for the packages of the same names (Python's
-//!   standard library, subsets of NumPy, scikit-learn, Gymnasium and PyTorch,
-//!   and `ruai.plot`), and
-//!   `pyrt-python`, the bridge that calls real Python libraries through
-//!   embedded CPython.
-//!   `ruai::py::wasm` compiles py0 straight to WebAssembly (WasmGC) without
-//!   Rust, and itself builds for `wasm32-unknown-unknown` (a browser playground:
-//!   `py0/web/`).
-//! * feature `agent` — `ruai agent`, teams of LLM agents, written in py0.
 //! * [`plot`] (feature `plot`) — plots in matplotlib's style, drawn on an
 //!   HTML canvas or as SVG.
 //! * [`rng`] — NumPy-compatible random numbers (`SeedSequence`, `PCG64`) and
 //!   the MT19937 of NumPy's `RandomState` and PyTorch.
 //!
 //! The `ruai` command line tool dispatches to the parts like `git`:
-//! `ruai nn generate ...`, `ruai py run ...`, `ruai world run ...`,
-//! `ruai agent chat`; an unknown `ruai NAME` runs `ruai-NAME` from `PATH`.
+//! `ruai nn generate ...`, `ruai world run ...`; an unknown `ruai NAME` runs
+//! `ruai-NAME` from `PATH`. Typed Python compiled to Rust (formerly `ruai py`,
+//! py0) and `ruai agent` are now [rupy](https://crates.io/crates/rupy), whose
+//! `ruai-py` and `ruai-agent` keep those commands working.
 //!
 //! ```
 //! use ruai::{Tensor, Device};
@@ -45,21 +34,12 @@
 //! ## Stability
 //!
 //! ruai follows semantic versioning for the Rust API of [`nn`] (and its
-//! re-exports), [`world`] and [`rng`], for the `ruai` command line, and for
-//! the py0 language and the behavior of its packages. [`py`] and [`pyrt`] are
-//! public because translated programs use them; their Rust API follows the
-//! translator and may change in minor versions.
+//! re-exports), [`world`], [`plot`] and [`rng`], and for the `ruai` command line.
 
 #![warn(missing_docs)]
 
 #[cfg(feature = "nn")]
 pub mod nn;
-#[cfg(feature = "py")]
-#[allow(missing_docs)]
-pub mod py;
-#[cfg(feature = "pyrt")]
-#[allow(missing_docs)]
-pub mod pyrt;
 pub mod rng;
 #[cfg(feature = "plot")]
 pub mod plot;

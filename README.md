@@ -12,8 +12,8 @@ A Swiss-army AI toolkit in Rust: one crate and one `ruai` command. Each part is 
 |---|---|---|
 | `ruai::nn` (feature `nn`) | `ruai nn ...` | A PyTorch-like deep learning engine: dynamic graphs and autograd (with second derivatives), CPU / Apple GPU (MPS) / NVIDIA GPU (CUDA), CNN, ResNet, ViT, GPT / GPT-2 / Llama, quantization, safetensors |
 | `ruai::world` (feature `world`) | `ruai world ...` | The Gymnasium 1.x API and environments (CartPole, MountainCar, Pendulum, Acrobot, FrozenLake), bit for bit identical to Gymnasium for the same seed |
-| `ruai::py` (feature `py`) | `ruai py ...` | py0: a typed subset of Python, translated to readable Rust, compiled and run (merged from py2rs, see [py0/](py0/README.md)), with Python's standard library and subsets of numpy, scikit-learn, Gymnasium and PyTorch rewritten in Rust |
-| agent (feature `agent`) | `ruai agent ...` | agge written in py0: teams of LLM agents that write code and books, graph workflows ([src/agent/](src/agent/README.md), which CPython runs too) |
+| `ruai::plot` (feature `plot`) | | Plots with matplotlib's pyplot API, drawn on an HTML canvas or as SVG |
+| [rupy](https://github.com/ccc-claude-opus/rupy) (its own crate) | `ruai py ...`, `ruai agent ...` | A typed subset of Python compiled to readable Rust or to WebAssembly, with subsets of numpy, scikit-learn, Gymnasium and PyTorch (the last two on ruai), and `ruai agent`, teams of LLM agents written in it. It was py0, part of ruai until 4.5; `cargo install rupy` adds `ruai-py` and `ruai-agent`, which ruai runs for `ruai py` and `ruai agent` |
 
 ```bash
 cargo install ruai                    # or, in a checkout: cargo build --release
@@ -21,16 +21,12 @@ ruai nn devices                       # available compute devices
 ruai nn info data/smollm2-135m        # model summary (reads only the safetensors header)
 ruai nn generate --model data/gpt2 --prompt "The dog" -n 18
 ruai nn generate --model data/smollm2-135m --device mps --int8 --prompt "Gravity is"
-ruai py run prog.py                   # py0: translate to Rust, compile (cached) and run
-ruai py emit prog.py                  # print the Rust translation
 ruai world list                       # built-in environments and their spaces
 ruai world run CartPole-v1 --episodes 3 --seed 1
-ruai agent init && ruai agent chat    # LLM agent teams: interactive chat (/help for commands)
-ruai agent code "write a todo CLI" -o todo   # design → implement → test → review
 ruai NAME ...                         # any other NAME runs ruai-NAME from PATH (like git)
 ```
 
-In the library the engine is `ruai::nn`, also re-exported at the crate root (`ruai::Tensor` is `ruai::nn::Tensor`; v2 paths such as `ruai::nn::Linear` and `ruai::nn::llama::Llama` keep working). To use only some parts, turn off the default features: `ruai = { version = "4", default-features = false, features = [...] }`.
+In the library the engine is `ruai::nn`, also re-exported at the crate root (`ruai::Tensor` is `ruai::nn::Tensor`; v2 paths such as `ruai::nn::Linear` and `ruai::nn::llama::Llama` keep working). To use only some parts, turn off the default features: `ruai = { version = "5", default-features = false, features = [...] }`.
 
 ## Installation
 
@@ -191,77 +187,15 @@ println!("{}", tok.decode(&ids, true));                         // true: skip sp
 
 > ✅ Verified with the official SmolLM2-135M weights (`./scripts/download_smollm.sh`, then `cargo test --release --test llama --test tokenizer`): `tokenizer.json` tokenizes correctly, and the logits differ by less than 3e-4 from an independent pure-PyTorch implementation of Hugging Face's `LlamaForCausalLM` (the same argmax at every position, CPU and MPS); GPT-2's `tokenizer.json` and `vocab.json` + `merges.txt` agree token for token. Measured (Apple M3, 40 tokens): CPU f32 / int8 / int4 = 36 / 53 / 61 tokens/s, MPS = 29 / 92 / 99 tokens/s (this small 30-layer model is bound by per-op dispatch on MPS). Not yet verified: Llama 3's `rope_scaling`, Llama 2's SentencePiece-style `tokenizer.json`.
 
-### py0: a typed subset of Python (py)
+### Python: rupy
 
-```python
-from dataclasses import dataclass
+Typed Python compiled to Rust or WebAssembly, `ruai py` until ruai 4.5, is now the crate [rupy](https://github.com/ccc-claude-opus/rupy). Its `torch`, `gymnasium` and `ruai.plot` packages run on ruai's `nn`, `world` and `plot`:
 
-@dataclass
-class Item:
-    name: str
-    price: float
-
-def total(items: list[Item], tax: float = 0.05) -> float:
-    return sum(i.price for i in items) * (1 + tax)
-
-print(f"{total([Item('apple', 1.5), Item('pear', 2.25)]):.2f}")
+```bash
+cargo install rupy
+rupy run prog.py                      # also: ruai py run prog.py (ruai runs ruai-py)
+ruai agent chat                       # ruai-agent, installed by rupy
 ```
-
-`ruai py run prog.py` translates it to readable Rust (`ruai py emit` shows it), compiles it with Cargo (a few seconds the first time, cached after) and runs it; it prints what CPython prints, and what it cannot do it rejects when translating, with the line and a hint. py0 was merged from [py2rs](py0/README.md) with its full git history; the language is specified in [py0/SPEC.md](py0/SPEC.md). Translated programs depend on `ruai` with only runtime features (`default-features = false, features = ["pyrt", ...]`), so they do not compile the neural network engine. Running py0 programs needs a Rust toolchain (cargo).
-
-**Packages and the standard library**: `import M` / `import M as A` / `from M import x` look for a package stub `src/py/lib/M.pyi` (and in the directories of `PY0_LIB`): typed declarations of functions, classes and constants, implemented in Rust under `ruai::pyrt::lib::M` (or the path a `# rust:` line gives; `# crate: pyrt/FEATURE` turns on a runtime feature of ruai). A parameter typed `A | B` makes overloads (a generic Rust function), several `def`s of one name are overloads too, and `Result[T, OSError | ...]` raises CPython's exception classes. Python's standard library is rewritten module by module in `src/pyrt/lib/`, each module checked against CPython (`tests/py0/py/std_*.py`): `shlex`, `fnmatch`, `html`, `subprocess.run`, more of `os` / `os.path` / `sys` / `time`, besides what py2rs built in (`math`, `collections`, `heapq`, `bisect`, `itertools`, `functools`, `random`, `re`, `sys`, `time`, `json.dumps`, `os.path`). ruai's own packages: `ruai.json` (`Json`, a JSON value with a static type whose `dumps` matches CPython's `json.dumps`) and `ruai.http` (HTTP(S) requests, read line by line for server-sent events); they have CPython stand-ins in `py0/python/ruai/`, so the same program runs on both.
-
-### py0 with numpy
-
-```python
-import numpy as np
-
-rng = np.random.default_rng(0)
-x = rng.random((50, 3))
-y = x @ np.array([2.0, -1.0, 0.5]) + 0.3
-w = np.zeros(3)
-for _ in range(2000):
-    err = x @ w - y
-    w = w - 0.5 * (x.T @ err) / x.shape[0]
-print(np.round(w, 3), x[x[:, 0] > 0.9].shape, round(float(np.abs(x @ w - y).mean()), 6))
-```
-
-In py0, `import numpy as np` is a subset of NumPy written in Rust (`src/pyrt/lib/numpy/`): float64 / float32 / int64 / bool arrays, NumPy 2's type promotion and broadcasting, slices that are views sharing memory, boolean masks and index arrays, reductions over axes (`sum` adds in NumPy's pairwise order), `linalg`, and `random.default_rng` bit for bit as NumPy; `print` / `repr` match NumPy's `arrayprint` character for character. Under CPython the same program runs the real NumPy, and `tests/py0/numpy/` compares them. Because py0 is statically typed: `a[i]` and reductions give 0-d arrays (NumPy scalars), so write `float(a.sum())` where a Python float is needed; `a.shape` can be indexed but not unpacked; dtypes are strings (`dtype="int64"`). Floating-point matrix products add in order and may differ from NumPy's BLAS in the last bit.
-
-### py0 with scikit-learn
-
-```python
-from sklearn.datasets import load_iris
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-
-iris = load_iris()
-Xtr, Xte, ytr, yte = train_test_split(iris.data, iris.target, test_size=0.3, random_state=42)
-sc = StandardScaler().fit(Xtr)
-model = LogisticRegression().fit(sc.transform(Xtr), ytr)
-print(model, model.score(sc.transform(Xte), yte))
-```
-
-In py0, `from sklearn.X import Y` is a subset of scikit-learn in Rust, on the numpy arrays (`src/pyrt/lib/sklearn/`): `LinearRegression`, `Ridge`, `LogisticRegression`, `KNeighborsClassifier` / `Regressor`, `GaussianNB`, `KMeans`, `PCA`, `StandardScaler`, `MinMaxScaler`, `train_test_split`, the common metrics and `load_iris`. The algorithms follow scikit-learn (the same centering, the solvers' optimum, PCA's sign convention, and `train_test_split` with the same `RandomState` numbers, so splits are identical); `tests/py0/sklearn/` compares the output with scikit-learn. Differences: iterative solvers that scikit-learn stops early (lbfgs) agree to their tolerance; k-NN may pick another neighbor when distances tie exactly; `KMeans` needs its initial centers (`init=array`); `target_names` is a list.
-
-### py0 with Gymnasium and PyTorch
-
-```python
-import gymnasium as gym
-import torch
-import torch.nn as nn
-
-torch.manual_seed(0)
-policy = nn.Sequential(nn.Linear(4, 32), nn.Tanh(), nn.Linear(32, 2))
-env = gym.make("CartPole-v1")
-obs, info = env.reset(seed=42)
-logits = policy(torch.from_numpy(obs))
-obs, reward, terminated, truncated, info = env.step(int(logits.argmax()))
-print(policy, logits, obs, reward)
-```
-
-`import gymnasium as gym` is `ruai::world`'s environments with Gymnasium's Python API (observations are float32 numpy arrays, bit for bit as Gymnasium's). `import torch` is a subset of PyTorch on ruai's nn engine: autograd, `nn.Linear` and other modules, `nn.Sequential`, losses, `optim.SGD` / `Adam`, `torch.no_grad()`. `torch.manual_seed` reproduces PyTorch's random number generator (MT19937), so `rand`, `randn` and `nn.Linear`'s initial weights are PyTorch's; tensors and modules print as in PyTorch. `tests/py0/gymnasium/` and `tests/py0/torch/` compare with Gymnasium and PyTorch (training loops agree at PyTorch's default 4 decimals). Differences: models are `nn.Sequential` or plain classes holding layers (subclassing `nn.Module` is not supported) and `parameters()` returns a list; dtypes are strings in py0; matrix products and element functions may differ from PyTorch's BLAS / vectorized code in the last bit.
 
 ### Plots: ruai.plot
 
@@ -277,17 +211,7 @@ ax.legend()
 plt.show()          # opens the figure in the browser, drawn on a <canvas>
 ```
 
-`ruai.plot` (`ruai::plot` in Rust, feature `plot`, no dependencies) has matplotlib.pyplot's API: `plot` (format strings such as `"r--o"`), `scatter`, `bar` (also categorical), `hist`, `imshow`, `text`, `axhline` / `axvline`, titles, labels, limits, legends, grids, `subplots` / `subplot`, and `Figure` / `Axes` / `Line2D` objects. Autoscaling and ticks are matplotlib's (5% margins, sticky edges, `MaxNLocator`), so `get_xlim()` / `get_xticks()` give matplotlib's numbers; `tests/py0/plot/` compares them. `plt.show()` writes an HTML page with a canvas and opens it in the browser (nothing with `MPLBACKEND=agg`); `savefig` writes `.svg` or `.html`. Under CPython the same program runs on matplotlib itself (`py0/python/ruai/plot.py`). Not yet: PNG output, 2-D grids from `subplots(n, m)` (use `subplot`), colorbars, log scales.
-
-### py0 → WebAssembly, in the browser
-
-```bash
-ruai py wasm prog.py            # prog.wasm + ruai_wasm.mjs (its host)
-node ruai_wasm.mjs prog.wasm    # or: ruai py wasm --run prog.py
-sh py0/web/build.sh && python3 -m http.server -d py0/web 8000   # the playground
-```
-
-py0 also compiles **straight to WebAssembly, without Rust**: `ruai::py::wasm` turns the typed IR into a WasmGC module (objects, lists, dicts, sets, tuples and strings are GC structs and arrays; exceptions use wasm exception handling), with its runtime generated into the module and a small JavaScript host (`ruai_wasm.mjs`) for output, float formatting and parsing, math and str methods, which follow CPython exactly (shortest float repr, format specs with correctly rounded decimals). The translator itself builds for `wasm32-unknown-unknown`, so the **playground** in `py0/web/` compiles py0 to wasm inside the browser (a few milliseconds per program) and runs it; no server or toolchain is involved. 221 of the 263 programs of `tests/py0/` compile to wasm and all of them print what CPython prints (`ruai py test --wasm`); not yet supported: generators, functions as values, `nonlocal`, files, `re`, `heapq` / `itertools` / `random`, and the packages implemented in Rust (numpy, sklearn, gymnasium, torch, ruai.plot).
+`ruai.plot` (`ruai::plot` in Rust, feature `plot`, no dependencies) has matplotlib.pyplot's API: `plot` (format strings such as `"r--o"`), `scatter`, `bar` (also categorical), `hist`, `imshow`, `text`, `axhline` / `axvline`, titles, labels, limits, legends, grids, `subplots` / `subplot`, and `Figure` / `Axes` / `Line2D` objects. Autoscaling and ticks are matplotlib's (5% margins, sticky edges, `MaxNLocator`), so `get_xlim()` / `get_xticks()` give matplotlib's numbers; rupy's `tests/corpus/plot/` compares them. `plt.show()` writes an HTML page with a canvas and opens it in the browser (nothing with `MPLBACKEND=agg`); `savefig` writes `.svg` or `.html`. rupy programs use it as `import ruai.plot as plt`; under CPython the same program runs on matplotlib itself (rupy's `python/ruai/plot.py`). Not yet: PNG output, 2-D grids from `subplots(n, m)` (use `subplot`), colorbars, log scales.
 
 ### The website: ruai in the browser
 
@@ -295,35 +219,7 @@ py0 also compiles **straight to WebAssembly, without Rust**: `ruai::py::wasm` tu
 ./run.sh dev       # build site/ and serve it at http://localhost:8000 (./run.sh help: all tasks)
 ```
 
-`site/` is a static website with everything compiled to WebAssembly, published on GitHub Pages by `.github/workflows/pages.yml`. It has a **py0 IDE** in the style of VS Code (an explorer of files kept in the browser, tabs, the Monaco editor, a terminal, problems marked in the code, standard input, and a stop button for endless loops) and a **py0 notebook** in the style of Jupyter (code and Markdown cells, `Out[n]` for a last expression, export to and import from `.ipynb`). It also has demos: an MLP classifier playground, curve fitting, SGD / momentum / Adam on Rosenbrock's valley, a CNN that learns MNIST in the style of ConvNetJS (every layer's activations, a pad to draw digits on), a GPT trained on WebGPU, REINFORCE on CartPole, Q-learning on MountainCar, value iteration on FrozenLake, the classic-control environments played with the keyboard, and a `ruai.plot` gallery. `./run.sh` also does `setup`, `check`, `build`, `serve`, `watch`, `test`, `size` and `clean`. The build needs cargo with the `wasm32-unknown-unknown` target and `wasm-bindgen-cli` 0.2.130, and no npm packages. See [doc/site.md](doc/site.md).
-
-### Any Python library: the Python bridge
-
-```python
-import matplotlib.pyplot as plt
-import numpy as np
-
-x = np.linspace(0, 6.28, 50)
-fig, ax = plt.subplots(figsize=(6.0, 4.0))
-ax.plot(x, np.sin(x), "r-", label="sin")
-ax.legend()
-fig.savefig("sin.png")
-```
-
-Besides the packages rewritten in Rust, py0 can call **the real Python library**: a stub whose first line is `# python: MODULE` declares the module's functions and classes with py0 types, and each call goes to CPython embedded in the program (PyO3, runtime feature `pyrt-python`). Arguments and results convert both ways (int, float, bool, str, None, list, dict, tuple, numpy arrays); `= ...` as a default leaves the argument to Python's default; Python's exceptions become py0 exceptions with the same names. `matplotlib` and `matplotlib.pyplot` ship as curated stubs. For any other module, `ruai py stub --python MODULE` drafts one from `inspect` into `py0lib/MODULE.pyi` (looked up next to the program, in `./py0lib` and in `PY0_LIB`): annotated types map to py0's, unknown ones become `Object` (any Python object, accepting any value), so tighten the types by hand. The program is linked to the first Python that imports its modules (`PY0_PYTHON`, else python3.14 / 3.13 / 3.12 / python3) and uses that interpreter's packages at runtime. The tradeoffs: the program needs that Python installed to run, calls cost CPython's speed, and type checking reaches only as far as the stub. `tests/py0/pybridge/` compares bridged programs (matplotlib, and standard modules as examples) with CPython.
-
-### LLM agent teams (agent)
-
-```bash
-ruai agent init                                   # create .agge/ here (settings, agents, graphs, logs)
-ruai agent model add glm nvidia z-ai/glm-5.3-flash   # providers: openai, nvidia, openrouter, deepseek, groq, gemini, ollama, lmstudio, anthropic
-ruai agent chat --team code                       # talk to the lead, who delegates (<delegate>) to architect / coder / tester / reviewer
-ruai agent ask -y "create hello.py and run it"    # one task: the agent calls tools by text tags (read/write files, search, shell)
-ruai agent book "Git for beginners" --chapters 3 -o gitBook   # outline → chapters (a map node) → editor
-ruai agent run brainstorm "how to design a cache layer" -M merge=claude
-```
-
-`ruai agent` is [agge](src/agent/README.md) (about 2,500 lines of Python) rewritten in py0, translated to Rust and built into the `ruai` binary, so it needs neither Python nor cargo. The same sources (`src/agent/*.py`) run directly under CPython; `tests/agent.rs` runs the same commands on both (also against a fake OpenAI / Anthropic streaming server) and requires identical output, and checks that the embedded translation `src/cli/agent_gen.rs` is up to date. Differences from the original: parallel delegations, graph nodes and map items run one after another; the chat has no readline history or completion.
+`site/` is a static website with everything compiled to WebAssembly, published on GitHub Pages by `.github/workflows/pages.yml`. It has a **rupy IDE** in the style of VS Code (an explorer of files kept in the browser, tabs, the Monaco editor, a terminal, problems marked in the code, standard input, and a stop button for endless loops) and a **rupy notebook** in the style of Jupyter (code and Markdown cells, `Out[n]` for a last expression, export to and import from `.ipynb`). It also has demos: an MLP classifier playground, curve fitting, SGD / momentum / Adam on Rosenbrock's valley, a CNN that learns MNIST in the style of ConvNetJS (every layer's activations, a pad to draw digits on), a GPT trained on WebGPU, REINFORCE on CartPole, Q-learning on MountainCar, value iteration on FrozenLake, the classic-control environments played with the keyboard, and a `ruai.plot` gallery. `./run.sh` also does `setup`, `check`, `build`, `serve`, `watch`, `test`, `size` and `clean`. The build needs cargo with the `wasm32-unknown-unknown` target and `wasm-bindgen-cli` 0.2.130, and no npm packages. See [doc/site.md](doc/site.md).
 
 ### Reinforcement-learning environments (world)
 
@@ -444,17 +340,11 @@ Gradient accumulation: `.grad` accumulates across `backward()` calls; multiply e
 
 ```
 src/
-├── main.rs, cli/    the `ruai` command (dispatch; ruai nn / world / py / agent)
+├── main.rs, cli/    the `ruai` command (dispatch; ruai nn / world, ruai-NAME from PATH)
 ├── nn/              the neural network engine (feature nn)
 ├── world/           Gymnasium environments (feature world)
 ├── rng.rs           NumPy-compatible random numbers, MT19937
-├── plot/            matplotlib-style plots on an HTML canvas or SVG (feature plot)
-├── py/              the py0 translator (feature py, formerly py2rs)
-│   ├── wasm/        py0 → WebAssembly (WasmGC) without Rust, and its JavaScript host
-│   └── lib/         package stubs (*.pyi): standard library, numpy, sklearn, gymnasium, torch
-├── pyrt/            the runtime of py0 programs (feature pyrt)
-│   └── lib/         the packages in Rust (pyrt-numpy, pyrt-sklearn, pyrt-gymnasium, pyrt-torch, pyrt-plot, ...); python.rs: the Python bridge (pyrt-python)
-└── agent/           `ruai agent` in py0 (translated into cli/agent_gen.rs)
+└── plot/            matplotlib-style plots on an HTML canvas or SVG (feature plot)
 nn/
 ├── backend/
 │   ├── mod.rs     the Backend trait: about 15 "primitives", all a device has to implement
@@ -579,7 +469,7 @@ RUSTNN_DEVICE=mps cargo test --features mps        # the same tests, all on the 
 cargo test --features mps --test devices           # every backend primitive: GPU against CPU
 ```
 
-`./test.sh` runs them by group and prints a summary: `./test.sh cpu`, `gpu` (every GPU backend of this machine against the CPU), `py0`, `pyo3`, `world`, `site`, `check` (each feature alone, wasm32 builds), `lint`, `pretrained`, `ci` (what CI runs on this OS), `all`, or `./test.sh file gradcheck` for one file; `./test.sh deps` lists what the tests need.
+`./test.sh` runs them by group and prints a summary: `./test.sh cpu`, `gpu` (every GPU backend of this machine against the CPU), `world`, `site`, `check` (each feature alone, wasm32 builds), `lint`, `pretrained`, `ci` (what CI runs on this OS), `all`, or `./test.sh file gradcheck` for one file; `./test.sh deps` lists what the tests need.
 
 - `tests/gradcheck.rs`: central-difference gradient checks of every differentiable operation (broadcasting, all batch forms of matmul, conv, pooling, softmax, layer norm, attention, ...), and that the causal mask does not look ahead
 - `tests/backend.rs`: fused kernels agree with the default compositions, matmul (transposed, split in parallel) against a naive implementation, dtype behavior, values of new operations
@@ -597,8 +487,6 @@ cargo test --features mps --test devices           # every backend primitive: GP
 - `tests/views.rs` / `tests/kvcache.rs`: views copy nothing and agree with host computations, views are snapshots, matmul reads transposed and strided views directly, all dtypes; the KV cache doubles its capacity, returns views, earlier views and clones are not affected by later writes, gradients flow through the cache, 100 decoding steps agree with the full forward
 - `tests/second_order.rs`: Hessian-vector products of element-wise ops, all matmuls, softmax / log_softmax / cross-entropy, layer / RMS norm, embedding + gather, conv2d, fused attention and gradient checkpointing agree with finite differences; the semantics of `backward_create_graph` and `autograd::grad`; gradient penalties reach the parameters with the gradients of numerical differentiation
 - `tests/world.rs`: 6 environments × 4 seeds × 400 steps (with autoreset) compared step by step, bit for bit, with Gymnasium; vector environments, FrozenLake's text rendering, NumPy random numbers (seeds beyond 2⁶³, all `integers` ranges)
-- `tests/agent.rs`: `ruai agent`'s embedded translation is up to date; about 50 offline commands (the echo model) with interactive chats, and the output against a fake LLM server (`tests/agent/fake_llm.py`: OpenAI / Anthropic, streaming or not, native tool calls, HTTP 500 retries) are identical to CPython running the same py0 sources
-- `tests/py0.rs` + `tests/py0/`: py2rs's corpus, 259 programs (with `tests/py0/numpy/`, `sklearn/`, `gymnasium/`, `torch/` `plot/` and the Python bridge's `pybridge/` compared; `ruai py test --wasm` runs the corpus through the WebAssembly backend on Node.js with the real NumPy, scikit-learn, Gymnasium and PyTorch; each program runs on a Python that has its packages), each translated, compiled and run, with the output, exit code and exception type of CPython 3.12+; 46 programs that must be rejected, with the expected messages; `tests/py0/pyo3/run.sh` checks the PyO3 extension modules
 - `tests/training.rs`: an MLP learns XOR, a CNN (with BatchNorm) converges, a GPT memorizes sequences, save/load round trips
 
 ## Stability
@@ -607,9 +495,8 @@ From 4.0 ruai follows semantic versioning for:
 
 - the Rust API of `ruai::nn` (also re-exported at the crate root), `ruai::world` and `ruai::rng`;
 - the `ruai` command line (subcommands and their options);
-- the py0 language ([py0/SPEC.md](py0/SPEC.md)) and the behavior of its packages: a program that runs on one 4.x runs, with the same output, on later 4.x versions.
 
-`ruai::py` (the translator) and `ruai::pyrt` (the runtime that translated programs call) are public because generated code uses them, but their Rust API follows the translator and may change in minor versions; translated programs depend on the matching ruai version.
+From 5.0 the py0 language is rupy, which has its own versions.
 
 ## Versions
 
@@ -645,6 +532,7 @@ From 4.0 ruai follows semantic versioning for:
 | v4.3 | py0 → WebAssembly (WasmGC) without Rust, and the py0 compiler in the browser |
 | v4.4 | the WebGPU backend for nn (wgpu: Metal / Vulkan / DX12, and browsers), a GPT trained in a web page |
 | v4.5 | the website on GitHub Pages: a py0 IDE in the style of VS Code, a py0 notebook with `.ipynb` export, demos; `run.sh`, `test.sh` |
+| v5.0 | py0 (`ruai py`, `ruai agent`, `ruai::py`, `ruai::pyrt`, features `py` / `pyrt*` / `agent`) moved to its own crate, [rupy](https://github.com/ccc-claude-opus/rupy); an MNIST CNN demo on the website |
 
 ## Limitations
 

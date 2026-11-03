@@ -1,14 +1,14 @@
-// The py0 IDE: an explorer of files kept in this browser, tabs, the Monaco
+// The rupy IDE: an explorer of files kept in this browser, tabs, the Monaco
 // editor, and a panel with the terminal, problems and standard input.
 // Programs compile to WebAssembly and run in a worker.
-import { runPy0, stopPy0, warmPy0, errorLine, py0Examples } from "../lib/py0.mjs";
+import { runRupy, stopRupy, warmRupy, errorLine, rupyExamples } from "../lib/rupy.mjs";
 import { createEditor } from "../lib/editor.mjs";
 import { esc, saveFile, openFile } from "../lib/ui.mjs";
 
 const KEY = "ruai.ide.v1";
-const WELCOME = `# Welcome to the py0 IDE.
+const WELCOME = `# Welcome to the rupy IDE.
 #
-# py0 is a typed subset of Python. ruai compiles it to WebAssembly right
+# rupy is a typed subset of Python. ruai compiles it to WebAssembly right
 # here in the browser (the compiler itself is wasm), then runs the module.
 #
 #   Run:  Ctrl/Cmd + Enter, or F5, or the ▶ button
@@ -59,11 +59,11 @@ export async function mount(el) {
         <textarea class="ide-stdin" data-id="stdin" hidden spellcheck="false" placeholder="Lines for input(), one per line. Each run reads from the top."></textarea>
       </div>
     </section>
-    <footer class="ide-status"><span data-id="sline">py0 → WebAssembly</span><span class="grow"></span><span data-id="pos">Ln 1, Col 1</span><span>Spaces: 4</span><span>UTF-8</span><span>py0</span></footer>
+    <footer class="ide-status"><span data-id="sline">rupy → WebAssembly</span><span class="grow"></span><span data-id="pos">Ln 1, Col 1</span><span>Spaces: 4</span><span>UTF-8</span><span>rupy</span></footer>
   </div>`;
   const $ = (id) => el.querySelector(`[data-id="${id}"]`);
 
-  const examples = await py0Examples();
+  const examples = await rupyExamples();
   const fresh = () => ({
     files: { "main.py": WELCOME, ...Object.fromEntries(examples.map((e) => [`examples/${e.name}`, e.text])) },
     open: ["main.py"],
@@ -84,8 +84,8 @@ export async function mount(el) {
     value: st.files[st.active] ?? "",
     minimap: !matchMedia("(max-width: 800px)").matches,
     actions: [
-      { id: "py0.run", label: "py0: Run", keys: ["Ctrl+Enter", "F5"], run: () => go() },
-      { id: "py0.save", label: "Save", keys: ["Ctrl+S"], run: () => flash("saved in this browser") },
+      { id: "rupy.run", label: "rupy: Run", keys: ["Ctrl+Enter", "F5"], run: () => go() },
+      { id: "rupy.save", label: "Save", keys: ["Ctrl+S"], run: () => flash("saved in this browser") },
     ],
   });
   ed.onChange(() => {
@@ -272,9 +272,9 @@ export async function mount(el) {
     $("stop").disabled = false;
     showPanel("term");
     const file = st.active;
-    term("cmd", `${$("term").childNodes.length ? "\n" : ""}$ ruai py wasm --run ${file}\n`);
+    term("cmd", `${$("term").childNodes.length ? "\n" : ""}$ rupy wasm --run ${file}\n`);
     flash(`compiling ${file}…`);
-    const r = await runPy0(st.files[file], { stdin: st.stdin ?? "", onOutput: (kind, text) => term(kind === "err" ? "e" : "", text) });
+    const r = await runRupy(st.files[file], { stdin: st.stdin ?? "", onOutput: (kind, text) => term(kind === "err" ? "e" : "", text) });
     running = false;
     $("run").disabled = false;
     $("stop").disabled = true;
@@ -315,7 +315,7 @@ export async function mount(el) {
     if (e.target.closest(".ide-file") && !e.target.closest("[data-x]")) el.querySelector(".ide").classList.remove("show-side");
   });
   $("run").onclick = go;
-  $("stop").onclick = () => stopPy0();
+  $("stop").onclick = () => stopRupy();
   const onKey = (e) => {
     if (e.key === "F5") {
       e.preventDefault();
@@ -329,7 +329,7 @@ export async function mount(el) {
   if (matchMedia("(max-width: 800px)").matches) $("explorer").classList.remove("on");
   $("problems").innerHTML = `<div class="ide-none">No problems have been detected.</div>`;
   flash("loading the compiler…");
-  warmPy0().then(() => flash("ready · Ctrl/Cmd + Enter runs"));
+  warmRupy().then(() => flash("ready · Ctrl/Cmd + Enter runs"));
   ed.focus();
   return () => {
     removeEventListener("keydown", onKey);

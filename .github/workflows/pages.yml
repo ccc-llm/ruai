@@ -1,12 +1,13 @@
 name: Pages
 
-# Build the website (site/: ruai's demos, the py0 IDE and notebook, all
-# compiled to WebAssembly) and publish it on GitHub Pages.
+# Build the website (site/: ruai's demos, and rupy's IDE and notebook, all
+# compiled to WebAssembly) and publish it on GitHub Pages. rupy is checked out
+# next to ruai (../rupy), where site/build.mjs looks for it.
 # In the repository's settings, Pages → Source must be "GitHub Actions".
 on:
   push:
     branches: [main]
-    paths: ["site/**", "src/**", "examples/py0_wasm.rs", "Cargo.toml", ".github/workflows/pages.yml"]
+    paths: ["site/**", "src/**", "Cargo.toml", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:
@@ -23,14 +24,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          path: ruai
+      - uses: actions/checkout@v5
+        with:
+          repository: ccc-claude-opus/rupy
+          path: rupy
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            .
-            site/wasm
+            ruai
+            ruai/site/wasm
+            rupy
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-bindgen@0.2.130
@@ -38,10 +46,12 @@ jobs:
         with:
           node-version: 22
       - run: ./run.sh build
+        working-directory: ruai
       - run: ./run.sh test
+        working-directory: ruai
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site/dist
+          path: ruai/site/dist
 
   deploy:
     needs: build

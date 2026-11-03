@@ -94,7 +94,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-bottom-width
 .tile i { font-style: normal; font-size: 11px; color: var(--accent); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
 .section-title { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 24px 0 10px; }
 
-/* py0 IDE */
+/* rupy IDE */
 .ide {
   --i-bg: #ffffff; --i-side: #f3f3f3; --i-act: #2c2c2c; --i-tab: #ececec; --i-tab-on: #ffffff; --i-line: #e2e2e2;
   --i-text: #3b3b3b; --i-muted: #7a7a7a; --i-hover: #e4e6f1; --i-sel: #d6ebff; --i-status: #2f6fdb; --i-term: #ffffff;
@@ -172,7 +172,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-bottom-width
   .ide-crumbs { display: none; }
 }
 
-/* py0 notebook */
+/* rupy notebook */
 .nb-page { max-width: 1000px; }
 .nb-top { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
 .nb-name { font-size: 20px !important; font-weight: 650; border: 1px solid transparent !important; background: transparent !important; padding: 2px 6px !important; margin-left: -6px; min-width: 0; flex: 1; }

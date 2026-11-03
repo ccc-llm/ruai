@@ -1,7 +1,7 @@
 //! NumPy-compatible random numbers: `SeedSequence`, the `PCG64` bit
 //! generator and the parts of `numpy.random.Generator` that ruai uses, bit
 //! for bit (`Generator::new(42)` produces what `np.random.default_rng(42)`
-//! produces). Gymnasium environments and the py0 numpy package draw from it,
+//! produces). Gymnasium environments draw from it,
 //! so seeded runs match their Python counterparts.
 
 /// `numpy.random.SeedSequence`: hashes a seed into well-mixed state words.

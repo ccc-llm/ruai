@@ -1,7 +1,7 @@
-// The py0 notebook: code and Markdown cells like Jupyter, run by compiling
+// The rupy notebook: code and Markdown cells like Jupyter, run by compiling
 // the cells up to the one run (see lib/notebook.mjs), saved in this browser,
 // exported to and opened from .ipynb files.
-import { runPy0, stopPy0, warmPy0, errorLine } from "../lib/py0.mjs";
+import { runRupy, stopRupy, warmRupy, errorLine } from "../lib/rupy.mjs";
 import { createEditor, loadMonaco } from "../lib/editor.mjs";
 import { markdown } from "../lib/markdown.mjs";
 import { assemble, splitOutput, cellOfLine, toIpynb, fromIpynb } from "../lib/notebook.mjs";
@@ -10,7 +10,7 @@ import { esc, saveFile, openFile } from "../lib/ui.mjs";
 const KEY = "ruai.notebook.v1";
 
 const STARTER = [
-  { type: "markdown", source: "# A py0 notebook\n\nWrite typed Python in cells and run them with **Shift + Enter**. Each run compiles the cells up to the one you run into WebAssembly, in your browser, so variables, functions and classes from earlier cells are there.\n\nA cell that ends in an expression shows its value. **Export** saves a real `.ipynb` file that Jupyter opens, and since py0 is a subset of Python, CPython runs it too." },
+  { type: "markdown", source: "# A rupy notebook\n\nWrite typed Python in cells and run them with **Shift + Enter**. Each run compiles the cells up to the one you run into WebAssembly, in your browser, so variables, functions and classes from earlier cells are there.\n\nA cell that ends in an expression shows its value. **Export** saves a real `.ipynb` file that Jupyter opens, and since rupy is a subset of Python, CPython runs it too." },
   { type: "code", source: "primes = [n for n in range(2, 60) if all(n % d != 0 for d in range(2, n))]\nlen(primes)" },
   { type: "code", source: "def collatz(n: int) -> list[int]:\n    seq = [n]\n    while n != 1:\n        n = n // 2 if n % 2 == 0 else 3 * n + 1\n        seq.append(n)\n    return seq\n\n\nlongest = max(range(1, 1000), key=lambda n: len(collatz(n)))\nprint(f\"{longest} takes {len(collatz(longest)) - 1} steps\")\ncollatz(27)[:12]" },
   { type: "markdown", source: "## Classes carry over too\n\nThe cell below defines a class; the one after it uses it." },
@@ -59,14 +59,14 @@ export async function mount(el) {
   const $ = (id) => el.querySelector(`[data-id="${id}"]`);
   const cellsEl = $("cells");
 
-  let nb = load() ?? { name: "py0-notebook", cells: STARTER.map((c) => ({ ...c, id: newId(), outputs: null, count: null })) };
+  let nb = load() ?? { name: "rupy-notebook", cells: STARTER.map((c) => ({ ...c, id: newId(), outputs: null, count: null })) };
   let counter = Math.max(0, ...nb.cells.map((c) => c.count ?? 0));
   let selected = 0;
   let busy = false;
   const views = new Map(); // id → { root, editor, ... }
   $("name").value = nb.name;
   $("name").oninput = () => {
-    nb.name = $("name").value.trim() || "py0-notebook";
+    nb.name = $("name").value.trim() || "rupy-notebook";
     save();
   };
 
@@ -221,12 +221,12 @@ export async function mount(el) {
     state("compiling…");
     let { src, starts } = assemble(code, show);
     let chunks = [];
-    let r = await runPy0(src, { onOutput: (k, t) => chunks.push([k, t]) });
+    let r = await runRupy(src, { onOutput: (k, t) => chunks.push([k, t]) });
     // an expression that cannot be printed: run again without the displays
     if (r.compileError && show.size) {
       ({ src, starts } = assemble(code, show, false));
       chunks = [];
-      r = await runPy0(src, { onOutput: (k, t) => chunks.push([k, t]) });
+      r = await runRupy(src, { onOutput: (k, t) => chunks.push([k, t]) });
     }
     busy = false;
     for (const i of targets) nb.cells[i].running = false;
@@ -310,7 +310,7 @@ export async function mount(el) {
     else if (a === "md") insert(i + 1, "markdown");
     else if (a === "run") runAndAdvance(i, false);
     else if (a === "all") runAll();
-    else if (a === "stop") stopPy0();
+    else if (a === "stop") stopRupy();
     else if (a === "clear") {
       for (const c of nb.cells) {
         c.outputs = null;
@@ -362,7 +362,7 @@ export async function mount(el) {
 
   await renderAll();
   state("loading the compiler…");
-  warmPy0().then(() => state("ready"));
+  warmRupy().then(() => state("ready"));
   return () => {
     for (const v of views.values()) v.editor.dispose();
   };

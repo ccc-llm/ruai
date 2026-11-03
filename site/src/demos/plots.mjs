@@ -8,7 +8,7 @@ export async function mount(el) {
     el,
     `<div class="page">
     <h1>ruai.plot gallery</h1>
-    <p class="lead"><code>ruai::plot</code> implements matplotlib's <code>pyplot</code> API (figures, axes, lines, scatters, bars, histograms, images and subplots) and renders to a canvas or SVG. py0 programs use it as <code>import ruai.plot as plt</code>. Each figure below is built in Rust and drawn by the same canvas renderer.</p>
+    <p class="lead"><code>ruai::plot</code> implements matplotlib's <code>pyplot</code> API (figures, axes, lines, scatters, bars, histograms, images and subplots) and renders to a canvas or SVG. rupy programs use it as <code>import ruai.plot as plt</code>. Each figure below is built in Rust and drawn by the same canvas renderer.</p>
     <div class="card">
       <div class="bar"><span class="label">Figure</span><select data-id="pick"></select><button data-id="again">New samples</button></div>
       <div class="plotbox" data-id="box"><canvas data-id="cv"></canvas></div>
