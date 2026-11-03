@@ -6,7 +6,7 @@ description = "A Swiss-army AI toolkit in Rust: a PyTorch-like engine (autograd,
 license = "MIT"
 repository = "https://github.com/ccc-llm/ruai"
 readme = "README.md"
-keywords = ["deep-learning", "autograd", "gpu", "reinforcement-learning", "llm"]
+keywords = ["deep-learning", "autograd", "gpu", "gymnasium", "llm"]
 categories = ["science", "algorithms", "command-line-utilities"]
 exclude = ["/scripts", "/runs", "/data", "*.safetensors", "/examples/webgpu-browser", "/site"]
 
