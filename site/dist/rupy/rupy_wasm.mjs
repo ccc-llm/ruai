@@ -10,7 +10,12 @@
 // follow CPython: float repr and format specs (exact decimal rounding), int()
 // and float() parsing, math with its domain errors, str methods.
 
-const KINDS = ["", "ValueError", "TypeError", "OverflowError", "IndexError", "EOFError", "ZeroDivisionError", "KeyError"];
+const KINDS = [
+  "", "ValueError", "TypeError", "OverflowError", "IndexError", "EOFError", "ZeroDivisionError", "KeyError",
+  // from packages (rupy_lib.wasm)
+  "RuntimeError", "NotImplementedError", "AttributeError", "OSError", "FileNotFoundError", "AssertionError",
+  "LookupError", "ArithmeticError", "Exception",
+];
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
@@ -256,8 +261,12 @@ const pyRepr = (s) => {
     else if (ch === "\n") out += "\\n";
     else if (ch === "\r") out += "\\r";
     else if (ch === "\t") out += "\\t";
-    else if (c < 32 || c === 127 || (c >= 0x80 && c < 0xa0)) out += "\\x" + c.toString(16).padStart(2, "0");
-    else out += ch;
+    // what str.isprintable() rejects: control, format, private, unassigned, separators but ' '
+    else if (ch !== " " && /[\p{C}\p{Z}]/u.test(ch)) {
+      if (c < 0x100) out += "\\x" + c.toString(16).padStart(2, "0");
+      else if (c < 0x10000) out += "\\u" + c.toString(16).padStart(4, "0");
+      else out += "\\U" + c.toString(16).padStart(8, "0");
+    } else out += ch;
   }
   return out + q;
 };
@@ -607,12 +616,93 @@ const STR = {
   },
 };
 
+// ------------------------------------------------------------ packages
+
+// rupy_lib.wasm: the packages implemented in Rust (numpy, sklearn, torch, ...),
+// built by `rupy wasm-lib`. A program that uses them exports `rupy_lib`; its
+// package calls arrive as the operation `pkg` (a key, then argument tokens:
+// BigInt, number or string) and their results are read back token by token.
+const libModules = new Map();
+
+/** The compiled rupy_lib.wasm: `lib` is bytes, a Module, or a URL / path (default: next to this file). */
+async function libModule(lib) {
+  if (lib instanceof WebAssembly.Module) return lib;
+  if (lib instanceof Uint8Array || lib instanceof ArrayBuffer) return WebAssembly.compile(lib);
+  let url = lib || (typeof process !== "undefined" && process.env?.RUPY_LIB_WASM) || new URL("rupy_lib.wasm", import.meta.url);
+  url = String(url);
+  if (!libModules.has(url)) {
+    libModules.set(
+      url,
+      (async () => {
+        if (/^[a-z]+:/i.test(url) && !url.startsWith("file:")) return WebAssembly.compileStreaming(fetch(url));
+        const [fs, { fileURLToPath }] = await Promise.all([import("node:fs"), import("node:url")]);
+        return WebAssembly.compile(fs.readFileSync(url.startsWith("file:") ? fileURLToPath(url) : url));
+      })(),
+    );
+  }
+  return libModules.get(url);
+}
+
+function encodeRequest(key, toks) {
+  const parts = [enc.encode(key)];
+  let size = 4 + parts[0].length;
+  for (const t of toks) {
+    if (typeof t === "string") {
+      const b = enc.encode(t);
+      parts.push(b);
+      size += 5 + b.length;
+    } else size += 9;
+  }
+  const buf = new Uint8Array(size);
+  const dv = new DataView(buf.buffer);
+  dv.setUint32(0, parts[0].length, true);
+  buf.set(parts[0], 4);
+  let at = 4 + parts[0].length;
+  let si = 1;
+  for (const t of toks) {
+    if (typeof t === "bigint") {
+      buf[at] = 0x69;
+      dv.setBigInt64(at + 1, t, true);
+      at += 9;
+    } else if (typeof t === "number") {
+      buf[at] = 0x66;
+      dv.setFloat64(at + 1, t, true);
+      at += 9;
+    } else {
+      const b = parts[si++];
+      buf[at] = 0x73;
+      dv.setUint32(at + 1, b.length, true);
+      buf.set(b, at + 5);
+      at += 5 + b.length;
+    }
+  }
+  return buf;
+}
+
+function decodeResult(buf) {
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const out = [];
+  let at = 0;
+  while (at < buf.length) {
+    const tag = buf[at];
+    if (tag === 0x69) out.push(dv.getBigInt64(at + 1, true)), (at += 9);
+    else if (tag === 0x66) out.push(dv.getFloat64(at + 1, true)), (at += 9);
+    else {
+      const n = dv.getUint32(at + 1, true);
+      out.push(dec.decode(buf.subarray(at + 5, at + 5 + n)));
+      at += 5 + n;
+    }
+  }
+  return out;
+}
+
 // ------------------------------------------------------------ the module's host
 
 /**
  * Run a compiled program. `io.stdout` / `io.stderr` receive text; `io.stdin`
  * is the input text (or a function returning the next line, or null at the end).
- * Returns the exit code.
+ * `io.lib` is rupy_lib.wasm for programs that use packages implemented in Rust
+ * (bytes, a Module, or a URL; default: next to this file). Returns the exit code.
  */
 export async function run(bytes, io = {}) {
   const stdout = io.stdout ?? ((s) => console.log(s));
@@ -638,6 +728,7 @@ export async function run(bytes, io = {}) {
   };
   const ops = {
     float_repr: (x) => floatRepr(x),
+    str_repr: (s) => pyRepr(s),
     format: (v, spec) => format(v, spec),
     int: (s, base) => parseInt64(s, num(base)),
     float: (s) => parseFloat64(s),
@@ -706,9 +797,50 @@ export async function run(bytes, io = {}) {
         return pending.length;
       },
       failed: () => failed,
+      r_int: () => 0n,
+      r_float: () => 0,
+      r_str: () => 0,
+      track: () => null,
+      free: () => {},
     },
   };
-  const { instance } = await WebAssembly.instantiate(bytes, imports);
+  const module = await WebAssembly.compile(bytes);
+  if (WebAssembly.Module.exports(module).some((e) => e.name === "rupy_lib")) {
+    const lib = (await WebAssembly.instantiate(await libModule(io.lib), {})).exports;
+    let results = [];
+    let at = 0;
+    ops.pkg = (key, ...toks) => {
+      const req = encodeRequest(key, toks);
+      const ptr = lib.rl_alloc(req.length); // may grow (and so replace) the memory
+      new Uint8Array(lib.memory.buffer, ptr, req.length).set(req);
+      const status = lib.rl_call();
+      const out = decodeResult(new Uint8Array(lib.memory.buffer, lib.rl_out_ptr(), lib.rl_out_len()).slice());
+      // the exception's chain (`LinAlgError,ValueError,...`): its nearest kind a program can catch
+      if (status !== 0) throw err(out[0].split(",").find((k) => KINDS.includes(k)) ?? "RuntimeError", out[1]);
+      results = out;
+      at = 0;
+      return null;
+    };
+    // a handle's token: when the program no longer holds the object, its handle is freed
+    const registry = new FinalizationRegistry((id) => lib.rl_drop(id));
+    imports.host.track = (id) => {
+      const token = { id };
+      registry.register(token, id, token);
+      return token;
+    };
+    // freed by the program: forget the token (its id may be reused)
+    imports.host.free = (id, token) => {
+      registry.unregister(token);
+      lib.rl_drop(id);
+    };
+    imports.host.r_int = () => results[at++];
+    imports.host.r_float = () => results[at++];
+    imports.host.r_str = () => {
+      setPending(results[at++]);
+      return pending.length;
+    };
+  }
+  const instance = await WebAssembly.instantiate(module, imports);
   mem = instance.exports.mem;
   try {
     return instance.exports.run();

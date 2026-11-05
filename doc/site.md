@@ -78,7 +78,7 @@ flowchart LR
   - `notebook.mjs` handles notebook execution and `.ipynb`;
   - `markdown.mjs` renders Markdown cells;
   - `envs.mjs` draws the environments.
-- **rupy** programs compile and run in a Web Worker. The compiler is
+- **rupy** programs compile and run in a Web Worker; those that import numpy, sklearn, torch or gymnasium call them in `rupy_lib.wasm` (`rupy wasm-lib`), which the host loads next to `rupy_wasm.mjs` only when needed. The compiler is
   `rupy.wasm` (the translator built for wasm32), and the compiled WasmGC
   module runs on `rupy_wasm.mjs`. Because the work happens off the page's
   thread, the stop button can end an endless loop by terminating the worker.

@@ -2,6 +2,7 @@
 //   1. site/wasm (the demos) → wasm32 → wasm-bindgen → dist/pkg/
 //   2. rupy's examples/rupy_wasm (the rupy compiler) → dist/rupy/rupy.wasm, with
 //      the host of compiled programs (rupy's src/wasm/host.mjs) → dist/rupy/rupy_wasm.mjs
+//      and the packages implemented in Rust (`rupy wasm-lib`) → dist/rupy/rupy_lib.wasm
 //   3. src/ copied to dist/, the rupy examples bundled into dist/rupy/examples.json
 // Needs cargo with the wasm32-unknown-unknown target, wasm-bindgen-cli 0.2.130,
 // and a checkout of rupy (https://github.com/ccc-claude-opus/rupy) in
@@ -40,6 +41,8 @@ if (!skipWasm) {
   // 2. the rupy compiler
   sh("cargo", ["build", "--release", "--example", "rupy_wasm", "--target", "wasm32-unknown-unknown", "--no-default-features", "--features", "translator"], rupy);
   cpSync(join(rupy, "target/wasm32-unknown-unknown/release/examples/rupy_wasm.wasm"), join(dist, "rupy/rupy.wasm"));
+  // numpy, sklearn, torch, ... for the programs (loaded only by those that import them)
+  sh("cargo", ["run", "--release", "--quiet", "--bin", "rupy", "--", "wasm-lib", "-o", join(dist, "rupy/rupy_lib.wasm")], rupy);
 }
 cpSync(join(rupy, "src/wasm/host.mjs"), join(dist, "rupy/rupy_wasm.mjs"));
 
@@ -57,7 +60,7 @@ writeFileSync(join(dist, "rupy/examples.json"), JSON.stringify(examples));
 // GitHub Pages: serve files as they are (no Jekyll)
 writeFileSync(join(dist, ".nojekyll"), "");
 
-for (const f of ["pkg/ruai_site_bg.wasm", "rupy/rupy.wasm"]) {
+for (const f of ["pkg/ruai_site_bg.wasm", "rupy/rupy.wasm", "rupy/rupy_lib.wasm"]) {
   const p = join(dist, f);
   if (existsSync(p)) console.log(`${f}: ${kb(p)}`);
 }
